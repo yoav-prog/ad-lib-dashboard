@@ -1,0 +1,15 @@
+# Scraper + pipeline dependencies (Python 3.11+)
+aiohttp
+requests
+Pillow
+google-auth
+google-api-python-client
+google-cloud-storage
+apify-client==3.0.4
+scrapingbee
+
+# Supabase / Postgres access (transaction pooler). psycopg 3.x.
+psycopg[binary]>=3.1
+
+# Loads a local .env for development (not needed in CI, where secrets are injected).
+python-dotenv
