@@ -227,6 +227,14 @@ async def run(args):
     fb.GPT_SEMAPHORE = asyncio.Semaphore(10)
     fb.SCRAPING_SEMAPHORE = asyncio.Semaphore(10)
 
+    # Scheduled mode (no --query): skip cheaply if nothing is due, so an hourly
+    # cron does not create an empty run record every hour.
+    if not args.query:
+        with db.connect() as conn:
+            if not db.any_domain_due(conn):
+                print('nothing due; exiting')
+                return
+
     bucket = None
     if not args.no_media:
         bucket = get_bucket()

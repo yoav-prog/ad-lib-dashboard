@@ -1,0 +1,17 @@
+{
+  "name": "ad-intel-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "postgres": "^3.4.5",
+    "dotenv": "^16.4.5"
+  }
+}
