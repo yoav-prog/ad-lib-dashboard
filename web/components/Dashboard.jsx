@@ -16,7 +16,10 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('fresh');
   const [sortDir, setSortDir] = useState('desc');
-  const [filters, setFilters] = useState({ domain: [], vertical: [], country: [], format: [], status: [] });
+  const [filters, setFilters] = useState({
+    domain: [], vertical: [], country: [], language: [], format: [], platform: [], status: [],
+    daysMin: '', daysMax: '', rankMin: '', rankMax: '',
+  });
   const [dateRange, setDateRange] = useState('all');
   const [selIndex, setSelIndex] = useState(0);
   const [detailId, setDetailId] = useState(null);
@@ -50,8 +53,18 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
       if (f.domain.length && !f.domain.includes(a.domain)) return false;
       if (f.vertical.length && !f.vertical.includes(a.vertical)) return false;
       if (f.country.length && !f.country.includes(a.country)) return false;
+      if (f.language.length && !f.language.includes(a.language)) return false;
       if (f.format.length && !f.format.includes(a.display_format)) return false;
+      if (f.platform.length && !(a.publisher_platform || []).some((p) => f.platform.includes(p))) return false;
       if (f.status.length && !f.status.includes(a.status)) return false;
+      const days = daysRunning(a, NOW);
+      if (f.daysMin !== '' && days < Number(f.daysMin)) return false;
+      if (f.daysMax !== '' && days > Number(f.daysMax)) return false;
+      if (f.rankMin !== '' || f.rankMax !== '') {
+        if (a.rank == null) return false;
+        if (f.rankMin !== '' && a.rank < Number(f.rankMin)) return false;
+        if (f.rankMax !== '' && a.rank > Number(f.rankMax)) return false;
+      }
       const h = hoursSince(a.first_seen_at, NOW);
       if (dateRange === '24h' && h > 24) return false;
       if (dateRange === '7d' && h > 168) return false;
@@ -143,7 +156,8 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
         <FreshFinds
           ads={ads} filtered={filtered} NOW={NOW}
           filters={filters} toggleFilter={toggleFilter}
-          clearFilters={() => { setFilters({ domain: [], vertical: [], country: [], format: [], status: [] }); setDateRange('all'); setSelIndex(0); }}
+          setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
+          clearFilters={() => { setFilters({ domain: [], vertical: [], country: [], language: [], format: [], platform: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
@@ -233,7 +247,8 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
 // ═════════════════════════════════════════════════════════════════════════════
 // FRESH FINDS
 // ═════════════════════════════════════════════════════════════════════════════
-function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail }) {
+function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail }) {
+  const [gsearch, setGsearch] = useState({});
   const uniq = (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
   const countBy = (key, val) => ads.filter((a) => a[key] === val).length;
 
@@ -251,14 +266,22 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, clearFilters, d
   const vertMix = Object.entries(vcount).sort((x, y) => y[1] - x[1]).slice(0, 4)
     .map(([label, n]) => ({ label, pct: `${Math.round((n / (ads.length || 1)) * 100)}%` }));
 
+  const platforms = [...new Set(ads.flatMap((a) => a.publisher_platform || []))];
   const groups = [
-    { title: 'Domain', group: 'domain', key: 'domain', vals: uniq('domain') },
-    { title: 'Vertical', group: 'vertical', key: 'vertical', vals: uniq('vertical') },
-    { title: 'Country', group: 'country', key: 'country', vals: uniq('country') },
-    { title: 'Format', group: 'format', key: 'display_format', vals: uniq('display_format') },
-    { title: 'Status', group: 'status', key: 'status', vals: uniq('status') },
+    { title: 'Domain', group: 'domain', vals: uniq('domain'), count: (v) => countBy('domain', v) },
+    { title: 'Vertical', group: 'vertical', vals: uniq('vertical'), count: (v) => countBy('vertical', v) },
+    { title: 'Country', group: 'country', vals: uniq('country'), count: (v) => countBy('country', v) },
+    { title: 'Language', group: 'language', vals: uniq('language'), count: (v) => countBy('language', v) },
+    { title: 'Format', group: 'format', vals: uniq('display_format'), count: (v) => countBy('display_format', v) },
+    { title: 'Platform', group: 'platform', vals: platforms, count: (v) => ads.filter((a) => (a.publisher_platform || []).includes(v)).length },
+    { title: 'Status', group: 'status', vals: uniq('status'), count: (v) => countBy('status', v) },
   ];
-  const activeFilterCount = Object.values(filters).reduce((n, a) => n + a.length, 0) + (dateRange !== 'all' ? 1 : 0);
+  const checkboxGroups = ['domain', 'vertical', 'country', 'language', 'format', 'platform', 'status'];
+  const activeFilterCount =
+    checkboxGroups.reduce((n, k) => n + (filters[k]?.length || 0), 0)
+    + (dateRange !== 'all' ? 1 : 0)
+    + (filters.daysMin !== '' || filters.daysMax !== '' ? 1 : 0)
+    + (filters.rankMin !== '' || filters.rankMax !== '' ? 1 : 0);
   const maxDays = Math.max(1, ...ads.map((a) => daysRunning(a, NOW)));
 
   const sortDefs = [{ id: 'fresh', label: 'freshness' }, { id: 'days', label: 'days running' }, { id: 'page', label: 'page' }];
@@ -293,22 +316,45 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, clearFilters, d
             <span style={s(`font-family:${MONO};font-size:10px;letter-spacing:1.5px;color:#6C7076`)}>FILTERS</span>
             <button onClick={clearFilters} style={s(`background:none;border:none;color:${activeFilterCount ? A : '#5A5E64'};font-family:${MONO};font-size:9.5px;letter-spacing:.5px;cursor:pointer`)}>CLEAR ({activeFilterCount})</button>
           </div>
-          {groups.map((g) => (
-            <div key={g.title} style={s('border-bottom:1px solid rgba(255,255,255,.06);padding:11px 0 12px')}>
-              <div style={s('padding:0 14px 8px;font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>{g.title}</div>
-              {g.vals.map((v) => {
-                const sel = filters[g.group].includes(v);
-                return (
-                  <button key={v} onClick={() => toggleFilter(g.group, v)}
-                    style={s(`display:flex;align-items:center;gap:9px;width:100%;padding:4px 14px;background:${sel ? 'rgba(232,163,61,.06)' : 'transparent'};border:none;cursor:pointer;text-align:left`)}>
-                    <span style={s(`width:11px;height:11px;flex-shrink:0;border:1px solid ${sel ? A : 'rgba(255,255,255,.2)'};background:${sel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:8px;color:#0B0C0E;line-height:1`)}>{sel ? '✓' : ''}</span>
-                    <span style={s(`flex:1;font-size:11.5px;color:${sel ? '#E7E8EA' : '#9CA0A6'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{titleCase(v)}</span>
-                    <span style={s(`font-family:${MONO};font-size:10px;color:#5A5E64;font-variant-numeric:tabular-nums`)}>{pad(countBy(g.key, v))}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ))}
+          {groups.map((g) => {
+            const term = (gsearch[g.group] || '').toLowerCase();
+            const opts = term ? g.vals.filter((v) => String(v).toLowerCase().includes(term)) : g.vals;
+            const searchable = g.vals.length > 6;
+            const chosen = filters[g.group].length;
+            return (
+              <div key={g.title} style={s('border-bottom:1px solid rgba(255,255,255,.06);padding:11px 0 12px')}>
+                <div style={s('display:flex;align-items:center;justify-content:space-between;padding:0 14px 8px')}>
+                  <span style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>{g.title}</span>
+                  {chosen > 0 && <span style={s(`font-family:${MONO};font-size:9px;color:#E8A33D`)}>{chosen}</span>}
+                </div>
+                {searchable && (
+                  <div style={s('padding:0 14px 8px')}>
+                    <input value={gsearch[g.group] || ''} onChange={(e) => setGsearch((p) => ({ ...p, [g.group]: e.target.value }))}
+                      placeholder={`Filter ${g.title.toLowerCase()}...`}
+                      style={s('width:100%;background:#0B0C0E;border:1px solid rgba(255,255,255,.08);color:#C6C9CE;font-size:11px;padding:5px 8px;outline:none')} />
+                  </div>
+                )}
+                <div style={s(searchable ? 'max-height:184px;overflow-y:auto' : '')}>
+                  {opts.map((v) => {
+                    const sel = filters[g.group].includes(v);
+                    return (
+                      <button key={v} onClick={() => toggleFilter(g.group, v)}
+                        style={s(`display:flex;align-items:center;gap:9px;width:100%;padding:4px 14px;background:${sel ? 'rgba(232,163,61,.06)' : 'transparent'};border:none;cursor:pointer;text-align:left`)}>
+                        <span style={s(`width:11px;height:11px;flex-shrink:0;border:1px solid ${sel ? A : 'rgba(255,255,255,.2)'};background:${sel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:8px;color:#0B0C0E;line-height:1`)}>{sel ? '✓' : ''}</span>
+                        <span style={s(`flex:1;font-size:11.5px;color:${sel ? '#E7E8EA' : '#9CA0A6'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{titleCase(v)}</span>
+                        <span style={s(`font-family:${MONO};font-size:10px;color:#5A5E64;font-variant-numeric:tabular-nums`)}>{pad(g.count(v))}</span>
+                      </button>
+                    );
+                  })}
+                  {opts.length === 0 && <div style={s('padding:4px 14px;font-size:11px;color:#45484D')}>no match</div>}
+                </div>
+              </div>
+            );
+          })}
+          <RangeFilter title="Days Running" min={filters.daysMin} max={filters.daysMax}
+            onMin={(v) => setRange('daysMin', v)} onMax={(v) => setRange('daysMax', v)} />
+          <RangeFilter title="Rank" min={filters.rankMin} max={filters.rankMax}
+            onMin={(v) => setRange('rankMin', v)} onMax={(v) => setRange('rankMax', v)} />
           <div style={s('padding:11px 14px')}>
             <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:8px')}>DATE RANGE</div>
             <div style={s('display:flex;gap:1px;background:rgba(255,255,255,.06)')}>
@@ -418,6 +464,24 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, clearFilters, d
 // ═════════════════════════════════════════════════════════════════════════════
 // CREATIVE DETAIL
 // ═════════════════════════════════════════════════════════════════════════════
+function RangeFilter({ title, min, max, onMin, onMax }) {
+  const inp = 'flex:1;min-width:0;background:#0B0C0E;border:1px solid rgba(255,255,255,.1);color:#E7E8EA;font-family:' + MONO + ';font-size:11px;padding:6px 8px;outline:none;text-align:center';
+  const active = min !== '' || max !== '';
+  return (
+    <div style={s('border-bottom:1px solid rgba(255,255,255,.06);padding:11px 14px 12px')}>
+      <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:8px')}>
+        <span style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>{title}</span>
+        {active && <button onClick={() => { onMin(''); onMax(''); }} style={s(`background:none;border:none;color:#E8A33D;font-family:${MONO};font-size:9px;cursor:pointer`)}>reset</button>}
+      </div>
+      <div style={s('display:flex;align-items:center;gap:8px')}>
+        <input type="number" value={min} onChange={(e) => onMin(e.target.value)} placeholder="min" style={s(inp)} />
+        <span style={s('color:#45484D;font-size:11px')}>&ndash;</span>
+        <input type="number" value={max} onChange={(e) => onMax(e.target.value)} placeholder="max" style={s(inp)} />
+      </div>
+    </div>
+  );
+}
+
 function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit }) {
   if (!ad) return <Placeholder view="detail" />;
   const vid = isVideo(ad);
