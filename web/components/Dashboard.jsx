@@ -28,9 +28,23 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
   const commit = (id, patch) => updateAdWorkflow(id, patch).catch((e) => console.error('save failed', e));
   const update = (id, patch) => { updateLocal(id, patch); commit(id, patch); };
 
+  // Precomputed lowercase haystack per ad -> fast multi-field smart search.
+  const searchIndex = useMemo(() => {
+    const m = new Map();
+    for (const a of ads) {
+      m.set(a.ad_archive_id, [
+        a.title, a.page_name, a.domain, a.vertical, a.country, a.language,
+        a.body_text, a.caption, a.cta_text, a.cta_type, a.link_url,
+        a.link_description, a.article_title, a.article_content, a.notes,
+        ...(a.tags || []),
+      ].filter(Boolean).join(' ').toLowerCase());
+    }
+    return m;
+  }, [ads]);
+
   // ── filtering + sorting ────────────────────────────────────────────────────
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     let list = ads.filter((a) => {
       const f = filters;
       if (f.domain.length && !f.domain.includes(a.domain)) return false;
@@ -42,9 +56,9 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
       if (dateRange === '24h' && h > 24) return false;
       if (dateRange === '7d' && h > 168) return false;
       if (dateRange === '30d' && h > 720) return false;
-      if (q) {
-        const hay = `${a.title || ''} ${a.page_name || ''} ${a.domain || ''} ${a.vertical || ''} ${a.body_text || ''}`.toLowerCase();
-        if (!hay.includes(q)) return false;
+      if (tokens.length) {
+        const hay = searchIndex.get(a.ad_archive_id) || '';
+        if (!tokens.every((t) => hay.includes(t))) return false;
       }
       return true;
     });
@@ -55,7 +69,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
       return (new Date(b.first_seen_at) - new Date(a.first_seen_at)) * dir;
     });
     return list;
-  }, [ads, query, filters, dateRange, sort, sortDir, NOW]);
+  }, [ads, query, filters, dateRange, sort, sortDir, NOW, searchIndex]);
 
   const openDetail = (id) => { setDetailId(id); setView('detail'); };
   const stepDetail = (delta) => {
@@ -177,7 +191,7 @@ function TopChrome({ view, setView, query, setQuery, lastScrape, openPalette }) 
       <div style={s('display:flex;align-items:center;gap:8px;height:26px;padding:0 10px;min-width:280px;background:#101216;border:1px solid rgba(255,255,255,.08)')}>
         <span style={s('color:#5A5E64;font-size:12px')}>&#8250;</span>
         <input id="ai-search" value={query} onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search headlines, pages, domains..."
+          placeholder="Search anything: page, domain, copy, country, vertical..."
           style={s('flex:1;background:transparent;border:none;outline:none;color:#E7E8EA;font-size:12px')} />
         <kbd style={s(`font-family:${MONO};font-size:10px;color:#5A5E64;border:1px solid rgba(255,255,255,.1);padding:1px 4px`)}>/</kbd>
       </div>
@@ -307,15 +321,17 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, clearFilters, d
             </div>
           </div>
 
-          <div style={s('display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:940px')}>
+          <div style={s('display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1040px')}>
             <div style={s('width:56px;flex-shrink:0')} />
-            <div style={s('width:184px;flex-shrink:0')}>Page / Domain</div>
+            <div style={s('width:148px;flex-shrink:0')}>Page</div>
+            <div style={s('width:132px;flex-shrink:0')}>Domain</div>
             <div style={s('flex:1;min-width:0')}>Headline</div>
-            <div style={s('width:70px;flex-shrink:0;text-align:center')}>Format</div>
-            <div style={s('width:74px;flex-shrink:0;text-align:right')}>Days Run</div>
-            <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>Vertical</div>
-            <div style={s('width:62px;flex-shrink:0;text-align:center')}>Geo</div>
-            <div style={s('width:66px;flex-shrink:0;text-align:center')}>Platform</div>
+            <div style={s('width:62px;flex-shrink:0;text-align:center')}>Format</div>
+            <div style={s('width:46px;flex-shrink:0;text-align:right')}>Rank</div>
+            <div style={s('width:70px;flex-shrink:0;text-align:right')}>Days Run</div>
+            <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>
+            <div style={s('width:58px;flex-shrink:0;text-align:center')}>Country</div>
+            <div style={s('width:58px;flex-shrink:0;text-align:center')}>Platform</div>
           </div>
 
           {filtered.map((a, i) => {
@@ -325,35 +341,38 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, clearFilters, d
             const vid = isVideo(a);
             return (
               <div key={a.ad_archive_id} onClick={() => openDetail(a.ad_archive_id)} onMouseEnter={() => setSelIndex(i)}
-                style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:940px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${sel ? 'rgba(232,163,61,.05)' : 'transparent'};cursor:pointer`)}>
+                style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:1040px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${sel ? 'rgba(232,163,61,.05)' : 'transparent'};cursor:pointer`)}>
                 <div style={s(`position:absolute;left:0;top:0;bottom:0;width:2px;background:${sel ? A : (fresh ? 'rgba(232,163,61,.5)' : 'transparent')}`)} />
                 <div style={s('width:56px;flex-shrink:0;padding-right:12px')}><Thumb ad={a} size={44} /></div>
-                <div style={s('width:184px;flex-shrink:0;padding-right:14px;min-width:0')}>
-                  <div style={s('display:flex;align-items:center;gap:6px')}>
-                    {fresh && <span style={s('width:6px;height:6px;border-radius:50%;background:#E8A33D;flex-shrink:0;animation:freshpulse 2.4s ease-in-out infinite')} />}
-                    <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{a.page_name || '(unknown)'}</span>
-                  </div>
-                  <div style={s(`font-family:${MONO};font-size:10.5px;color:#6C7076;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{a.domain || ''}</div>
+                <div style={s('width:148px;flex-shrink:0;padding-right:12px;min-width:0;display:flex;align-items:center;gap:6px')}>
+                  {fresh && <span style={s('width:6px;height:6px;border-radius:50%;background:#E8A33D;flex-shrink:0;animation:freshpulse 2.4s ease-in-out infinite')} />}
+                  <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{a.page_name || '(unknown)'}</span>
+                </div>
+                <div style={s('width:132px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                  <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.domain || '-'}</span>
                 </div>
                 <div style={s('flex:1;min-width:0;padding-right:16px')}>
                   <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
                 </div>
-                <div style={s('width:70px;flex-shrink:0;display:flex;justify-content:center')}>
+                <div style={s('width:62px;flex-shrink:0;display:flex;justify-content:center')}>
                   <span style={s(`font-family:${MONO};font-size:9.5px;letter-spacing:.5px;color:${vid ? '#C6C9CE' : '#8A8E94'};border:1px solid rgba(255,255,255,.14);padding:2px 6px`)}>{a.display_format || '-'}</span>
                 </div>
-                <div style={s('width:74px;flex-shrink:0;text-align:right')}>
+                <div style={s('width:46px;flex-shrink:0;text-align:right')}>
+                  <span style={s(`font-family:${MONO};font-size:12.5px;color:${a.rank != null && a.rank <= 3 ? A : '#B6B9BE'};font-variant-numeric:tabular-nums`)}>{a.rank != null ? a.rank : '-'}</span>
+                </div>
+                <div style={s('width:70px;flex-shrink:0;text-align:right')}>
                   <span style={s(`font-family:${MONO};font-size:14px;color:${days > 45 ? '#E7E8EA' : '#B6B9BE'};font-variant-numeric:tabular-nums`)}>{days}</span>
                   <span style={s('font-size:9px;color:#5A5E64;margin-left:2px')}>d</span>
                   <div style={s('height:2px;margin-top:4px;background:rgba(255,255,255,.06)')}><div style={s(`height:100%;width:${Math.round((days / maxDays) * 100)}%;background:${days > 45 ? '#8A8E94' : 'rgba(255,255,255,.22)'}`)} /></div>
                 </div>
-                <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>
+                <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>
                   <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.vertical || '-'}</span>
                 </div>
-                <div style={s('width:62px;flex-shrink:0;text-align:center')}>
+                <div style={s('width:58px;flex-shrink:0;text-align:center')}>
                   <div style={s(`font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{a.country || '-'}</div>
                   <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)}>{(a.language || '').slice(0, 2).toUpperCase()}</div>
                 </div>
-                <div style={s('width:66px;flex-shrink:0;display:flex;justify-content:center;gap:4px')}>
+                <div style={s('width:58px;flex-shrink:0;display:flex;justify-content:center;gap:4px')}>
                   {(a.publisher_platform || []).slice(0, 3).map((p, idx) => (
                     <span key={idx} style={s(`width:16px;height:16px;border:1px solid rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;font-family:${MONO};font-size:9px;color:#8A8E94`)}>{(p || '?')[0].toUpperCase()}</span>
                   ))}
