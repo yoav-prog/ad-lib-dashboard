@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, daysRunning, hoursSince, isVideo, pad } from '@/lib/ui';
 
-export default function CompetitorView({ ads, NOW, openDetail }) {
+export default function CompetitorView({ ads, NOW, openDetail, matchesQuery = () => true }) {
   const domains = useMemo(() => {
     const counts = {};
     ads.forEach((a) => { if (a.domain) counts[a.domain] = (counts[a.domain] || 0) + 1; });
@@ -13,12 +13,13 @@ export default function CompetitorView({ ads, NOW, openDetail }) {
 
   const [dom, setDom] = useState(domains[0] || '');
   const active = dom || domains[0] || '';
-  const list = ads.filter((a) => a.domain === active);
-  const ref = list[0] || {};
-  const vids = list.filter(isVideo).length;
-  const avgDays = list.length ? Math.round(list.reduce((n, a) => n + daysRunning(a, NOW), 0) / list.length) : 0;
-  const fresh7 = list.filter((a) => hoursSince(a.first_seen_at, NOW) <= 168).length;
-  const countries = new Set(list.map((a) => a.country).filter(Boolean)).size;
+  const full = ads.filter((a) => a.domain === active);   // competitor totals (stats)
+  const list = full.filter(matchesQuery);                // search-filtered (table)
+  const ref = full[0] || {};
+  const vids = full.filter(isVideo).length;
+  const avgDays = full.length ? Math.round(full.reduce((n, a) => n + daysRunning(a, NOW), 0) / full.length) : 0;
+  const fresh7 = full.filter((a) => hoursSince(a.first_seen_at, NOW) <= 168).length;
+  const countries = new Set(full.map((a) => a.country).filter(Boolean)).size;
 
   if (!domains.length) {
     return (
@@ -29,8 +30,8 @@ export default function CompetitorView({ ads, NOW, openDetail }) {
   }
 
   const stats = [
-    { label: 'Ads Tracked', value: pad(list.length), color: '#E7E8EA' },
-    { label: 'Video / Image', value: `${vids}/${list.length - vids}`, color: '#E7E8EA' },
+    { label: 'Ads Tracked', value: pad(full.length), color: '#E7E8EA' },
+    { label: 'Video / Image', value: `${vids}/${full.length - vids}`, color: '#E7E8EA' },
     { label: 'Avg Days Run', value: `${avgDays}d`, color: A },
     { label: 'Fresh 7d', value: pad(fresh7), color: A },
     { label: 'Countries', value: pad(countries), color: '#E7E8EA' },
@@ -89,6 +90,9 @@ export default function CompetitorView({ ads, NOW, openDetail }) {
           </div>
         );
       })}
+      {list.length === 0 && (
+        <div style={s('padding:40px 24px;text-align:center;color:#5A5E64;font-size:12px')}>No ads match your search for this competitor.</div>
+      )}
     </div>
   );
 }

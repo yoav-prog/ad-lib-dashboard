@@ -71,6 +71,20 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
     return list;
   }, [ads, query, filters, dateRange, sort, sortDir, NOW, searchIndex]);
 
+  // Same smart-match, reused by the Competitor and Pipeline views so search is per-page.
+  const matchesQuery = (a) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    const hay = searchIndex.get(a.ad_archive_id) || '';
+    return q.split(/\s+/).filter(Boolean).every((t) => hay.includes(t));
+  };
+  const searchPlaceholder = {
+    fresh: 'Search fresh finds...',
+    competitor: 'Search this competitor...',
+    pipeline: 'Search pipeline...',
+    settings: 'Search domains...',
+  }[view] || 'Search...';
+
   const openDetail = (id) => { setDetailId(id); setView('detail'); };
   const stepDetail = (delta) => {
     const idx = filtered.findIndex((a) => a.ad_archive_id === detailId);
@@ -120,6 +134,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
     <div style={s('min-height:100vh')}>
       <TopChrome
         view={view} setView={setView} query={query} setQuery={setQuery}
+        placeholder={searchPlaceholder} showSearch={view !== 'detail'}
         lastScrape={lastScrape}
         openPalette={() => { setPaletteOpen(true); setPaletteQuery(''); setTimeout(() => document.getElementById('ai-palette')?.focus(), 30); }}
       />
@@ -146,9 +161,9 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
         />
       )}
 
-      {view === 'competitor' && <CompetitorView ads={ads} NOW={NOW} openDetail={openDetail} />}
-      {view === 'pipeline' && <PipelineView ads={ads} update={update} openDetail={openDetail} />}
-      {view === 'settings' && <ControlRoom ads={ads} domains={domains} runs={runs} NOW={NOW} />}
+      {view === 'competitor' && <CompetitorView ads={ads} NOW={NOW} openDetail={openDetail} matchesQuery={matchesQuery} />}
+      {view === 'pipeline' && <PipelineView ads={ads} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />}
+      {view === 'settings' && <ControlRoom ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} />}
 
       {paletteOpen && (
         <Palette
@@ -165,15 +180,16 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
 // ═════════════════════════════════════════════════════════════════════════════
 // TOP CHROME
 // ═════════════════════════════════════════════════════════════════════════════
-function TopChrome({ view, setView, query, setQuery, lastScrape, openPalette }) {
+function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, lastScrape, openPalette }) {
   const tabs = [
     { id: 'fresh', label: 'Fresh Finds' },
-    { id: 'competitor', label: 'Competitor' },
+    { id: 'competitor', label: 'Competitors' },
     { id: 'pipeline', label: 'Pipeline' },
     { id: 'settings', label: 'Control Room' },
   ];
+  const logout = () => fetch('/api/logout', { method: 'POST' }).then(() => { window.location.href = '/login'; });
   return (
-    <div style={s('position:sticky;top:0;z-index:40;display:flex;align-items:center;height:44px;padding:0 14px;gap:16px;background:#0B0C0E;border-bottom:1px solid rgba(255,255,255,.09)')}>
+    <div style={s('position:sticky;top:0;z-index:40;display:flex;align-items:center;height:44px;padding:0 14px;gap:14px;background:#0B0C0E;border-bottom:1px solid rgba(255,255,255,.09)')}>
       <div style={s('display:flex;align-items:center;gap:9px;padding-right:16px;border-right:1px solid rgba(255,255,255,.08);height:100%')}>
         <div style={s('width:15px;height:15px;border:1.5px solid #E8A33D;transform:rotate(45deg)')} />
         <span style={s(`font-family:${MONO};font-size:12px;font-weight:600;letter-spacing:1.5px;color:#E7E8EA`)}>ADINTEL</span>
@@ -188,13 +204,17 @@ function TopChrome({ view, setView, query, setQuery, lastScrape, openPalette }) 
         ))}
       </div>
       <div style={s('flex:1')} />
-      <div style={s('display:flex;align-items:center;gap:8px;height:26px;padding:0 10px;min-width:280px;background:#101216;border:1px solid rgba(255,255,255,.08)')}>
-        <span style={s('color:#5A5E64;font-size:12px')}>&#8250;</span>
-        <input id="ai-search" value={query} onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search anything: page, domain, copy, country, vertical..."
-          style={s('flex:1;background:transparent;border:none;outline:none;color:#E7E8EA;font-size:12px')} />
-        <kbd style={s(`font-family:${MONO};font-size:10px;color:#5A5E64;border:1px solid rgba(255,255,255,.1);padding:1px 4px`)}>/</kbd>
-      </div>
+      {showSearch && (
+        <div style={s('display:flex;align-items:center;gap:8px;height:26px;padding:0 10px;min-width:300px;background:#101216;border:1px solid rgba(255,255,255,.08)')}>
+          <span style={s('color:#5A5E64;font-size:12px')}>&#8250;</span>
+          <input id="ai-search" value={query} onChange={(e) => setQuery(e.target.value)}
+            placeholder={placeholder}
+            style={s('flex:1;background:transparent;border:none;outline:none;color:#E7E8EA;font-size:12px')} />
+          {query
+            ? <button onClick={() => setQuery('')} style={s('background:none;border:none;color:#5A5E64;cursor:pointer;font-size:14px;line-height:1;padding:0')}>&#215;</button>
+            : <kbd style={s(`font-family:${MONO};font-size:10px;color:#5A5E64;border:1px solid rgba(255,255,255,.1);padding:1px 4px`)}>/</kbd>}
+        </div>
+      )}
       <button onClick={openPalette}
         style={s(`display:flex;align-items:center;gap:6px;height:26px;padding:0 9px;background:#101216;border:1px solid rgba(255,255,255,.08);color:#8A8E94;font-family:${MONO};font-size:10.5px;cursor:pointer`)}>
         &#8984;K
@@ -204,6 +224,8 @@ function TopChrome({ view, setView, query, setQuery, lastScrape, openPalette }) 
         <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94`)}>LIVE</span>
         <span style={s(`font-family:${MONO};font-size:10.5px;color:#5A5E64`)}>{lastScrape}</span>
       </div>
+      <button onClick={logout} title="Log out"
+        style={s(`background:none;border:1px solid rgba(255,255,255,.1);color:#6C7076;font-family:${MONO};font-size:10px;padding:4px 8px;cursor:pointer`)}>EXIT</button>
     </div>
   );
 }

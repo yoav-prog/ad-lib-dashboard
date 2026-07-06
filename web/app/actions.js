@@ -2,6 +2,7 @@
 
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
+import { requireAuth } from '@/lib/auth';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'cadence', 'enabled', 'feed'];
@@ -13,6 +14,7 @@ function pick(patch, allowed) {
 }
 
 export async function updateAdWorkflow(adId, patch) {
+  await requireAuth();
   const set = pick(patch, AD_FIELDS);
   if (!Object.keys(set).length) return;
   const sql = getSql();
@@ -21,6 +23,7 @@ export async function updateAdWorkflow(adId, patch) {
 }
 
 export async function addDomain(data) {
+  await requireAuth();
   const sql = getSql();
   await sql`
     insert into domains (query, country, active_status, max_ads, cadence, feed)
@@ -32,6 +35,7 @@ export async function addDomain(data) {
 }
 
 export async function updateDomain(id, patch) {
+  await requireAuth();
   const set = pick(patch, DOMAIN_FIELDS);
   if (!Object.keys(set).length) return;
   const sql = getSql();

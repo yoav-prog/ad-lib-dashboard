@@ -11,7 +11,7 @@ const COLS = [
   { id: 'published', dotBorder: A, dotBg: A, accent: A },
 ];
 
-export default function PipelineView({ ads, update, openDetail }) {
+export default function PipelineView({ ads, update, openDetail, matchesQuery = () => true }) {
   const [dragId, setDragId] = useState(null);
 
   return (
@@ -22,7 +22,7 @@ export default function PipelineView({ ads, update, openDetail }) {
       </div>
       <div style={s('display:flex;gap:1px;background:rgba(255,255,255,.06);min-height:calc(100vh - 89px)')}>
         {COLS.map((col) => {
-          const cards = ads.filter((a) => (a.status || 'new') === col.id);
+          const cards = ads.filter((a) => (a.status || 'new') === col.id && matchesQuery(a));
           return (
             <div key={col.id}
               onDragOver={(e) => e.preventDefault()}

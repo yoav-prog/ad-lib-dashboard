@@ -7,7 +7,7 @@ import { addDomain, updateDomain } from '@/app/actions';
 
 const CADENCES = ['hourly', 'daily', 'weekly', 'paused'];
 
-export default function ControlRoom({ ads, domains, runs, NOW }) {
+export default function ControlRoom({ ads, domains, runs, NOW, query = '' }) {
   const [q, setQ] = useState('');
   const [country, setCountry] = useState('ALL');
   const [maxAds, setMaxAds] = useState(100);
@@ -15,6 +15,9 @@ export default function ControlRoom({ ads, domains, runs, NOW }) {
 
   const adsByDomain = {};
   ads.forEach((a) => { if (a.domain) adsByDomain[a.domain] = (adsByDomain[a.domain] || 0) + 1; });
+
+  const term = (query || '').trim().toLowerCase();
+  const shownDomains = term ? domains.filter((d) => (d.query || '').toLowerCase().includes(term)) : domains;
 
   const lastCompleted = runs.find((r) => r.status === 'completed' && r.finished_at);
   const dueTimes = domains.filter((d) => d.enabled && d.cadence !== 'paused' && d.next_run_at).map((d) => d.next_run_at).sort();
@@ -82,8 +85,11 @@ export default function ControlRoom({ ads, domains, runs, NOW }) {
           {domains.length === 0 && (
             <div style={s('padding:22px 14px;text-align:center;color:#5A5E64;font-size:12px')}>No domains yet. Add one above to start tracking a competitor.</div>
           )}
+          {domains.length > 0 && shownDomains.length === 0 && (
+            <div style={s('padding:22px 14px;text-align:center;color:#5A5E64;font-size:12px')}>No domains match your search.</div>
+          )}
 
-          {domains.map((d) => (
+          {shownDomains.map((d) => (
             <div key={d.id} style={s('display:flex;align-items:center;height:44px;padding:0 14px;border-bottom:1px solid rgba(255,255,255,.045)')}>
               <div style={s('flex:1;min-width:0')}>
                 <div style={s('font-size:12px;color:#E7E8EA;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{d.query}</div>
