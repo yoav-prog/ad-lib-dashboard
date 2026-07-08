@@ -22,6 +22,56 @@ export async function updateAdWorkflow(adId, patch) {
   revalidatePath('/');
 }
 
+export async function deleteAds(ids) {
+  await requireAdmin();
+  if (!Array.isArray(ids) || !ids.length) return;
+  const sql = getSql();
+  await sql`delete from ads where ad_archive_id = any(${ids})`;
+  revalidatePath('/');
+}
+
+export async function bulkUpdateAds(ids, patch) {
+  await requireAdmin();
+  if (!Array.isArray(ids) || !ids.length) return;
+  const set = pick(patch, AD_FIELDS);
+  if (!Object.keys(set).length) return;
+  const sql = getSql();
+  await sql`update ads set ${sql(set)} where ad_archive_id = any(${ids})`;
+  revalidatePath('/');
+}
+
+// Re-scrape the domains behind the given ads so their rank / last_seen refresh.
+// The pipeline is per-query, so this marks the matching tracked domains due (and
+// dispatches the workflow if configured); the scrape then upserts fresh data.
+export async function refreshAds(ids) {
+  await requireAdmin();
+  if (!Array.isArray(ids) || !ids.length) return { ok: false, matched: 0 };
+  const sql = getSql();
+  const rows = await sql`select distinct domain from ads where ad_archive_id = any(${ids}) and domain is not null`;
+  const doms = rows.map((r) => r.domain);
+  if (!doms.length) return { ok: false, matched: 0, reason: 'no-domain' };
+  const upd = await sql`update domains set next_run_at = now() where query = any(${doms}) and enabled returning query`;
+  revalidatePath('/');
+  if (!upd.length) return { ok: false, matched: 0, reason: 'not-tracked', doms };
+
+  const token = process.env.GH_DISPATCH_TOKEN;
+  const repo = process.env.GH_REPO;
+  let dispatched = false;
+  if (token && repo) {
+    try {
+      const r = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/scrape.yml/dispatches`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+        body: JSON.stringify({ ref: 'main' }),
+      });
+      dispatched = r.ok;
+    } catch {
+      // ignore
+    }
+  }
+  return { ok: true, matched: upd.length, dispatched, doms };
+}
+
 export async function addDomain(data) {
   await requireAdmin();
   const sql = getSql();

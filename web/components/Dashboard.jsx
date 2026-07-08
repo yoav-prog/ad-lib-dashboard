@@ -9,7 +9,7 @@ import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
-import { updateAdWorkflow, triggerScrape, markRunFailed } from '@/app/actions';
+import { updateAdWorkflow, triggerScrape, markRunFailed, deleteAds, bulkUpdateAds, refreshAds } from '@/app/actions';
 
 export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
@@ -33,6 +33,29 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
     setAds((prev) => prev.map((a) => (a.ad_archive_id === id ? { ...a, ...patch } : a)));
   const commit = (id, patch) => { if (!canEdit) return; updateAdWorkflow(id, patch).catch((e) => console.error('save failed', e)); };
   const update = (id, patch) => { if (!canEdit) return; updateLocal(id, patch); commit(id, patch); };
+
+  // ── bulk selection ──────────────────────────────────────────────────────────
+  const [selected, setSelected] = useState(() => new Set());
+  const toggleSel = (id) => setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const setSelection = (ids) => setSelected(new Set(ids));
+  const clearSel = () => setSelected(new Set());
+  const bulkDelete = async () => {
+    if (!canEdit || !selected.size) return;
+    const ids = [...selected];
+    setAds((prev) => prev.filter((a) => !selected.has(a.ad_archive_id)));
+    clearSel();
+    try { await deleteAds(ids); } catch (e) { console.error(e); }
+  };
+  const bulkSet = async (patch) => {
+    if (!canEdit || !selected.size) return;
+    const ids = [...selected];
+    setAds((prev) => prev.map((a) => (selected.has(a.ad_archive_id) ? { ...a, ...patch } : a)));
+    try { await bulkUpdateAds(ids, patch); } catch (e) { console.error(e); }
+  };
+  const bulkRefresh = async () => {
+    if (!canEdit || !selected.size) return { ok: false };
+    try { return await refreshAds([...selected]); } catch (e) { return { ok: false, reason: String(e) }; }
+  };
 
   // ── live run status ─────────────────────────────────────────────────────────
   // One poller for the whole dashboard, so the banner and the Control Room panel
@@ -237,6 +260,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
           selIndex={selIndex} setSelIndex={setSelIndex} openDetail={openDetail} lastRunStart={lastRunStart}
+          canEdit={canEdit} selected={selected} toggleSel={toggleSel} setSelection={setSelection} clearSel={clearSel} bulkDelete={bulkDelete} bulkSet={bulkSet} bulkRefresh={bulkRefresh}
         />
       )}
 
@@ -358,7 +382,12 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
 // ═════════════════════════════════════════════════════════════════════════════
 // FRESH FINDS
 // ═════════════════════════════════════════════════════════════════════════════
-function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart }) {
+function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh }) {
+  const selCount = selected ? selected.size : 0;
+  const filteredIds = filtered.map((a) => a.ad_archive_id);
+  const allSelected = filteredIds.length > 0 && selected && filteredIds.every((id) => selected.has(id));
+  const bulkBtn = s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:#C6C9CE;font-family:${MONO};font-size:10px;padding:4px 9px;cursor:pointer`);
+  const [bulkMsg, setBulkMsg] = useState('');
   const isFresh = (a) => (lastRunStart ? new Date(a.first_seen_at).getTime() >= lastRunStart : hoursSince(a.first_seen_at, NOW) <= 24);
   const [gsearch, setGsearch] = useState({});
   const uniq = (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
@@ -482,33 +511,58 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
         {/* feed */}
         <div style={s('flex:1;min-width:0;background:#0B0C0E;overflow-x:auto')}>
           <div style={s('display:flex;align-items:center;justify-content:space-between;height:34px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06)')}>
-            <div style={s('display:flex;align-items:center;gap:12px')}>
-              <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{pad(filtered.length)} <span style={s('color:#5A5E64')}>ads</span></span>
-              <span style={s('color:#2E3136')}>|</span>
-              <span style={s('font-size:10.5px;color:#5A5E64')}>sorted by</span>
-              {sortDefs.map((sd) => (
-                <button key={sd.id} onClick={() => setSort(sd.id)}
-                  style={s(`background:none;border:none;color:${sort === sd.id ? '#E7E8EA' : '#6C7076'};font-size:10.5px;letter-spacing:.3px;cursor:pointer`)}>
-                  {sd.label}{sort === sd.id ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}
-                </button>
-              ))}
-            </div>
-            <div style={s(`display:flex;align-items:center;gap:5px;font-family:${MONO};font-size:10px;color:#5A5E64`)}>
-              <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>J</kbd>
-              <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>K</kbd>
-              <span style={s('color:#45484D')}>move</span>
-              <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px;margin-left:6px')}>&#8629;</kbd>
-              <span style={s('color:#45484D')}>open</span>
-            </div>
+            {selCount > 0 && canEdit ? (
+              <div style={s('display:flex;align-items:center;gap:10px;width:100%')}>
+                <span style={s(`font-family:${MONO};font-size:11px;color:${A};font-variant-numeric:tabular-nums`)}>{selCount} selected</span>
+                <button onClick={clearSel} style={s(`background:none;border:none;color:#8A8E94;font-family:${MONO};font-size:10px;cursor:pointer`)}>CLEAR</button>
+                <span style={s('color:#2E3136')}>|</span>
+                <button onClick={() => bulkSet({ is_saved: true })} style={bulkBtn}>★ STAR</button>
+                <button onClick={() => bulkSet({ status: 'idea' })} style={bulkBtn}>IDEA</button>
+                <button onClick={() => bulkSet({ status: 'drafting' })} style={bulkBtn}>DRAFTING</button>
+                <button onClick={() => bulkSet({ status: 'published' })} style={bulkBtn}>PUBLISHED</button>
+                <button onClick={async () => { setBulkMsg('Refreshing...'); const r = await bulkRefresh(); setBulkMsg(r?.dispatched ? 'Refresh dispatched. Ranks update when the scrape finishes.' : r?.reason === 'not-tracked' ? 'Not from a tracked domain. Add it in Control Room to refresh.' : r?.matched ? 'Domain(s) marked due; the runner refreshes on its next tick.' : 'Nothing to refresh.'); }} style={bulkBtn}>&#8635; REFRESH</button>
+                <div style={s('flex:1;padding:0 12px;min-width:0')}><span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block')}>{bulkMsg}</span></div>
+                <button onClick={() => { if (confirm(`Delete ${selCount} ad(s)? This removes them from the database.`)) bulkDelete(); }}
+                  style={s(`background:none;border:1px solid rgba(255,120,120,.35);color:#ff8a80;font-family:${MONO};font-size:10px;padding:4px 10px;cursor:pointer`)}>DELETE {selCount}</button>
+              </div>
+            ) : (
+              <>
+                <div style={s('display:flex;align-items:center;gap:12px')}>
+                  <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{pad(filtered.length)} <span style={s('color:#5A5E64')}>ads</span></span>
+                  <span style={s('color:#2E3136')}>|</span>
+                  <span style={s('font-size:10.5px;color:#5A5E64')}>sorted by</span>
+                  {sortDefs.map((sd) => (
+                    <button key={sd.id} onClick={() => setSort(sd.id)}
+                      style={s(`background:none;border:none;color:${sort === sd.id ? '#E7E8EA' : '#6C7076'};font-size:10.5px;letter-spacing:.3px;cursor:pointer`)}>
+                      {sd.label}{sort === sd.id ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}
+                    </button>
+                  ))}
+                </div>
+                <div style={s(`display:flex;align-items:center;gap:5px;font-family:${MONO};font-size:10px;color:#5A5E64`)}>
+                  <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>J</kbd>
+                  <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>K</kbd>
+                  <span style={s('color:#45484D')}>move</span>
+                  <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px;margin-left:6px')}>&#8629;</kbd>
+                  <span style={s('color:#45484D')}>open</span>
+                </div>
+              </>
+            )}
           </div>
 
-          <div style={s('display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1040px')}>
+          <div style={s('display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1138px')}>
+            {canEdit && (
+              <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
+                <span onClick={() => (allSelected ? clearSel() : setSelection(filteredIds))} title="Select all"
+                  style={s(`width:13px;height:13px;border:1px solid ${allSelected ? A : 'rgba(255,255,255,.25)'};background:${allSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allSelected ? '✓' : ''}</span>
+              </div>
+            )}
             <div style={s('width:56px;flex-shrink:0')} />
             <div style={s('width:148px;flex-shrink:0')}>Page</div>
             <div style={s('width:132px;flex-shrink:0')}>Domain</div>
             <div style={s('flex:1;min-width:0')}>Headline</div>
             <div style={s('width:62px;flex-shrink:0;text-align:center')}>Format</div>
             <div style={s('width:46px;flex-shrink:0;text-align:right')}>Rank</div>
+            <div style={s('width:66px;flex-shrink:0;text-align:right')}>Updated</div>
             <div style={s('width:70px;flex-shrink:0;text-align:right')}>Days Run</div>
             <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>
             <div style={s('width:58px;flex-shrink:0;text-align:center')}>Country</div>
@@ -519,11 +573,17 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             const days = daysRunning(a, NOW);
             const fresh = isFresh(a);
             const sel = i === selIndex;
+            const isSel = selected ? selected.has(a.ad_archive_id) : false;
             const vid = isVideo(a);
             return (
               <div key={a.ad_archive_id} onClick={() => openDetail(a.ad_archive_id)} onMouseEnter={() => setSelIndex(i)}
-                style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:1040px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${sel ? 'rgba(232,163,61,.05)' : 'transparent'};cursor:pointer`)}>
-                <div style={s(`position:absolute;left:0;top:0;bottom:0;width:2px;background:${sel ? A : (fresh ? 'rgba(232,163,61,.5)' : 'transparent')}`)} />
+                style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:1138px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : (sel ? 'rgba(232,163,61,.05)' : 'transparent')};cursor:pointer`)}>
+                <div style={s(`position:absolute;left:0;top:0;bottom:0;width:2px;background:${isSel || sel ? A : (fresh ? 'rgba(232,163,61,.5)' : 'transparent')}`)} />
+                {canEdit && (
+                  <div onClick={(e) => { e.stopPropagation(); toggleSel(a.ad_archive_id); }} style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer')}>
+                    <span style={s(`width:13px;height:13px;border:1px solid ${isSel ? A : 'rgba(255,255,255,.22)'};background:${isSel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{isSel ? '✓' : ''}</span>
+                  </div>
+                )}
                 <div style={s('width:56px;flex-shrink:0;padding-right:12px')}><Thumb ad={a} size={44} /></div>
                 <div style={s('width:148px;flex-shrink:0;padding-right:12px;min-width:0;display:flex;align-items:center;gap:6px')}>
                   {fresh && <span style={s('width:6px;height:6px;border-radius:50%;background:#E8A33D;flex-shrink:0;animation:freshpulse 2.4s ease-in-out infinite')} />}
@@ -540,6 +600,9 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                 </div>
                 <div style={s('width:46px;flex-shrink:0;text-align:right')}>
                   <span style={s(`font-family:${MONO};font-size:12.5px;color:${a.rank != null && a.rank <= 3 ? A : '#B6B9BE'};font-variant-numeric:tabular-nums`)}>{a.rank != null ? a.rank : '-'}</span>
+                </div>
+                <div style={s('width:66px;flex-shrink:0;text-align:right')}>
+                  <span title={a.last_seen_at || ''} style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{a.last_seen_at ? relTime(NOW - new Date(a.last_seen_at).getTime()) : '-'}</span>
                 </div>
                 <div style={s('width:70px;flex-shrink:0;text-align:right')}>
                   {days >= 60 && <span title="Proven winner" style={s(`color:${A};font-size:10px;margin-right:3px`)}>★</span>}<span style={s(`font-family:${MONO};font-size:14px;color:${days >= 60 ? A : (days > 45 ? '#E7E8EA' : '#B6B9BE')};font-variant-numeric:tabular-nums`)}>{days}</span>
