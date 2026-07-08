@@ -460,10 +460,24 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
   const bulkBtn = s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:#C6C9CE;font-family:${MONO};font-size:10px;padding:4px 9px;cursor:pointer`);
   const [bulkMsg, setBulkMsg] = useState('');
   const isFresh = (a) => (lastRunStart ? new Date(a.first_seen_at).getTime() >= lastRunStart : hoursSince(a.first_seen_at, NOW) <= 24);
+
+  // Thumbnail size is user-controlled: these creatives are text-heavy, so a bigger
+  // preview (shown whole, not cropped) is often needed to actually read them. S is
+  // the tidy default; M and L trade rows-per-screen for legibility.
+  const IMG_SIZES = [
+    { key: 's', label: 'S', px: 44, fit: 'cover', hint: 'small' },
+    { key: 'm', label: 'M', px: 120, fit: 'contain', hint: 'medium' },
+    { key: 'l', label: 'L', px: 220, fit: 'contain', hint: 'large' },
+  ];
+  const [imgKey, setImgKey] = useState('s');
+  const img = IMG_SIZES.find((z) => z.key === imgKey) || IMG_SIZES[0];
+  const thumbColW = img.px + 12; // image box + the cell's right padding
+
   // The Slug column is Tarzo-only, so it rides along only while the current view
   // actually contains a Tarzo row; the table widens to make room when it does.
+  // Enlarging the thumbnail widens the table by the same delta so nothing crushes.
   const showSlug = filtered.some(isTarzo);
-  const tableMinW = showSlug ? 1550 : 1400;
+  const tableMinW = (showSlug ? 1550 : 1400) + (img.px - 44);
   const [gsearch, setGsearch] = useState({});
   const uniq = (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
   const countBy = (key, val) => ads.filter((a) => a[key] === val).length;
@@ -637,6 +651,15 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                   ))}
                 </div>
                 <div style={s(`display:flex;align-items:center;gap:5px;font-family:${MONO};font-size:10px;color:#5A5E64`)}>
+                  <span style={s('color:#5A5E64;letter-spacing:.3px')}>images</span>
+                  <div style={s('display:flex;gap:1px;background:rgba(255,255,255,.08)')}>
+                    {IMG_SIZES.map((z) => (
+                      <button key={z.key} onClick={() => setImgKey(z.key)}
+                        title={`Preview images ${z.hint}`}
+                        style={s(`padding:3px 7px;background:${imgKey === z.key ? '#1A1C20' : '#0D0E11'};border:none;color:${imgKey === z.key ? A : '#8A8E94'};font-family:${MONO};font-size:10px;cursor:pointer`)}>{z.label}</button>
+                    ))}
+                  </div>
+                  <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <button onClick={exportCsv} disabled={!filtered.length}
                     title="Download the current view (filters applied) as a CSV"
                     style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>↓ EXPORT CSV</button>
@@ -658,7 +681,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                   style={s(`width:13px;height:13px;border:1px solid ${allSelected ? A : 'rgba(255,255,255,.25)'};background:${allSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allSelected ? '✓' : ''}</span>
               </div>
             )}
-            <div style={s('width:56px;flex-shrink:0')} />
+            <div style={s(`width:${thumbColW}px;flex-shrink:0`)} />
             <div style={s('width:148px;flex-shrink:0')}>Page</div>
             <div style={s('width:132px;flex-shrink:0')}>Domain</div>
             <div style={s('flex:1;min-width:0')}>Headline</div>
@@ -691,7 +714,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                     <span style={s(`width:13px;height:13px;border:1px solid ${isSel ? A : 'rgba(255,255,255,.22)'};background:${isSel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{isSel ? '✓' : ''}</span>
                   </div>
                 )}
-                <div style={s('width:56px;flex-shrink:0;padding-right:12px')}><Thumb ad={a} size={44} /></div>
+                <div style={s(`width:${thumbColW}px;flex-shrink:0;padding-right:12px`)}><Thumb ad={a} size={img.px} fit={img.fit} /></div>
                 <CopyCell value={a.page_name} style={s('width:148px;flex-shrink:0;padding-right:12px;min-width:0;display:flex;align-items:center;gap:6px')}>
                   {fresh && <span style={s('width:6px;height:6px;border-radius:50%;background:#E8A33D;flex-shrink:0;animation:freshpulse 2.4s ease-in-out infinite')} />}
                   <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{a.page_name || '(unknown)'}</span>
