@@ -80,50 +80,69 @@ export function fmtDate(iso) {
   return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${String(d.getFullYear()).slice(2)}`;
 }
 
-// The one column set shared by every Fresh Finds export (CSV download and Google
-// Sheet). Each entry is [header, (ad, now) => value]. Keep this list as the single
-// source of truth so the CSV and the Sheet never drift apart. Dates go out as
-// YYYY-MM-DD so they sort correctly in a spreadsheet.
-export const EXPORT_COLUMNS = [
-  ['Page', (a) => a.page_name],
-  ['Domain', (a) => a.domain],
-  ['Headline', (a) => a.title || a.caption || a.body_text],
-  ['Body', (a) => a.body_text],
-  ['Caption', (a) => a.caption],
-  ['CTA', (a) => a.cta_text],
-  ['Link', (a) => a.link_url],
-  ['Slug', (a) => tarzoSlug(a)],
-  ['Format', (a) => a.display_format],
-  ['Rank', (a) => (a.rank != null ? a.rank : '')],
-  ['Days Running', (a, now) => daysRunning(a, now)],
-  ['First Added Date', (a) => (a.first_seen_at ? a.first_seen_at.slice(0, 10) : '')],
-  ['Last Seen', (a) => (a.last_seen_at ? a.last_seen_at.slice(0, 10) : '')],
-  ['Vertical', (a) => a.vertical],
-  ['Country', (a) => a.country],
-  ['Language', (a) => a.language],
-  ['Feed', (a) => a.feed],
-  ['Status', (a) => a.status],
-  ['Ad ID', (a) => a.ad_archive_id],
+// The master catalog of columns available to the Fresh Finds export, in canonical
+// order. Each column has a kind ('text' plain string, 'image' rendered preview,
+// 'link' clickable URL), a pure `get(ad, now)` accessor, and Google-Sheet layout
+// hints (pixel width, horizontal alignment, whether long copy wraps). The Sheet
+// export and the CSV both read this list, so the two never drift. Language goes out
+// as an ISO code (langCode), and dates as YYYY-MM-DD so a spreadsheet sorts them.
+export const SHEET_COLUMNS = [
+  { key: 'preview',   header: 'Preview',          kind: 'image', get: (a) => thumbOf(a),                                            width: 130, align: 'CENTER', wrap: false },
+  { key: 'image_url', header: 'Image URL',        kind: 'link',  get: (a) => thumbOf(a),                                            width: 90,  align: 'LEFT',   wrap: false },
+  { key: 'page',      header: 'Page',             kind: 'text',  get: (a) => a.page_name,                                           width: 130, align: 'LEFT',   wrap: false },
+  { key: 'domain',    header: 'Domain',           kind: 'text',  get: (a) => a.domain,                                              width: 140, align: 'LEFT',   wrap: false },
+  { key: 'headline',  header: 'Headline',         kind: 'text',  get: (a) => a.title || a.caption || a.body_text,                   width: 260, align: 'LEFT',   wrap: true  },
+  { key: 'body',      header: 'Body',             kind: 'text',  get: (a) => a.body_text,                                           width: 300, align: 'LEFT',   wrap: true  },
+  { key: 'caption',   header: 'Caption',          kind: 'text',  get: (a) => a.caption,                                             width: 180, align: 'LEFT',   wrap: true  },
+  { key: 'cta',       header: 'CTA',              kind: 'text',  get: (a) => a.cta_text,                                            width: 90,  align: 'LEFT',   wrap: false },
+  { key: 'link',      header: 'Link',             kind: 'text',  get: (a) => a.link_url,                                            width: 170, align: 'LEFT',   wrap: false },
+  { key: 'slug',      header: 'Slug',             kind: 'text',  get: (a) => tarzoSlug(a),                                          width: 150, align: 'LEFT',   wrap: false },
+  { key: 'format',    header: 'Format',           kind: 'text',  get: (a) => a.display_format,                                      width: 70,  align: 'CENTER', wrap: false },
+  { key: 'rank',      header: 'Rank',             kind: 'text',  get: (a) => (a.rank != null ? a.rank : ''),                        width: 55,  align: 'CENTER', wrap: false },
+  { key: 'days',      header: 'Days Running',     kind: 'text',  get: (a, now) => daysRunning(a, now),                              width: 80,  align: 'CENTER', wrap: false },
+  { key: 'added',     header: 'First Added Date', kind: 'text',  get: (a) => (a.first_seen_at ? a.first_seen_at.slice(0, 10) : ''),  width: 100, align: 'CENTER', wrap: false },
+  { key: 'last_seen', header: 'Last Seen',        kind: 'text',  get: (a) => (a.last_seen_at ? a.last_seen_at.slice(0, 10) : ''),    width: 100, align: 'CENTER', wrap: false },
+  { key: 'vertical',  header: 'Vertical',         kind: 'text',  get: (a) => a.vertical,                                            width: 130, align: 'LEFT',   wrap: false },
+  { key: 'country',   header: 'Country',          kind: 'text',  get: (a) => a.country,                                             width: 70,  align: 'CENTER', wrap: false },
+  { key: 'language',  header: 'Language',         kind: 'text',  get: (a) => langCode(a.language),                                  width: 80,  align: 'CENTER', wrap: false },
+  { key: 'feed',      header: 'Feed',             kind: 'text',  get: (a) => a.feed,                                                width: 90,  align: 'LEFT',   wrap: false },
+  { key: 'status',    header: 'Status',           kind: 'text',  get: (a) => a.status,                                              width: 80,  align: 'CENTER', wrap: false },
+  { key: 'ad_id',     header: 'Ad ID',            kind: 'text',  get: (a) => a.ad_archive_id,                                       width: 150, align: 'LEFT',   wrap: false },
 ];
 
-// Build a CSV string from ad rows. Every field is quoted and inner quotes doubled,
-// so commas, quotes, and newlines in ad copy never break the layout.
+// Column keys + headers for the export picker (no functions, safe to pass to the client).
+export const SHEET_COLUMN_META = SHEET_COLUMNS.map(({ key, header }) => ({ key, header }));
+export const DEFAULT_SHEET_COLUMN_KEYS = SHEET_COLUMNS.map((c) => c.key);
+
+const cellText = (c, a, now) => { const v = c.get(a, now); return v == null ? '' : String(v); };
+
+// Build a CSV string from ad rows. Uses the same catalog as the Sheet, minus the
+// image-preview column (a CSV can't render an image; the Image URL column carries the
+// link). Every field is quoted and inner quotes doubled so commas, quotes, and
+// newlines in ad copy never break the layout.
 export function buildCsv(rows, now) {
+  const cols = SHEET_COLUMNS.filter((c) => c.kind !== 'image');
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [EXPORT_COLUMNS.map((c) => esc(c[0])).join(',')];
-  for (const a of rows) lines.push(EXPORT_COLUMNS.map((c) => esc(c[1](a, now))).join(','));
+  const lines = [cols.map((c) => esc(c.header)).join(',')];
+  for (const a of rows) lines.push(cols.map((c) => esc(cellText(c, a, now))).join(','));
   return lines.join('\r\n');
 }
 
-// Same columns as the CSV, shaped for the Google Sheets API: a header row plus a 2D
-// array of stringified cell values (the API takes strings; nulls become '').
-export function buildSheetValues(rows, now) {
-  const header = EXPORT_COLUMNS.map((c) => c[0]);
-  const values = rows.map((a) => EXPORT_COLUMNS.map((c) => {
-    const v = c[1](a, now);
-    return v == null ? '' : String(v);
+// Presentation-neutral data for the Sheet export: the selected columns (canonical
+// order) plus each row's cells tagged by kind, so the Sheets layer can render text,
+// an in-cell image, or a link without knowing the ad shape. `selectedKeys` may arrive
+// unordered or partial; unknown keys are ignored and canonical order is preserved.
+export function buildSheetData(ads, now, selectedKeys) {
+  const want = new Set(selectedKeys && selectedKeys.length ? selectedKeys : DEFAULT_SHEET_COLUMN_KEYS);
+  const cols = SHEET_COLUMNS.filter((c) => want.has(c.key));
+  const columns = cols.map((c) => ({ key: c.key, header: c.header, kind: c.kind, width: c.width, align: c.align, wrap: c.wrap }));
+  const rows = ads.map((a) => ({
+    cells: cols.map((c) => {
+      if (c.kind === 'image' || c.kind === 'link') return { kind: c.kind, value: c.get(a, now) || '' };
+      return { kind: 'text', value: cellText(c, a, now) };
+    }),
   }));
-  return { header, values };
+  return { columns, rows };
 }
 
 // Accept either a bare spreadsheet id or a full Google Sheets URL and return the id.

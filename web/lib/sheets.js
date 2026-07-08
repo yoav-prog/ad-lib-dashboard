@@ -94,24 +94,41 @@ async function authed(token, url, init = {}) {
   return fetch(url, { ...init, headers: { Authorization: `Bearer ${token}`, ...(init.headers || {}) } });
 }
 
-// Ensure the named tab exists; create it if missing. Returns true if it was created.
-async function ensureTab(token, id, tabName) {
-  const res = await authed(token, `${SHEETS_API}/${encodeURIComponent(id)}?fields=sheets.properties.title`);
-  if (!res.ok) await apiFail(res, 'opening the spreadsheet');
-  const meta = await res.json();
-  const titles = (meta.sheets || []).map((s) => s.properties?.title);
-  if (titles.includes(tabName)) return false;
-
-  const add = await authed(token, `${SHEETS_API}/${encodeURIComponent(id)}:batchUpdate`, {
+async function batchUpdate(token, id, requests) {
+  const res = await authed(token, `${SHEETS_API}/${encodeURIComponent(id)}:batchUpdate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requests: [{ addSheet: { properties: { title: tabName } } }] }),
+    body: JSON.stringify({ requests }),
   });
-  if (!add.ok) await apiFail(add, `creating the tab "${tabName}"`);
-  return true;
+  if (!res.ok) await apiFail(res, 'updating the spreadsheet');
+  return res.json();
 }
 
-// Every existing row of the tab (whole used range). Empty array if the tab is blank.
+// Sheet metadata we need up front: each tab's id/title/size and any banded ranges
+// (so we can clear and re-apply banding). Doubles as the access/existence check.
+async function getSheetMeta(token, id) {
+  const fields = 'sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),bandedRanges(bandedRangeId))';
+  const res = await authed(token, `${SHEETS_API}/${encodeURIComponent(id)}?fields=${encodeURIComponent(fields)}`);
+  if (!res.ok) await apiFail(res, 'opening the spreadsheet');
+  const data = await res.json();
+  return (data.sheets || []).map((s) => ({
+    sheetId: s.properties?.sheetId,
+    title: s.properties?.title,
+    rowCount: s.properties?.gridProperties?.rowCount || 0,
+    columnCount: s.properties?.gridProperties?.columnCount || 0,
+    bandedRanges: s.bandedRanges || [],
+  }));
+}
+
+async function addTab(token, id, title, columnCount) {
+  const out = await batchUpdate(token, id, [{
+    addSheet: { properties: { title, gridProperties: { columnCount: Math.max(26, columnCount) } } },
+  }]);
+  const props = out.replies?.[0]?.addSheet?.properties || {};
+  return { sheetId: props.sheetId, title: props.title, rowCount: props.gridProperties?.rowCount || 1000, columnCount: props.gridProperties?.columnCount || 26, bandedRanges: [] };
+}
+
+// Every existing row of the tab (whole used range), for dedupe. Empty when blank.
 async function readRows(token, id, tabName) {
   const range = encodeURIComponent(a1Tab(tabName));
   const res = await authed(token, `${SHEETS_API}/${encodeURIComponent(id)}/values/${range}?majorDimension=ROWS`);
@@ -119,43 +136,98 @@ async function readRows(token, id, tabName) {
   return (await res.json()).values || [];
 }
 
-async function appendRows(token, id, tabName, values) {
-  const range = encodeURIComponent(`${a1Tab(tabName)}!A1`);
-  const res = await authed(
-    token,
-    `${SHEETS_API}/${encodeURIComponent(id)}/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ majorDimension: 'ROWS', values }) },
-  );
-  if (!res.ok) await apiFail(res, 'appending rows');
-  return res.json();
+// ── Cell + formatting builders ────────────────────────────────────────────────
+const rng = (sheetId, r0, r1, c0, c1) => ({ sheetId, startRowIndex: r0, endRowIndex: r1, startColumnIndex: c0, endColumnIndex: c1 });
+const rgb = (r, g, b) => ({ red: r, green: g, blue: b });
+const HEADER_BG = rgb(0.102, 0.110, 0.125); // dark charcoal, matches the command-center look
+const HEADER_FG = rgb(1, 1, 1);
+const BAND_A = rgb(1, 1, 1);
+const BAND_B = rgb(0.953, 0.957, 0.965); // faint gray for alternating rows
+const HEADER_H = 30;
+const ROW_H = 96; // tall enough to show an image preview
+
+// Only emit an image/link formula for a real http(s) URL; escape any quotes for the
+// formula string literal. Anything else becomes a blank cell (never a stray formula).
+function safeUrl(v) {
+  const u = String(v || '').trim();
+  if (!/^https?:\/\//i.test(u)) return null;
+  return u.replace(/"/g, '""');
 }
 
-// Append `rows` (2D string array) under `header` to the given sheet/tab, skipping any
-// row whose Ad ID already appears in the tab. Writes the header only when the tab is
-// empty. Creates the tab if it does not exist. Returns a summary of what happened.
-export async function appendRowsToSheet({ spreadsheetId, tabName, header, rows }, nowMs) {
+function cellData(cell) {
+  if (cell.kind === 'image') {
+    const u = safeUrl(cell.value);
+    return { userEnteredValue: u ? { formulaValue: `=IMAGE("${u}",1)` } : { stringValue: '' } };
+  }
+  if (cell.kind === 'link') {
+    const u = safeUrl(cell.value);
+    return { userEnteredValue: u ? { formulaValue: `=HYPERLINK("${u}","open")` } : { stringValue: '' } };
+  }
+  return { userEnteredValue: { stringValue: String(cell.value ?? '') } };
+}
+
+// Re-apply the full look to the whole used range every export, so the sheet stays
+// consistent as rows accumulate: frozen header + first column, styled header, per-
+// column width/alignment/wrap, tall rows for previews, and refreshed row banding.
+function formatRequests(sheetId, columns, totalRows, oldBandingIds) {
+  const N = columns.length;
+  const reqs = [
+    { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 1, frozenColumnCount: 1 } }, fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount' } },
+    { repeatCell: { range: rng(sheetId, 0, 1, 0, N), cell: { userEnteredFormat: { backgroundColor: HEADER_BG, textFormat: { bold: true, foregroundColor: HEADER_FG }, horizontalAlignment: 'LEFT', verticalAlignment: 'MIDDLE', wrapStrategy: 'CLIP' } }, fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)' } },
+    { updateDimensionProperties: { range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: HEADER_H }, fields: 'pixelSize' } },
+  ];
+  if (totalRows > 1) {
+    reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: 'ROWS', startIndex: 1, endIndex: totalRows }, properties: { pixelSize: ROW_H }, fields: 'pixelSize' } });
+  }
+  columns.forEach((c, i) => {
+    reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: i, endIndex: i + 1 }, properties: { pixelSize: c.width }, fields: 'pixelSize' } });
+    if (totalRows > 1) {
+      reqs.push({ repeatCell: { range: rng(sheetId, 1, totalRows, i, i + 1), cell: { userEnteredFormat: { verticalAlignment: 'MIDDLE', horizontalAlignment: c.align, wrapStrategy: c.wrap ? 'WRAP' : 'CLIP' } }, fields: 'userEnteredFormat(verticalAlignment,horizontalAlignment,wrapStrategy)' } });
+    }
+  });
+  for (const id of oldBandingIds) reqs.push({ deleteBanding: { bandedRangeId: id } });
+  reqs.push({ addBanding: { bandedRange: { range: rng(sheetId, 0, totalRows, 0, N), rowProperties: { headerColor: HEADER_BG, firstBandColor: BAND_A, secondBandColor: BAND_B } } } });
+  return reqs;
+}
+
+// Append the selected columns for `rows` to the named sheet/tab and re-apply the full
+// formatting. New rows are added; rows already present (matched by the Ad ID column,
+// when it is included) are skipped. The header is written only when the tab is empty,
+// and the tab is created if missing. `columns` and `rows` come from ui.buildSheetData.
+export async function appendRowsToSheet({ spreadsheetId, tabName, columns, rows }, nowMs) {
   const token = await getAccessToken(nowMs);
-  const created = await ensureTab(token, spreadsheetId, tabName);
+  const sheets = await getSheetMeta(token, spreadsheetId);
+  let sheet = sheets.find((s) => s.title === tabName);
+  let created = false;
+  if (!sheet) { sheet = await addTab(token, spreadsheetId, tabName, columns.length); created = true; }
+
   const existing = created ? [] : await readRows(token, spreadsheetId, tabName);
   const hasHeader = existing.length > 0;
 
-  // Dedupe by the Ad ID column, matched by header name so a reordered sheet still works.
-  const adCol = header.indexOf('Ad ID');
+  // Dedupe by the Ad ID column when it is part of the export, matched by header name
+  // so a reordered sheet still works. Without it, every row is appended.
+  const adCol = columns.findIndex((c) => c.header === 'Ad ID');
   const seen = new Set();
   if (hasHeader && adCol >= 0) {
-    const existingAdCol = existing[0].indexOf('Ad ID');
-    if (existingAdCol >= 0) {
-      for (let i = 1; i < existing.length; i++) {
-        const v = existing[i][existingAdCol];
-        if (v) seen.add(String(v));
-      }
-    }
+    const eCol = existing[0].indexOf('Ad ID');
+    if (eCol >= 0) for (let i = 1; i < existing.length; i++) if (existing[i][eCol]) seen.add(String(existing[i][eCol]));
   }
-  const fresh = adCol >= 0 ? rows.filter((r) => !seen.has(String(r[adCol]))) : rows;
+  const fresh = adCol >= 0 ? rows.filter((r) => !seen.has(String(r.cells[adCol].value))) : rows;
+  if (hasHeader && !fresh.length) return { appended: 0, skipped: rows.length, created, wroteHeader: false };
 
-  const toWrite = hasHeader ? fresh : [header, ...fresh];
-  if (!toWrite.length) return { appended: 0, skipped: rows.length, created, wroteHeader: false };
+  const headerRow = { values: columns.map((c) => ({ userEnteredValue: { stringValue: c.header } })) };
+  const dataRows = fresh.map((r) => ({ values: r.cells.map(cellData) }));
+  const toAppend = hasHeader ? dataRows : [headerRow, ...dataRows];
+  const totalRows = existing.length + toAppend.length;
 
-  await appendRows(token, spreadsheetId, tabName, toWrite);
+  const requests = [
+    { appendCells: { sheetId: sheet.sheetId, rows: toAppend, fields: 'userEnteredValue' } },
+    ...formatRequests(sheet.sheetId, columns, totalRows, sheet.bandedRanges.map((b) => b.bandedRangeId)),
+  ];
+  // Widen the grid first if the tab has fewer columns than we are about to write.
+  if (sheet.columnCount && sheet.columnCount < columns.length) {
+    requests.unshift({ updateSheetProperties: { properties: { sheetId: sheet.sheetId, gridProperties: { columnCount: columns.length } }, fields: 'gridProperties.columnCount' } });
+  }
+  await batchUpdate(token, spreadsheetId, requests);
   return { appended: fresh.length, skipped: rows.length - fresh.length, created, wroteHeader: !hasHeader };
 }

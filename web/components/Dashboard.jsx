@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, buildCsv, parseSheetId, langCode } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, buildCsv, parseSheetId, langCode, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
@@ -799,37 +799,63 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
 // ═════════════════════════════════════════════════════════════════════════════
 const SHEET_LS_ID = 'adintel.export.sheetId';
 const SHEET_LS_TAB = 'adintel.export.tab';
+const SHEET_LS_COLS = 'adintel.export.cols';
 // Reasons the server action can return, mapped to plain messages. permission/error
 // carry their own already-actionable message, so they are not listed here.
 const SHEET_REASON_MSG = {
   'bad-id': 'That does not look like a valid Sheet ID or URL.',
   'no-tab': 'Enter a tab name.',
   'no-rows': 'Nothing to export in the current view.',
+  'no-columns': 'Pick at least one column to export.',
   'not-configured': 'Sheet export is not set up on the server yet (missing service-account credentials).',
 };
 
-// Modal: send the current Fresh Finds view to a Google Sheet the user names by id
-// (or pasted URL) + tab. Remembers the last id + tab in localStorage so a repeat
-// export is one field-free click. Only the ad ids are sent; the server re-reads the
-// rows and appends the new ones. Styled to match the AI-draft modal above.
+// Read the remembered column selection, keeping only keys we still know. Falls back
+// to every column the first time or if the stored value is unusable.
+function loadCols() {
+  try {
+    const arr = JSON.parse(window.localStorage.getItem(SHEET_LS_COLS));
+    if (Array.isArray(arr)) {
+      const known = new Set(DEFAULT_SHEET_COLUMN_KEYS);
+      const kept = arr.filter((k) => known.has(k));
+      if (kept.length) return kept;
+    }
+  } catch { /* ignore */ }
+  return [...DEFAULT_SHEET_COLUMN_KEYS];
+}
+
+// Modal: send the current Fresh Finds view to a Google Sheet the user names by id (or
+// pasted URL) + tab, choosing which columns go out. The rows land with an image
+// preview and link, styled for reading; rows already in the tab are skipped. The id,
+// tab, and column choice are remembered in localStorage so a repeat export is nearly
+// field-free. Only the ad ids + column keys are sent; the server re-reads the rows.
+// Styled to match the AI-draft modal above.
 function SheetExportModal({ filtered, saEmail, onClose }) {
   const ls = (k, d) => { try { return (typeof window !== 'undefined' && window.localStorage.getItem(k)) || d; } catch { return d; } };
   const [sheetId, setSheetId] = useState(() => ls(SHEET_LS_ID, ''));
   const [tab, setTab] = useState(() => ls(SHEET_LS_TAB, 'Fresh Finds'));
+  const [cols, setCols] = useState(loadCols);
   const [state, setState] = useState('idle'); // idle | working | done | error
   const [msg, setMsg] = useState('');
   const [sheetUrl, setSheetUrl] = useState('');
   const count = filtered.length;
+  const adIdOn = cols.includes('ad_id');
+
+  // Remember the column choice as soon as it changes, not only on a successful export.
+  useEffect(() => { try { window.localStorage.setItem(SHEET_LS_COLS, JSON.stringify(cols)); } catch { /* ignore */ } }, [cols]);
+
+  const toggleCol = (key) => setCols((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]));
 
   const run = async () => {
     if (state === 'working') return;
     const id = parseSheetId(sheetId);
     if (!id) { setState('error'); setMsg(SHEET_REASON_MSG['bad-id']); return; }
     if (!tab.trim()) { setState('error'); setMsg(SHEET_REASON_MSG['no-tab']); return; }
+    if (!cols.length) { setState('error'); setMsg(SHEET_REASON_MSG['no-columns']); return; }
     setState('working'); setMsg('');
     let r;
     try {
-      r = await exportToSheet({ spreadsheetId: id, tabName: tab.trim(), adIds: filtered.map((a) => a.ad_archive_id) });
+      r = await exportToSheet({ spreadsheetId: id, tabName: tab.trim(), adIds: filtered.map((a) => a.ad_archive_id), columnKeys: cols });
     } catch (e) {
       setState('error'); setMsg(String(e?.message || e)); return;
     }
@@ -855,17 +881,19 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
   const onKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); run(); } };
   const label = s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:6px');
   const input = s(`width:100%;background:#0B0C0E;border:1px solid rgba(255,255,255,.09);color:#E7E8EA;font-family:${MONO};font-size:12px;padding:8px 9px;outline:none`);
+  const miniBtn = s(`font-family:${MONO};font-size:9px;letter-spacing:.5px;color:#8A8E94;background:none;border:none;cursor:pointer`);
+  const canRun = state !== 'working' && cols.length > 0;
 
   return (
     <div onClick={onClose} style={s('position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;padding:40px;animation:fadein .12s ease-out')}>
-      <div onClick={(e) => e.stopPropagation()} style={s('width:460px;max-width:100%;background:#101216;border:1px solid rgba(255,255,255,.14);box-shadow:0 24px 60px rgba(0,0,0,.6)')}>
+      <div onClick={(e) => e.stopPropagation()} style={s('width:520px;max-width:100%;max-height:88vh;display:flex;flex-direction:column;background:#101216;border:1px solid rgba(255,255,255,.14);box-shadow:0 24px 60px rgba(0,0,0,.6)')}>
         <div style={s('display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.08)')}>
           <span style={s(`font-family:${MONO};font-size:11px;letter-spacing:1px;color:#E7E8EA`)}>&#8599; EXPORT TO GOOGLE SHEET</span>
           <button onClick={onClose} style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:4px 9px;cursor:pointer`)}>CLOSE</button>
         </div>
-        <div style={s('padding:18px;display:flex;flex-direction:column;gap:14px')}>
+        <div style={s('padding:18px;display:flex;flex-direction:column;gap:14px;overflow-y:auto')}>
           <div style={s('font-size:11.5px;color:#9CA0A6;line-height:1.5')}>
-            Appends <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{count}</span> row{count === 1 ? '' : 's'} from the current view. Rows already in the tab (matched by Ad ID) are skipped, and the tab is created if it does not exist.
+            Appends <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{count}</span> row{count === 1 ? '' : 's'} &times; <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{cols.length}</span> column{cols.length === 1 ? '' : 's'} from the current view, with an image preview and link per row. {adIdOn ? 'Rows already in the tab (matched by Ad ID) are skipped' : 'Include the Ad ID column to skip rows already in the tab'}, and the tab is created if it does not exist.
           </div>
           <div>
             <div style={label}>Sheet ID or URL</div>
@@ -875,6 +903,26 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
           <div>
             <div style={label}>Tab name</div>
             <input value={tab} onChange={(e) => setTab(e.target.value)} onKeyDown={onKey} placeholder="Fresh Finds" style={input} />
+          </div>
+          <div>
+            <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:8px')}>
+              <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>Columns ({cols.length}/{SHEET_COLUMN_META.length})</div>
+              <div style={s('display:flex;gap:12px')}>
+                <button onClick={() => setCols(SHEET_COLUMN_META.map((m) => m.key))} style={miniBtn}>ALL</button>
+                <button onClick={() => setCols([])} style={miniBtn}>NONE</button>
+              </div>
+            </div>
+            <div style={s('display:flex;flex-wrap:wrap;gap:6px')}>
+              {SHEET_COLUMN_META.map((m) => {
+                const on = cols.includes(m.key);
+                return (
+                  <button key={m.key} onClick={() => toggleCol(m.key)}
+                    style={s(`font-family:${MONO};font-size:10px;padding:4px 8px;cursor:pointer;border:1px solid ${on ? A : 'rgba(255,255,255,.12)'};background:${on ? 'rgba(232,163,61,.12)' : '#0B0C0E'};color:${on ? A : '#8A8E94'}`)}>
+                    {on ? '✓ ' : ''}{m.header}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           {saEmail && (
             <div style={s('font-size:10.5px;color:#6C7076;line-height:1.5')}>
@@ -890,8 +938,8 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
         </div>
         <div style={s('display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid rgba(255,255,255,.08)')}>
           <button onClick={onClose} style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:6px 12px;cursor:pointer`)}>CANCEL</button>
-          <button onClick={run} disabled={state === 'working'}
-            style={s(`font-family:${MONO};font-size:10px;color:#0B0C0E;background:${A};border:none;padding:6px 14px;cursor:${state === 'working' ? 'default' : 'pointer'};opacity:${state === 'working' ? '.6' : '1'}`)}>
+          <button onClick={run} disabled={!canRun}
+            style={s(`font-family:${MONO};font-size:10px;color:#0B0C0E;background:${A};border:none;padding:6px 14px;cursor:${canRun ? 'pointer' : 'default'};opacity:${canRun ? '1' : '.6'}`)}>
             {state === 'working' ? 'EXPORTING...' : 'EXPORT'}
           </button>
         </div>
