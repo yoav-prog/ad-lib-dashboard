@@ -88,7 +88,7 @@ export function fmtDate(iso) {
 // as an ISO code (langCode), and dates as YYYY-MM-DD so a spreadsheet sorts them.
 export const SHEET_COLUMNS = [
   { key: 'preview',   header: 'Preview',          kind: 'image', get: (a) => thumbOf(a),                                            width: 130, align: 'CENTER', wrap: false },
-  { key: 'image_url', header: 'Image URL',        kind: 'link',  get: (a) => thumbOf(a),                                            width: 90,  align: 'LEFT',   wrap: false },
+  { key: 'image_url', header: 'Image URL',        kind: 'link',  get: (a) => thumbOf(a),                                            width: 230, align: 'LEFT',   wrap: false },
   { key: 'page',      header: 'Page',             kind: 'text',  get: (a) => a.page_name,                                           width: 130, align: 'LEFT',   wrap: false },
   { key: 'domain',    header: 'Domain',           kind: 'text',  get: (a) => a.domain,                                              width: 140, align: 'LEFT',   wrap: false },
   { key: 'headline',  header: 'Headline',         kind: 'text',  get: (a) => a.title || a.caption || a.body_text,                   width: 260, align: 'LEFT',   wrap: true  },

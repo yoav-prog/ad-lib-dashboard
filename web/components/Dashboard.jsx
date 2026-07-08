@@ -800,6 +800,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
 const SHEET_LS_ID = 'adintel.export.sheetId';
 const SHEET_LS_TAB = 'adintel.export.tab';
 const SHEET_LS_COLS = 'adintel.export.cols';
+const SHEET_LS_MODE = 'adintel.export.mode';
 // Reasons the server action can return, mapped to plain messages. permission/error
 // carry their own already-actionable message, so they are not listed here.
 const SHEET_REASON_MSG = {
@@ -835,14 +836,17 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
   const [sheetId, setSheetId] = useState(() => ls(SHEET_LS_ID, ''));
   const [tab, setTab] = useState(() => ls(SHEET_LS_TAB, 'Fresh Finds'));
   const [cols, setCols] = useState(loadCols);
+  const [mode, setMode] = useState(() => (ls(SHEET_LS_MODE, 'append') === 'replace' ? 'replace' : 'append'));
   const [state, setState] = useState('idle'); // idle | working | done | error
   const [msg, setMsg] = useState('');
   const [sheetUrl, setSheetUrl] = useState('');
   const count = filtered.length;
   const adIdOn = cols.includes('ad_id');
 
-  // Remember the column choice as soon as it changes, not only on a successful export.
+  // Remember the column choice and write mode as soon as they change, not only on a
+  // successful export.
   useEffect(() => { try { window.localStorage.setItem(SHEET_LS_COLS, JSON.stringify(cols)); } catch { /* ignore */ } }, [cols]);
+  useEffect(() => { try { window.localStorage.setItem(SHEET_LS_MODE, mode); } catch { /* ignore */ } }, [mode]);
 
   const toggleCol = (key) => setCols((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]));
 
@@ -855,15 +859,19 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
     setState('working'); setMsg('');
     let r;
     try {
-      r = await exportToSheet({ spreadsheetId: id, tabName: tab.trim(), adIds: filtered.map((a) => a.ad_archive_id), columnKeys: cols });
+      r = await exportToSheet({ spreadsheetId: id, tabName: tab.trim(), adIds: filtered.map((a) => a.ad_archive_id), columnKeys: cols, mode });
     } catch (e) {
       setState('error'); setMsg(String(e?.message || e)); return;
     }
     if (r?.ok) {
       try { window.localStorage.setItem(SHEET_LS_ID, id); window.localStorage.setItem(SHEET_LS_TAB, tab.trim()); } catch { /* ignore */ }
       let done;
-      if (r.appended === 0 && r.skipped > 0) {
-        done = `All ${r.skipped} row${r.skipped === 1 ? '' : 's'} are already in that tab, so nothing new was added.`;
+      if (r.mode === 'replace') {
+        const bits = [r.created ? `Created tab "${tab.trim()}" with ${r.appended} row${r.appended === 1 ? '' : 's'}` : `Replaced tab with ${r.appended} row${r.appended === 1 ? '' : 's'}`];
+        if (r.cleared) bits.push(`cleared ${r.cleared} old`);
+        done = bits.join(' · ') + '.';
+      } else if (r.appended === 0 && r.skipped > 0) {
+        done = `All ${r.skipped} row${r.skipped === 1 ? '' : 's'} are already in that tab, so nothing new was added. Switch to Replace to refresh the whole tab.`;
       } else {
         const bits = [`Added ${r.appended} new row${r.appended === 1 ? '' : 's'}`];
         if (r.skipped) bits.push(`skipped ${r.skipped} already there`);
@@ -893,7 +901,8 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
         </div>
         <div style={s('padding:18px;display:flex;flex-direction:column;gap:14px;overflow-y:auto')}>
           <div style={s('font-size:11.5px;color:#9CA0A6;line-height:1.5')}>
-            Appends <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{count}</span> row{count === 1 ? '' : 's'} &times; <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{cols.length}</span> column{cols.length === 1 ? '' : 's'} from the current view, with an image preview and link per row. {adIdOn ? 'Rows already in the tab (matched by Ad ID) are skipped' : 'Include the Ad ID column to skip rows already in the tab'}, and the tab is created if it does not exist.
+            {mode === 'replace' ? 'Clears the tab and writes ' : 'Appends '}
+            <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{count}</span> row{count === 1 ? '' : 's'} &times; <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{cols.length}</span> column{cols.length === 1 ? '' : 's'} from the current view, with an image preview and image URL per row. {mode === 'replace' ? 'Whatever is in the tab now is replaced' : (adIdOn ? 'Rows already in the tab (matched by Ad ID) are skipped' : 'Include the Ad ID column to skip rows already in the tab')}, and the tab is created if it does not exist.
           </div>
           <div>
             <div style={label}>Sheet ID or URL</div>
@@ -903,6 +912,15 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
           <div>
             <div style={label}>Tab name</div>
             <input value={tab} onChange={(e) => setTab(e.target.value)} onKeyDown={onKey} placeholder="Fresh Finds" style={input} />
+          </div>
+          <div>
+            <div style={label}>When the tab already has data</div>
+            <div style={s('display:flex;gap:1px;background:rgba(255,255,255,.06)')}>
+              {[['append', 'Add new (skip duplicates)'], ['replace', 'Replace tab']].map(([m, lbl]) => (
+                <button key={m} onClick={() => setMode(m)}
+                  style={s(`flex:1;padding:7px 0;background:${mode === m ? '#1A1C20' : '#0D0E11'};border:none;color:${mode === m ? (m === 'replace' ? '#ff8a80' : A) : '#8A8E94'};font-family:${MONO};font-size:10px;letter-spacing:.3px;cursor:pointer`)}>{lbl}</button>
+              ))}
+            </div>
           </div>
           <div>
             <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:8px')}>
