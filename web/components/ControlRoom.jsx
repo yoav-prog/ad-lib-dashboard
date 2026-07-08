@@ -397,7 +397,9 @@ function RunHistory({ runs, canEdit, NOW }) {
                     ? <div style={s('font-size:11px;color:#5A5E64')}>Logs are visible to admins only.</div>
                     : loadingId === r.id
                       ? <div style={s('font-size:11px;color:#5A5E64')}>loading logs...</div>
-                      : <LogConsole logs={logsById[r.id] || []} />}
+                      : (logsById[r.id]?.length ?? 0) === 0
+                        ? <div style={s('font-size:11px;color:#5A5E64;line-height:1.6')}>No logs stored for this run. It ran before live logging was added, so only the summary above was recorded. Runs from now on capture their full log here.</div>
+                        : <LogConsole logs={logsById[r.id]} title="Run Log" />}
                 </div>
               )}
             </div>
@@ -410,7 +412,7 @@ function RunHistory({ runs, canEdit, NOW }) {
 
 // Full raw console. Auto-scrolls to the newest line, but stops sticking the
 // moment you scroll up to read, so you can inspect history mid-run.
-function LogConsole({ logs }) {
+function LogConsole({ logs, title = 'Live Log' }) {
   const ref = useRef(null);
   const stick = useRef(true);
 
@@ -426,7 +428,7 @@ function LogConsole({ logs }) {
 
   return (
     <div>
-      <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:8px')}>Live Log</div>
+      <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:8px')}>{title}</div>
       <div ref={ref} onScroll={onScroll}
         style={s('height:260px;overflow-y:auto;background:#08090B;border:1px solid rgba(255,255,255,.08);padding:10px 12px')}>
         {logs.length === 0 && <div style={s('font-size:11px;color:#45484D')}>waiting for output...</div>}
