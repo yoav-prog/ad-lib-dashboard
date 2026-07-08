@@ -280,11 +280,30 @@ async def run(args):
         with db.connect() as conn:
             db.finish_run(conn, run_id, total_found, total_new)
         print(f'\nDONE: found={total_found} new={total_new}')
+        _notify_slack(total_found, total_new)
     except Exception as e:
         with db.connect() as conn:
             db.fail_run(conn, run_id, e)
         print(f'\nrun FAILED: {e}')
         raise
+
+
+def _notify_slack(found, new):
+    """Post a Slack message when a run captures new ads (if SLACK_WEBHOOK_URL is set)."""
+    url = os.environ.get('SLACK_WEBHOOK_URL')
+    if not url or new <= 0:
+        return
+    try:
+        import json as _json
+        import urllib.request
+        text = (f":mag: Ad Intel scrape complete. {new} new ad(s) captured "
+                f"({found} seen this run). Open the dashboard to review fresh finds.")
+        data = _json.dumps({'text': text}).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=10).read()
+        print('slack notified')
+    except Exception as e:
+        print(f'slack notify failed: {e}')
 
 
 def _all_verticals(conn):

@@ -5,6 +5,7 @@ import { s } from '@/lib/style';
 import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, titleCase, tint, paras, relTime, pad } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CompetitorView from '@/components/CompetitorView';
+import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
 import { updateAdWorkflow } from '@/app/actions';
@@ -95,6 +96,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
   const searchPlaceholder = {
     fresh: 'Search fresh finds...',
     competitor: 'Search this competitor...',
+    trends: 'Search trends...',
     pipeline: 'Search pipeline...',
     settings: 'Search domains...',
   }[view] || 'Search...';
@@ -177,6 +179,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
       )}
 
       {view === 'competitor' && <CompetitorView ads={ads} NOW={NOW} openDetail={openDetail} matchesQuery={matchesQuery} />}
+      {view === 'trends' && <TrendsView ads={ads} NOW={NOW} matchesQuery={matchesQuery} openDetail={openDetail} />}
       {view === 'pipeline' && <PipelineView ads={ads} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />}
       {view === 'settings' && <ControlRoom ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds} canEdit={canEdit} />}
 
@@ -199,6 +202,7 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
   const tabs = [
     { id: 'fresh', label: 'Fresh Finds' },
     { id: 'competitor', label: 'Competitors' },
+    { id: 'trends', label: 'Trends' },
     { id: 'pipeline', label: 'Pipeline' },
     { id: 'settings', label: 'Control Room' },
   ];
@@ -256,9 +260,11 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
 
   const fresh24 = ads.filter(isFresh).length;
   const new7 = ads.filter((a) => hoursSince(a.first_seen_at, NOW) <= 168).length;
+  const winners = ads.filter((a) => daysRunning(a, NOW) >= 60).length;
   const metrics = [
     { label: lastRunStart ? 'New This Scrape' : 'Fresh 24h', value: pad(fresh24), color: A },
     { label: 'New 7d', value: pad(new7), color: '#E7E8EA' },
+    { label: 'Proven Winners', value: pad(winners), color: A },
     { label: 'Total Tracked', value: pad(ads.length, 3), color: '#E7E8EA' },
     { label: 'Competitors', value: pad(uniq('domain').length), color: '#E7E8EA' },
     { label: 'Verticals', value: pad(uniq('vertical').length), color: '#E7E8EA' },
@@ -431,7 +437,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                   <span style={s(`font-family:${MONO};font-size:12.5px;color:${a.rank != null && a.rank <= 3 ? A : '#B6B9BE'};font-variant-numeric:tabular-nums`)}>{a.rank != null ? a.rank : '-'}</span>
                 </div>
                 <div style={s('width:70px;flex-shrink:0;text-align:right')}>
-                  <span style={s(`font-family:${MONO};font-size:14px;color:${days > 45 ? '#E7E8EA' : '#B6B9BE'};font-variant-numeric:tabular-nums`)}>{days}</span>
+                  {days >= 60 && <span title="Proven winner" style={s(`color:${A};font-size:10px;margin-right:3px`)}>★</span>}<span style={s(`font-family:${MONO};font-size:14px;color:${days >= 60 ? A : (days > 45 ? '#E7E8EA' : '#B6B9BE')};font-variant-numeric:tabular-nums`)}>{days}</span>
                   <span style={s('font-size:9px;color:#5A5E64;margin-left:2px')}>d</span>
                   <div style={s('height:2px;margin-top:4px;background:rgba(255,255,255,.06)')}><div style={s(`height:100%;width:${Math.round((days / maxDays) * 100)}%;background:${days > 45 ? '#8A8E94' : 'rgba(255,255,255,.22)'}`)} /></div>
                 </div>
@@ -492,6 +498,24 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
   const fresh = lastRunStart ? new Date(ad.first_seen_at).getTime() >= lastRunStart : hoursSince(ad.first_seen_at, NOW) <= 24;
   const statuses = ['idea', 'drafting', 'published'];
   const owners = ['Mara K.', 'Devin R.', 'Priya S.', 'Ari L.'];
+
+  const [draft, setDraft] = useState(null);
+  const [drafting, setDrafting] = useState(false);
+  const genDraft = async () => {
+    setDrafting(true);
+    setDraft(null);
+    try {
+      const r = await fetch('/api/draft', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adId: ad.ad_archive_id }),
+      });
+      const data = await r.json();
+      setDraft(data.ok ? data.draft : `Error: ${data.error || 'draft failed'}`);
+    } catch (e) {
+      setDraft('Error: ' + String(e));
+    }
+    setDrafting(false);
+  };
 
   const meta = [
     ['ad_archive_id', ad.ad_archive_id, A],
@@ -601,6 +625,12 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
               style={s(`display:flex;align-items:center;gap:5px;background:none;border:1px solid ${ad.is_saved ? A : 'rgba(255,255,255,.14)'};color:${ad.is_saved ? A : '#8A8E94'};padding:3px 8px;font-family:${MONO};font-size:10px;cursor:pointer`)}>{ad.is_saved ? '★ SAVED' : '☆ STAR'}</button>
           </div>
           <div style={s('padding:16px;display:flex;flex-direction:column;gap:18px')}>
+            {canEdit && (
+              <button onClick={genDraft} disabled={drafting}
+                style={s(`width:100%;background:${drafting ? '#5A5E64' : A};color:#0B0C0E;border:none;font-size:12px;font-weight:600;letter-spacing:.3px;padding:10px;cursor:${drafting ? 'default' : 'pointer'}`)}>
+                {drafting ? 'DRAFTING...' : '✎ DRAFT ARTICLE'}
+              </button>
+            )}
             <div>
               <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:8px')}>Pipeline Status</div>
               <div style={s('display:flex;flex-direction:column;gap:1px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.06)')}>
@@ -653,6 +683,22 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
           </div>
         </div>
       </div>
+
+      {draft !== null && (
+        <div onClick={() => setDraft(null)} style={s('position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;padding:40px;animation:fadein .12s ease-out')}>
+          <div onClick={(e) => e.stopPropagation()} style={s('width:680px;max-width:100%;max-height:82vh;display:flex;flex-direction:column;background:#101216;border:1px solid rgba(255,255,255,.14);box-shadow:0 24px 60px rgba(0,0,0,.6)')}>
+            <div style={s('display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.08)')}>
+              <span style={s(`font-family:${MONO};font-size:11px;letter-spacing:1px;color:#E7E8EA`)}>AI DRAFT &middot; {ad.vertical || 'article'}</span>
+              <div style={s('display:flex;gap:8px')}>
+                <button onClick={() => navigator.clipboard?.writeText(draft)} style={s(`font-family:${MONO};font-size:10px;color:#C6C9CE;background:none;border:1px solid rgba(255,255,255,.14);padding:4px 9px;cursor:pointer`)}>COPY</button>
+                {canEdit && <button onClick={() => { const merged = (ad.notes ? ad.notes + '\n\n' : '') + draft; updateLocal(ad.ad_archive_id, { notes: merged }); commit(ad.ad_archive_id, { notes: merged }); setDraft(null); }} style={s(`font-family:${MONO};font-size:10px;color:#0B0C0E;background:${A};border:none;padding:4px 9px;cursor:pointer`)}>SAVE TO NOTES</button>}
+                <button onClick={() => setDraft(null)} style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:4px 9px;cursor:pointer`)}>CLOSE</button>
+              </div>
+            </div>
+            <div style={s('padding:20px 22px;overflow-y:auto;font-size:13.5px;line-height:1.7;color:#C6C9CE;white-space:pre-wrap')}>{draft}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

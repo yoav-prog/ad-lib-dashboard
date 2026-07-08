@@ -207,13 +207,40 @@ async def gpt_detect_country(session, article_title, body_text, article_content)
             print(f"  ⚠️  GPT country error: {e}")
             return ''
 
+_VERTICAL_STOPWORDS = {
+    'and', 'the', 'for', 'with', 'your', 'our', 'you', 'get', 'now',
+    'services', 'service', 'deals', 'deal', 'online', 'best', 'top', 'new',
+}
+
+
+def _shortlist_verticals(text, verticals, top_n=25):
+    """Rank verticals by keyword overlap with the ad text and return the top N,
+    so GPT chooses from a focused shortlist instead of all ~2,200 (cheaper +
+    sharper). Falls back to the first N verticals if there is no overlap."""
+    low = (text or '').lower()
+    words = set(re.findall(r'[a-z]{3,}', low)) - _VERTICAL_STOPWORDS
+    scored = []
+    for v in verticals:
+        vwords = set(re.findall(r'[a-z]{3,}', v.lower())) - _VERTICAL_STOPWORDS
+        if not vwords:
+            continue
+        score = len(vwords & words) + (3 if v.lower() in low else 0)
+        scored.append((score, v))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    shortlist = [v for s, v in scored[:top_n] if s > 0]
+    return shortlist or [v for _, v in scored[:top_n]]
+
+
 async def gpt_detect_vertical(session, article_title, body_text, article_content, verticals):
     if not verticals:
         return ''
     combined = ' | '.join(filter(None, [article_title, body_text, article_content]))
     if not combined.strip():
         return ''
-    verticals_list = '\n'.join(f'- {v}' for v in verticals)
+    shortlist = _shortlist_verticals(combined[:2000], verticals, top_n=25)
+    if not shortlist:
+        return ''
+    verticals_list = '\n'.join(f'- {v}' for v in shortlist)
     async with GPT_SEMAPHORE:
         try:
             payload = {
