@@ -50,9 +50,26 @@ export async function refreshAds(ids) {
   const rows = await sql`select distinct domain from ads where ad_archive_id = any(${ids}) and domain is not null`;
   const doms = rows.map((r) => r.domain);
   if (!doms.length) return { ok: false, matched: 0, reason: 'no-domain' };
-  const upd = await sql`update domains set next_run_at = now() where query = any(${doms}) and enabled returning query`;
+  // Mark already-tracked domains due (re-enabling any that were paused).
+  const bumped = await sql`
+    update domains set next_run_at = now(), enabled = true
+    where query = any(${doms}) returning query
+  `;
+  const tracked = new Set(bumped.map((r) => r.query));
+
+  // Auto-track any domain not yet in Control Room, so refresh always works.
+  let added = 0;
+  for (const d of doms) {
+    if (tracked.has(d)) continue;
+    const ins = await sql`
+      insert into domains (query, country, active_status, max_ads, cadence, next_run_at)
+      values (${d}, 'ALL', 'active', 100, 'daily', now())
+      on conflict (query, country) do update set next_run_at = now(), enabled = true
+      returning id
+    `;
+    if (ins.length) added += 1;
+  }
   revalidatePath('/');
-  if (!upd.length) return { ok: false, matched: 0, reason: 'not-tracked', doms };
 
   const token = process.env.GH_DISPATCH_TOKEN;
   const repo = process.env.GH_REPO;
@@ -69,7 +86,7 @@ export async function refreshAds(ids) {
       // ignore
     }
   }
-  return { ok: true, matched: upd.length, dispatched, doms };
+  return { ok: true, matched: tracked.size + added, added, dispatched, doms };
 }
 
 export async function addDomain(data) {
