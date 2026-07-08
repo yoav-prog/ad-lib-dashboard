@@ -3,15 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, buildCsv } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, buildCsv, parseSheetId, langCode } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
-import { updateAdWorkflow, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun } from '@/app/actions';
+import { updateAdWorkflow, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet } from '@/app/actions';
 
-export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true }) {
+export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true, exportSaEmail = null }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
   const lastRunStart = lastRunStartIso ? new Date(lastRunStartIso).getTime() : null;
   const [ads, setAds] = useState(adsProp);
@@ -293,6 +293,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
           selIndex={selIndex} setSelIndex={setSelIndex} openDetail={openDetail} lastRunStart={lastRunStart}
           canEdit={canEdit} selected={selected} toggleSel={toggleSel} setSelection={setSelection} clearSel={clearSel} bulkDelete={bulkDelete} bulkSet={bulkSet} bulkRefresh={bulkRefresh}
+          exportSaEmail={exportSaEmail}
         />
       )}
 
@@ -453,8 +454,9 @@ function CopyCell({ value, style, children }) {
   );
 }
 
-function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh }) {
+function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail }) {
   const selCount = selected ? selected.size : 0;
+  const [sheetOpen, setSheetOpen] = useState(false);
   const filteredIds = filtered.map((a) => a.ad_archive_id);
   const allSelected = filteredIds.length > 0 && selected && filteredIds.every((id) => selected.has(id));
   const bulkBtn = s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:#C6C9CE;font-family:${MONO};font-size:10px;padding:4px 9px;cursor:pointer`);
@@ -663,6 +665,11 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                   <button onClick={exportCsv} disabled={!filtered.length}
                     title="Download the current view (filters applied) as a CSV"
                     style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>↓ EXPORT CSV</button>
+                  {canEdit && (
+                    <button onClick={() => setSheetOpen(true)} disabled={!filtered.length}
+                      title="Send the current view (filters applied) to a Google Sheet"
+                      style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>&#8599; EXPORT TO SHEET</button>
+                  )}
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>J</kbd>
                   <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>K</kbd>
@@ -763,7 +770,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                 </CopyCell>
                 <div style={s('width:58px;flex-shrink:0;text-align:center')}>
                   <div style={s(`font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{a.country || '-'}</div>
-                  <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)}>{(a.language || '').slice(0, 2).toUpperCase()}</div>
+                  <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)} title={a.language || ''}>{langCode(a.language)}</div>
                 </div>
                 <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>
                   <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.feed || '-'}</span>
@@ -778,6 +785,115 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
           {filtered.length === 0 && (
             <div style={s('padding:60px 16px;text-align:center;color:#5A5E64;font-size:13px')}>No ads match. Run a scrape or clear filters.</div>
           )}
+        </div>
+      </div>
+      {sheetOpen && (
+        <SheetExportModal filtered={filtered} saEmail={exportSaEmail} onClose={() => setSheetOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// EXPORT TO GOOGLE SHEET
+// ═════════════════════════════════════════════════════════════════════════════
+const SHEET_LS_ID = 'adintel.export.sheetId';
+const SHEET_LS_TAB = 'adintel.export.tab';
+// Reasons the server action can return, mapped to plain messages. permission/error
+// carry their own already-actionable message, so they are not listed here.
+const SHEET_REASON_MSG = {
+  'bad-id': 'That does not look like a valid Sheet ID or URL.',
+  'no-tab': 'Enter a tab name.',
+  'no-rows': 'Nothing to export in the current view.',
+  'not-configured': 'Sheet export is not set up on the server yet (missing service-account credentials).',
+};
+
+// Modal: send the current Fresh Finds view to a Google Sheet the user names by id
+// (or pasted URL) + tab. Remembers the last id + tab in localStorage so a repeat
+// export is one field-free click. Only the ad ids are sent; the server re-reads the
+// rows and appends the new ones. Styled to match the AI-draft modal above.
+function SheetExportModal({ filtered, saEmail, onClose }) {
+  const ls = (k, d) => { try { return (typeof window !== 'undefined' && window.localStorage.getItem(k)) || d; } catch { return d; } };
+  const [sheetId, setSheetId] = useState(() => ls(SHEET_LS_ID, ''));
+  const [tab, setTab] = useState(() => ls(SHEET_LS_TAB, 'Fresh Finds'));
+  const [state, setState] = useState('idle'); // idle | working | done | error
+  const [msg, setMsg] = useState('');
+  const [sheetUrl, setSheetUrl] = useState('');
+  const count = filtered.length;
+
+  const run = async () => {
+    if (state === 'working') return;
+    const id = parseSheetId(sheetId);
+    if (!id) { setState('error'); setMsg(SHEET_REASON_MSG['bad-id']); return; }
+    if (!tab.trim()) { setState('error'); setMsg(SHEET_REASON_MSG['no-tab']); return; }
+    setState('working'); setMsg('');
+    let r;
+    try {
+      r = await exportToSheet({ spreadsheetId: id, tabName: tab.trim(), adIds: filtered.map((a) => a.ad_archive_id) });
+    } catch (e) {
+      setState('error'); setMsg(String(e?.message || e)); return;
+    }
+    if (r?.ok) {
+      try { window.localStorage.setItem(SHEET_LS_ID, id); window.localStorage.setItem(SHEET_LS_TAB, tab.trim()); } catch { /* ignore */ }
+      let done;
+      if (r.appended === 0 && r.skipped > 0) {
+        done = `All ${r.skipped} row${r.skipped === 1 ? '' : 's'} are already in that tab, so nothing new was added.`;
+      } else {
+        const bits = [`Added ${r.appended} new row${r.appended === 1 ? '' : 's'}`];
+        if (r.skipped) bits.push(`skipped ${r.skipped} already there`);
+        if (r.created) bits.push(`created tab "${tab.trim()}"`);
+        done = bits.join(' · ') + '.';
+      }
+      setSheetUrl(r.sheetUrl || '');
+      setState('done'); setMsg(done);
+    } else {
+      setState('error');
+      setMsg(SHEET_REASON_MSG[r?.reason] || r?.message || 'Export failed. Please try again.');
+    }
+  };
+
+  const onKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); run(); } };
+  const label = s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:6px');
+  const input = s(`width:100%;background:#0B0C0E;border:1px solid rgba(255,255,255,.09);color:#E7E8EA;font-family:${MONO};font-size:12px;padding:8px 9px;outline:none`);
+
+  return (
+    <div onClick={onClose} style={s('position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;padding:40px;animation:fadein .12s ease-out')}>
+      <div onClick={(e) => e.stopPropagation()} style={s('width:460px;max-width:100%;background:#101216;border:1px solid rgba(255,255,255,.14);box-shadow:0 24px 60px rgba(0,0,0,.6)')}>
+        <div style={s('display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.08)')}>
+          <span style={s(`font-family:${MONO};font-size:11px;letter-spacing:1px;color:#E7E8EA`)}>&#8599; EXPORT TO GOOGLE SHEET</span>
+          <button onClick={onClose} style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:4px 9px;cursor:pointer`)}>CLOSE</button>
+        </div>
+        <div style={s('padding:18px;display:flex;flex-direction:column;gap:14px')}>
+          <div style={s('font-size:11.5px;color:#9CA0A6;line-height:1.5')}>
+            Appends <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{count}</span> row{count === 1 ? '' : 's'} from the current view. Rows already in the tab (matched by Ad ID) are skipped, and the tab is created if it does not exist.
+          </div>
+          <div>
+            <div style={label}>Sheet ID or URL</div>
+            <input autoFocus value={sheetId} onChange={(e) => setSheetId(e.target.value)} onKeyDown={onKey}
+              placeholder="1KA-szj...  or  https://docs.google.com/spreadsheets/d/.../edit" style={input} />
+          </div>
+          <div>
+            <div style={label}>Tab name</div>
+            <input value={tab} onChange={(e) => setTab(e.target.value)} onKeyDown={onKey} placeholder="Fresh Finds" style={input} />
+          </div>
+          {saEmail && (
+            <div style={s('font-size:10.5px;color:#6C7076;line-height:1.5')}>
+              Exports as <span style={s(`font-family:${MONO};color:#9CA0A6`)}>{saEmail}</span>. Share your sheet with this address as <b style={s('color:#9CA0A6')}>Editor</b> first, or the export cannot reach it.
+            </div>
+          )}
+          {msg && (
+            <div style={s(`font-size:11.5px;line-height:1.5;color:${state === 'error' ? '#ff8a80' : state === 'done' ? '#86C99A' : '#9CA0A6'}`)}>
+              {msg}{' '}
+              {state === 'done' && sheetUrl && <a href={sheetUrl} target="_blank" rel="noreferrer" style={s(`color:${A};text-decoration:none`)}>Open sheet &#8599;</a>}
+            </div>
+          )}
+        </div>
+        <div style={s('display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid rgba(255,255,255,.08)')}>
+          <button onClick={onClose} style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:6px 12px;cursor:pointer`)}>CANCEL</button>
+          <button onClick={run} disabled={state === 'working'}
+            style={s(`font-family:${MONO};font-size:10px;color:#0B0C0E;background:${A};border:none;padding:6px 14px;cursor:${state === 'working' ? 'default' : 'pointer'};opacity:${state === 'working' ? '.6' : '1'}`)}>
+            {state === 'working' ? 'EXPORTING...' : 'EXPORT'}
+          </button>
         </div>
       </div>
     </div>
