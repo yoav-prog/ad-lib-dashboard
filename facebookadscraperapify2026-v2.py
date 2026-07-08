@@ -133,8 +133,42 @@ def read_verticals(service):
 # ═════════════════════════════════════════════════════════════════════════════
 # GPT-4.1-MINI HELPERS  (semaphore-guarded)
 # ═════════════════════════════════════════════════════════════════════════════
-async def gpt_detect_language(session, article_title, body_text=''):
-    text = (article_title or body_text or '').strip()
+def ad_copy_text(snapshot):
+    """The ad's OWN creative text - body, caption, title, link description, extra
+    texts, plus any DCO card variants. This is the language the ad is written in,
+    so language detection must read this and NOT the landing-page article (which is
+    frequently English even for Spanish / Portuguese ads - the cause of everything
+    showing up as 'English')."""
+    if not isinstance(snapshot, dict):
+        return ''
+    parts = []
+
+    def add(v):
+        if isinstance(v, dict):
+            v = v.get('text', '')
+        if isinstance(v, str) and v.strip():
+            parts.append(v.strip())
+
+    add(snapshot.get('body'))
+    add(snapshot.get('caption'))
+    add(snapshot.get('title'))
+    add(snapshot.get('link_description'))
+    for t in snapshot.get('extra_texts') or []:
+        add(t)
+    for card in snapshot.get('cards') or []:
+        if isinstance(card, dict):
+            add(card.get('body'))
+            add(card.get('caption'))
+            add(card.get('title'))
+            add(card.get('link_description'))
+    return ' | '.join(parts)
+
+
+async def gpt_detect_language(session, ad_copy):
+    """Detect the language the ad is written in from its own copy (see ad_copy_text).
+    Never pass the landing-page article here - that was the bug that made non-English
+    ads read as English."""
+    text = (ad_copy or '').strip()
     if not text:
         return ''
     async with GPT_SEMAPHORE:
@@ -953,7 +987,8 @@ async def process_single_ad(ad, rank, bucket, media_cache, reference_data,
     # ── 2. GPT enrichment — all 3 in parallel ────────────────────────────
     print(f"  [{ad_id}] 🤖 GPT enrichment...")
     language, country_code, vertical = await asyncio.gather(
-        gpt_detect_language(gpt_session, article_title, body_text),
+        # Language from the ad's OWN copy, never the (often English) landing page.
+        gpt_detect_language(gpt_session, ad_copy_text(snapshot)),
         gpt_detect_country(gpt_session, article_title, body_text, article_content),
         gpt_detect_vertical(gpt_session, article_title, body_text, article_content, verticals),
     )
