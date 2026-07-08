@@ -10,7 +10,7 @@ const CADENCES = ['hourly', 'daily', 'weekly', 'paused'];
 export default function ControlRoom({
   ads, domains, runs, NOW, query = '', feeds = [], canEdit = true,
   runStatus = { active: null, lastRun: null }, runLogs = [], pending = false,
-  onRunNow, onMarkFailed, onSeeNewAds, onStop,
+  onRunNow, onRunDomains, onMarkFailed, onSeeNewAds, onStop,
 }) {
   const [q, setQ] = useState('');
   const [country, setCountry] = useState('ALL');
@@ -20,6 +20,8 @@ export default function ControlRoom({
   const [busy, setBusy] = useState(false);
   const [runMsg, setRunMsg] = useState('');
   const [stopping, setStopping] = useState(false);
+  const [sel, setSel] = useState(() => new Set());   // selected domain ids for a targeted run
+  const [selMsg, setSelMsg] = useState('');
 
   const active = runStatus?.active || null;
   const lastRun = runStatus?.lastRun || null;
@@ -44,6 +46,14 @@ export default function ControlRoom({
 
   const term = (query || '').trim().toLowerCase();
   const shownDomains = term ? domains.filter((d) => (d.query || '').toLowerCase().includes(term)) : domains;
+
+  // Targeted-run selection. Select-all covers only the currently shown (searched)
+  // rows; the scope estimate covers whatever is selected across all rows.
+  const toggleSel = (id) => setSel((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const clearSel = () => setSel(new Set());
+  const shownIds = shownDomains.map((d) => d.id);
+  const allShownSelected = shownIds.length > 0 && shownIds.every((id) => sel.has(id));
+  const selScopeMax = domains.filter((d) => sel.has(d.id)).reduce((n, d) => n + (d.max_ads || 0), 0);
 
   const lastCompleted = runs.find((r) => r.status === 'completed' && r.finished_at);
   const dueTimes = domains.filter((d) => d.enabled && d.cadence !== 'paused' && d.next_run_at).map((d) => d.next_run_at).sort();
@@ -109,7 +119,27 @@ export default function ControlRoom({
     }
   };
 
-  const inputStyle = 'background:#0B0C0E;border:1px solid rgba(255,255,255,.09);color:#E7E8EA;font-size:12px;padding:8px 10px;outline:none';
+  // Run exactly the selected rows (one or many), isolated from the rest. Disabled
+  // while a run is active - a second run can't claim the lock anyway. Selection is
+  // kept so the outcome message stays visible right where the click happened.
+  const runSelected = async () => {
+    if (isBusy || !onRunDomains || !sel.size) return;
+    const n = sel.size;
+    const rows = n === 1 ? 'row' : 'rows';
+    setSelMsg('');
+    try {
+      const r = await onRunDomains([...sel]);
+      if (r?.dispatched) setSelMsg(`Dispatched a run for ${n} selected ${rows}. Live status appears at the top in a moment.`);
+      else if (r?.reason === 'no-dispatch-token') setSelMsg(`${n} ${rows} marked due. Set GH_DISPATCH_TOKEN + GH_REPO to fire instantly; otherwise the scheduled runner picks them up on its next tick.`);
+      else if (r?.reason === 'dispatch-failed') setSelMsg(`Could not dispatch (status ${r?.status ?? '?'}); the workflow input may not be on main yet. Marked the ${rows} due instead.`);
+      else if (r?.reason === 'no-ids') setSelMsg('No valid rows to run.');
+      else setSelMsg('Run request sent.');
+    } catch (e) {
+      setSelMsg('Run failed: ' + String(e));
+    }
+  };
+
+  const inputStyle ='background:#0B0C0E;border:1px solid rgba(255,255,255,.09);color:#E7E8EA;font-size:12px;padding:8px 10px;outline:none';
 
   return (
     <div style={s('max-width:1160px')}>
@@ -196,8 +226,29 @@ export default function ControlRoom({
           </div>
         )}
 
+        {canEdit && sel.size > 0 && (
+          <div style={s('display:flex;align-items:center;gap:12px;height:40px;padding:0 12px;margin-bottom:12px;background:#0D0E11;border:1px solid rgba(232,163,61,.28)')}>
+            <span style={s(`font-family:${MONO};font-size:11px;color:${A};font-variant-numeric:tabular-nums`)}>{sel.size} selected</span>
+            <button onClick={clearSel} style={s(`background:none;border:none;color:#8A8E94;font-family:${MONO};font-size:10px;cursor:pointer`)}>CLEAR</button>
+            <span style={s('color:#2E3136')}>|</span>
+            <button onClick={runSelected} disabled={isBusy}
+              title="Scrape only the selected rows, each with its own settings"
+              style={s(`font-family:${MONO};font-size:10.5px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy ? '#5A5E64' : A};border:none;padding:6px 14px;cursor:${isBusy ? 'default' : 'pointer'};white-space:nowrap`)}>
+              {isBusy ? 'RUN IN PROGRESS...' : `► RUN ${sel.size} SELECTED`}
+            </button>
+            <span style={s('font-size:10px;color:#5A5E64;white-space:nowrap')}>up to {selScopeMax} ads</span>
+            <div style={s('flex:1;min-width:0')}><span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block')}>{selMsg}</span></div>
+          </div>
+        )}
+
         <div style={s('border:1px solid rgba(255,255,255,.08)')}>
           <div style={s('display:flex;align-items:center;height:28px;padding:0 14px;background:#0D0E11;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase')}>
+            {canEdit && (
+              <div style={s('width:30px;flex-shrink:0;display:flex;align-items:center')}>
+                <span onClick={() => (allShownSelected ? clearSel() : setSel(new Set(shownIds)))} title="Select all shown"
+                  style={s(`width:13px;height:13px;border:1px solid ${allShownSelected ? A : 'rgba(255,255,255,.25)'};background:${allShownSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allShownSelected ? '✓' : ''}</span>
+              </div>
+            )}
             <div style={s('flex:1')}>Domain / Query</div>
             <div style={s('width:110px')}>Feed</div>
             <div style={s('width:66px;text-align:center')}>Country</div>
@@ -216,7 +267,13 @@ export default function ControlRoom({
           )}
 
           {shownDomains.map((d) => (
-            <div key={d.id} style={s('display:flex;align-items:center;height:44px;padding:0 14px;border-bottom:1px solid rgba(255,255,255,.045)')}>
+            <div key={d.id} style={s(`display:flex;align-items:center;height:44px;padding:0 14px;border-bottom:1px solid rgba(255,255,255,.045);background:${sel.has(d.id) ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
+              {canEdit && (
+                <div style={s('width:30px;flex-shrink:0;display:flex;align-items:center')}>
+                  <span onClick={() => toggleSel(d.id)} title="Select for a targeted run"
+                    style={s(`width:13px;height:13px;border:1px solid ${sel.has(d.id) ? A : 'rgba(255,255,255,.25)'};background:${sel.has(d.id) ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{sel.has(d.id) ? '✓' : ''}</span>
+                </div>
+              )}
               <div style={s('flex:1;min-width:0')}>
                 <div style={s('font-size:12px;color:#E7E8EA;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{d.query}</div>
               </div>
@@ -256,7 +313,7 @@ export default function ControlRoom({
           ))}
         </div>
         <div style={s('font-size:10px;color:#5A5E64;line-height:1.6;margin-top:12px')}>
-          Changes write to the database immediately. The scheduled runner reads these to decide what to scrape and when; &ldquo;Run now&rdquo; makes every active domain due at once.
+          Changes write to the database immediately. The scheduled runner reads these to decide what to scrape and when. &ldquo;Run now&rdquo; runs every active domain; to run just one or a few, tick their checkboxes and use &ldquo;Run selected&rdquo;.
         </div>
       </div>
 

@@ -7,8 +7,9 @@ GPT enrichment, GCS media upload), and upserts results into the ads table with
 run tracking.
 
 Modes:
-  python run_scrape.py                       process every due domain (scheduled)
-  python run_scrape.py --query "acme.com"    ad-hoc single query (testing)
+  python run_scrape.py                        process every due domain (scheduled)
+  python run_scrape.py --domain-ids "id,id"   run only those tracked rows (targeted)
+  python run_scrape.py --query "acme.com"     ad-hoc single query (testing)
         [--max 5] [--country ALL] [--feed ""] [--retries 1] [--no-media]
 
 Secrets come from .env.local/.env locally, or from injected env vars in CI.
@@ -29,6 +30,7 @@ import asyncio
 import os
 import threading
 import traceback
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -357,11 +359,33 @@ async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, do
 # ═════════════════════════════════════════════════════════════════════════════
 # Orchestration
 # ═════════════════════════════════════════════════════════════════════════════
+def _target_domain_ids(args) -> list[str]:
+    """Domain ids for a targeted run: the --domain-ids arg or the DOMAIN_IDS env
+    (set by the dashboard's "Run selected" dispatch). Comma-separated; each token
+    is validated as a UUID and invalid ones are dropped, so a malformed input can
+    never reach a query.
+    """
+    raw = args.domain_ids or os.environ.get('DOMAIN_IDS', '') or ''
+    ids: list[str] = []
+    for tok in raw.split(','):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            ids.append(str(uuid.UUID(tok)))
+        except ValueError:
+            print(f'  ignoring invalid domain id: {tok!r}')
+    return ids
+
+
 async def run(args):
-    # Scheduled mode (no --query): skip cheaply if nothing is due, so an hourly
-    # cron does not create an empty run record every hour. This check needs only
-    # the database - not the scraper or its API keys - so it stays before the load.
-    if not args.query:
+    target_ids = _target_domain_ids(args)
+
+    # Scheduled mode (no --query, no targeted ids): skip cheaply if nothing is due,
+    # so an hourly cron does not create an empty run record every hour. This check
+    # needs only the database - not the scraper or its API keys - so it stays before
+    # the load. A targeted run always proceeds: its rows may not be "due".
+    if not args.query and not target_ids:
         with db.connect() as conn:
             if not db.any_domain_due(conn):
                 print('nothing due; exiting')
@@ -428,11 +452,15 @@ async def run(args):
             total_found, total_new = f, n
             progress['domains_done'] = 1
         else:
+            # Targeted run scrapes exactly the selected rows (regardless of their
+            # due-ness / paused state); otherwise it is the scheduled due-sweep.
             with db.connect() as conn:
-                due = db.get_due_domains(conn)
-            progress['domains_total'] = len(due)
-            print(f'{len(due)} domain(s) due')
-            for dom in due:
+                rows = (db.get_domains_by_ids(conn, target_ids) if target_ids
+                        else db.get_due_domains(conn))
+            progress['domains_total'] = len(rows)
+            print(f'{len(rows)} selected domain(s) to run' if target_ids
+                  else f'{len(rows)} domain(s) due')
+            for dom in rows:
                 progress['current_domain'] = dom['query']
                 params = {'query': dom['query'], 'country': dom['country'],
                           'activeStatus': dom['active_status'],
@@ -500,6 +528,9 @@ def _all_verticals(conn):
 def main():
     ap = argparse.ArgumentParser(description='DB-native Facebook Ad Library scrape')
     ap.add_argument('--query', help='ad-hoc single query (domain or keyword) for testing')
+    ap.add_argument('--domain-ids',
+                    help='comma-separated tracked-domain UUIDs to run in isolation '
+                         '(also read from the DOMAIN_IDS env var)')
     ap.add_argument('--max', type=int, default=5, help='max ads for the ad-hoc query')
     ap.add_argument('--country', default='ALL')
     ap.add_argument('--feed', default='')

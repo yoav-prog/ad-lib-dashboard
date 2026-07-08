@@ -9,7 +9,7 @@ import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
-import { updateAdWorkflow, triggerScrape, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun } from '@/app/actions';
+import { updateAdWorkflow, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun } from '@/app/actions';
 
 export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
@@ -113,6 +113,15 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
     const r = await triggerScrape();
     if (r?.dispatched) { dispatchedAtRef.current = Date.now(); setPending(true); }
     poll();   // refresh + reschedule immediately
+    return r;
+  }, [poll]);
+
+  // Targeted run of a chosen subset of tracked rows (one or many). Same live-status
+  // handling as onRunNow, just scoped to the selected domain ids.
+  const onRunDomains = useCallback(async (ids) => {
+    const r = await runDomains(ids);
+    if (r?.dispatched) { dispatchedAtRef.current = Date.now(); setPending(true); }
+    poll();
     return r;
   }, [poll]);
 
@@ -299,7 +308,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
         <ControlRoom
           ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds} canEdit={canEdit}
           runStatus={runStatus} runLogs={runLogs} pending={pending}
-          onRunNow={onRunNow} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} onStop={onStop}
+          onRunNow={onRunNow} onRunDomains={onRunDomains} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} onStop={onStop}
         />
       )}
 
