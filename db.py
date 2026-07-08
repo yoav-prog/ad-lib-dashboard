@@ -113,14 +113,19 @@ def claim_run(conn, trigger_source: str = 'schedule', stale_minutes: int = 30):
 
 
 def finish_run(conn, run_id, ads_found: int, ads_new: int, errors: int = 0):
-    """Mark a run completed. Its ads become the new 'fresh finds' baseline."""
+    """Mark a run completed. Its ads become the new 'fresh finds' baseline.
+
+    Scoped to status='running' so a run that was stopped from the dashboard (set
+    to 'failed' mid-scrape) is not flipped back to 'completed' when the runner,
+    still executing until GitHub actually kills it, reaches its own finish call.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
             update runs
                set status = 'completed', finished_at = now(),
                    ads_found = %s, ads_new = %s, errors = %s
-             where id = %s
+             where id = %s and status = 'running'
             """,
             (ads_found, ads_new, errors, run_id),
         )
