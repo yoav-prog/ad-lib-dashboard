@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, relTime, pad } from '@/lib/ui';
-import { addDomain, updateDomain, deleteDomain, addFeed } from '@/app/actions';
+import { addDomain, updateDomain, deleteDomain, bulkUpdateDomains, deleteDomains, addFeed } from '@/app/actions';
 
 export default function ControlRoom({
   ads, domains, runs, NOW, query = '', feeds = [], canEdit = true,
@@ -20,6 +20,16 @@ export default function ControlRoom({
   const [stopping, setStopping] = useState(false);
   const [sel, setSel] = useState(() => new Set());   // selected domain ids for a targeted run
   const [selMsg, setSelMsg] = useState('');
+  const [search, setSearch] = useState('');          // quick search over the table
+  const [sortKey, setSortKey] = useState('created'); // 'created' keeps incoming (created_at) order
+  const [sortDir, setSortDir] = useState('asc');
+  const [bulkMaxAds, setBulkMaxAds] = useState('');  // pending bulk Max Ads / cadence inputs
+  const [bulkDays, setBulkDays] = useState('');
+  const [allDays, setAllDays] = useState(() =>     // global "set every row to N days" input
+    (domains.length && domains.every((d) => d.interval_days === domains[0].interval_days))
+      ? String(domains[0].interval_days) : '3');
+  const [applyingAll, setApplyingAll] = useState(false);
+  const [allMsg, setAllMsg] = useState('');
 
   const active = runStatus?.active || null;
   const lastRun = runStatus?.lastRun || null;
@@ -42,8 +52,39 @@ export default function ControlRoom({
   const adsByDomain = {};
   ads.forEach((a) => { if (a.domain) adsByDomain[a.domain] = (adsByDomain[a.domain] || 0) + 1; });
 
-  const term = (query || '').trim().toLowerCase();
-  const shownDomains = term ? domains.filter((d) => (d.query || '').toLowerCase().includes(term)) : domains;
+  // Quick search across every visible field, so one box finds a row by domain,
+  // feed, country, status, its Max Ads, or its cadence. The global top-bar search
+  // and the local box both narrow the list (AND), so neither is dead weight.
+  const matchDomain = (d, tokens) => {
+    if (!tokens.length) return true;
+    const hay = [
+      d.query, d.feed, d.country, d.enabled ? 'active' : 'paused',
+      `${d.max_ads}`, `${d.interval_days}`,
+    ].filter(Boolean).join(' ').toLowerCase();
+    return tokens.every((t) => hay.includes(t));
+  };
+  const gTokens = (query || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const sTokens = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const matched = domains.filter((d) => matchDomain(d, gTokens) && matchDomain(d, sTokens));
+
+  // Sort by any column; 'created' leaves the incoming created_at order untouched.
+  const heldOf = (d) => adsByDomain[d.query] || 0;
+  const CMP = {
+    query: (a, b) => (a.query || '').localeCompare(b.query || ''),
+    feed: (a, b) => (a.feed || '').localeCompare(b.feed || ''),
+    country: (a, b) => (a.country || '').localeCompare(b.country || ''),
+    max_ads: (a, b) => (a.max_ads || 0) - (b.max_ads || 0),
+    held: (a, b) => heldOf(a) - heldOf(b),
+    interval_days: (a, b) => (a.interval_days || 0) - (b.interval_days || 0),
+    status: (a, b) => (a.enabled === b.enabled ? 0 : a.enabled ? -1 : 1),
+  };
+  const shownDomains = sortKey === 'created' || !CMP[sortKey]
+    ? matched
+    : [...matched].sort((a, b) => CMP[sortKey](a, b) * (sortDir === 'asc' ? 1 : -1));
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(key); setSortDir('asc'); }
+  };
 
   // Targeted-run selection. Select-all covers only the currently shown (searched)
   // rows; the scope estimate covers whatever is selected across all rows.
@@ -137,7 +178,59 @@ export default function ControlRoom({
     }
   };
 
+  // Bulk edits over the selected rows: one server round-trip per intent. The table
+  // re-renders from fresh server props once the action revalidates. Delete clears
+  // the selection (those rows are gone); edits keep it so you can chain changes.
+  const bulkStatus = (enabled) => bulkUpdateDomains([...sel], { enabled });
+  const applyBulkMaxAds = () => {
+    const n = Math.round(Number(bulkMaxAds));
+    if (!Number.isFinite(n) || n < 1) return;
+    bulkUpdateDomains([...sel], { max_ads: n });
+    setBulkMaxAds('');
+  };
+  const applyBulkDays = () => {
+    const n = Math.round(Number(bulkDays));
+    if (!Number.isFinite(n) || n < 1) return;
+    bulkUpdateDomains([...sel], { interval_days: n });
+    setBulkDays('');
+  };
+  const applyBulkFeed = (name) => bulkUpdateDomains([...sel], { feed: name === '__none__' ? null : name });
+  const bulkDelete = () => {
+    const n = sel.size;
+    if (!n) return;
+    if (confirm(`Delete ${n} tracked ${n === 1 ? 'row' : 'rows'}? This stops tracking them (existing ads stay).`)) {
+      deleteDomains([...sel]);
+      clearSel();
+    }
+  };
+
+  // Global "set every domain to the same cadence". Unlike the bulk bar (which acts on
+  // the selection), this hits every tracked row regardless of any search filter, so
+  // "all" always means all. Reuses bulkUpdateDomains, which re-spaces next_run_at.
+  const applyAllDays = async () => {
+    const raw = Math.round(Number(allDays));
+    if (!Number.isFinite(raw) || raw < 1) { setAllMsg('Enter a number of days (1-365).'); return; }
+    const n = Math.min(365, raw);
+    const total = domains.length;
+    if (!total) return;
+    if (!confirm(`Set all ${total} tracked ${total === 1 ? 'domain' : 'domains'} to scrape every ${n} ${n === 1 ? 'day' : 'days'}? This overrides each domain's current frequency, ignoring any search filter.`)) return;
+    setApplyingAll(true);
+    setAllMsg('');
+    try {
+      await bulkUpdateDomains(domains.map((d) => d.id), { interval_days: n });
+      setAllDays(String(n));
+      setAllMsg(`All ${total} set to every ${n} ${n === 1 ? 'day' : 'days'}.`);
+    } catch (e) {
+      setAllMsg('Failed: ' + String(e));
+    } finally {
+      setApplyingAll(false);
+    }
+  };
+
   const inputStyle ='background:#0B0C0E;border:1px solid rgba(255,255,255,.09);color:#E7E8EA;font-size:12px;padding:8px 10px;outline:none';
+  const miniInput = `background:#0B0C0E;border:1px solid rgba(255,255,255,.12);color:#E7E8EA;font-family:${MONO};font-size:11px;text-align:center;padding:4px 6px;outline:none`;
+  const bulkBtn = `background:#101216;border:1px solid rgba(255,255,255,.12);color:#C6C9CE;font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:5px 9px;cursor:pointer;white-space:nowrap`;
+  const bulkSep = 'color:#2E3136';
 
   return (
     <div style={s('max-width:1160px')}>
@@ -202,7 +295,40 @@ export default function ControlRoom({
 
       {/* domains */}
       <div style={s('padding:22px 24px')}>
-        <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:12px')}>Tracked Domains / Queries</div>
+        <div style={s('display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px')}>
+          <span style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>Tracked Domains / Queries</span>
+          {canEdit && domains.length > 0 && (
+            <div style={s('display:flex;align-items:center;gap:7px')}>
+              {allMsg && <span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px')}>{allMsg}</span>}
+              <span style={s('font-size:10px;color:#6C7076;white-space:nowrap')}>Set all to every</span>
+              <input type="number" min="1" max="365" value={allDays}
+                onChange={(e) => setAllDays(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && applyAllDays()}
+                style={s(`width:42px;${miniInput}`)} />
+              <span style={s('font-size:10px;color:#6C7076')}>days</span>
+              <button onClick={applyAllDays} disabled={applyingAll}
+                title="Set every tracked domain to this cadence, ignoring any search filter"
+                style={s(bulkBtn)}>{applyingAll ? 'APPLYING...' : 'APPLY TO ALL'}</button>
+            </div>
+          )}
+        </div>
+
+        {/* quick search: matches domain, feed, country, status, max ads, cadence */}
+        <div style={s('display:flex;align-items:center;gap:10px;margin-bottom:14px')}>
+          <div style={s('display:flex;align-items:center;gap:8px;flex:1;max-width:440px;height:32px;padding:0 10px;background:#101216;border:1px solid rgba(255,255,255,.08)')}>
+            <span style={s('color:#5A5E64;font-size:12px')}>&#8250;</span>
+            <input value={search} onChange={(e) => setSearch(e.target.value)}
+              placeholder="Quick search: domain, feed, country, status, ads..."
+              style={s('flex:1;background:transparent;border:none;outline:none;color:#E7E8EA;font-size:12px')} />
+            {search && (
+              <button onClick={() => setSearch('')} title="Clear search"
+                style={s('background:none;border:none;color:#5A5E64;cursor:pointer;font-size:14px;line-height:1;padding:0')}>&#215;</button>
+            )}
+          </div>
+          <span style={s(`font-family:${MONO};font-size:10.5px;color:#5A5E64;white-space:nowrap;font-variant-numeric:tabular-nums`)}>
+            {shownDomains.length} of {domains.length}
+          </span>
+        </div>
 
         {canEdit && (
           <div style={s('display:flex;gap:8px;margin-bottom:14px')}>
@@ -225,17 +351,57 @@ export default function ControlRoom({
         )}
 
         {canEdit && sel.size > 0 && (
-          <div style={s('display:flex;align-items:center;gap:12px;height:40px;padding:0 12px;margin-bottom:12px;background:#0D0E11;border:1px solid rgba(232,163,61,.28)')}>
+          <div style={s('display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 12px;margin-bottom:12px;background:#0D0E11;border:1px solid rgba(232,163,61,.28)')}>
             <span style={s(`font-family:${MONO};font-size:11px;color:${A};font-variant-numeric:tabular-nums`)}>{sel.size} selected</span>
             <button onClick={clearSel} style={s(`background:none;border:none;color:#8A8E94;font-family:${MONO};font-size:10px;cursor:pointer`)}>CLEAR</button>
-            <span style={s('color:#2E3136')}>|</span>
+            <span style={s(bulkSep)}>|</span>
+
             <button onClick={runSelected} disabled={isBusy}
               title="Scrape only the selected rows, each with its own settings"
-              style={s(`font-family:${MONO};font-size:10.5px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy ? '#5A5E64' : A};border:none;padding:6px 14px;cursor:${isBusy ? 'default' : 'pointer'};white-space:nowrap`)}>
-              {isBusy ? 'RUN IN PROGRESS...' : `► RUN ${sel.size} SELECTED`}
+              style={s(`font-family:${MONO};font-size:10.5px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy ? '#5A5E64' : A};border:none;padding:6px 12px;cursor:${isBusy ? 'default' : 'pointer'};white-space:nowrap`)}>
+              {isBusy ? 'RUN IN PROGRESS...' : `► RUN ${sel.size}`}
             </button>
             <span style={s('font-size:10px;color:#5A5E64;white-space:nowrap')}>up to {selScopeMax} ads</span>
-            <div style={s('flex:1;min-width:0')}><span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block')}>{selMsg}</span></div>
+            <span style={s(bulkSep)}>|</span>
+
+            <button onClick={() => bulkStatus(true)} title="Set selected rows to Active" style={s(bulkBtn)}>&#9679; ACTIVATE</button>
+            <button onClick={() => bulkStatus(false)} title="Pause selected rows" style={s(bulkBtn)}>&#10073;&#10073; PAUSE</button>
+            <span style={s(bulkSep)}>|</span>
+
+            <div style={s('display:flex;align-items:center;gap:5px')}>
+              <span style={s('font-size:10px;color:#6C7076')}>Max ads</span>
+              <input type="number" min="1" value={bulkMaxAds} placeholder="100"
+                onChange={(e) => setBulkMaxAds(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && applyBulkMaxAds()}
+                style={s(`width:54px;${miniInput}`)} />
+              <button onClick={applyBulkMaxAds} style={s(bulkBtn)}>SET</button>
+            </div>
+
+            <div style={s('display:flex;align-items:center;gap:5px')}>
+              <span style={s('font-size:10px;color:#6C7076')}>Every</span>
+              <input type="number" min="1" max="365" value={bulkDays} placeholder="d"
+                onChange={(e) => setBulkDays(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && applyBulkDays()}
+                style={s(`width:44px;${miniInput}`)} />
+              <span style={s('font-size:10px;color:#6C7076')}>days</span>
+              <button onClick={applyBulkDays} style={s(bulkBtn)}>SET</button>
+            </div>
+
+            <div style={s('display:flex;align-items:center;gap:5px')}>
+              <span style={s('font-size:10px;color:#6C7076')}>Feed</span>
+              <select value="" onChange={(e) => { if (e.target.value) applyBulkFeed(e.target.value); e.target.value = ''; }}
+                style={s(`${miniInput};font-family:${MONO};min-width:92px;text-align:left`)}>
+                <option value="">set...</option>
+                {feeds.map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
+                <option value="__none__">(no feed)</option>
+              </select>
+            </div>
+            <span style={s(bulkSep)}>|</span>
+
+            <button onClick={bulkDelete}
+              style={s(`background:none;border:1px solid rgba(255,120,120,.35);color:#ff8a80;font-family:${MONO};font-size:10px;padding:5px 10px;cursor:pointer;white-space:nowrap`)}>DELETE {sel.size}</button>
+
+            {selMsg && <div style={s('flex:1;min-width:120px')}><span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block')}>{selMsg}</span></div>}
           </div>
         )}
 
@@ -247,13 +413,13 @@ export default function ControlRoom({
                   style={s(`width:13px;height:13px;border:1px solid ${allShownSelected ? A : 'rgba(255,255,255,.25)'};background:${allShownSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allShownSelected ? '✓' : ''}</span>
               </div>
             )}
-            <div style={s('flex:1')}>Domain / Query</div>
-            <div style={s('width:110px')}>Feed</div>
-            <div style={s('width:66px;text-align:center')}>Country</div>
-            <div style={s('width:80px;text-align:right')}>Max Ads</div>
-            <div style={s('width:70px;text-align:center')}>Held</div>
-            <div style={s('width:118px;text-align:center')}>Frequency</div>
-            <div style={s('width:86px;text-align:center')}>Status</div>
+            <SortTh label="Domain / Query" col="query" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} style="flex:1" />
+            <SortTh label="Feed" col="feed" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} style="width:110px" />
+            <SortTh label="Country" col="country" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} style="width:66px;text-align:center" />
+            <SortTh label="Max Ads" col="max_ads" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} style="width:80px;text-align:right" />
+            <SortTh label="Held" col="held" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} style="width:70px;text-align:center" />
+            <SortTh label="Frequency" col="interval_days" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} style="width:118px;text-align:center" />
+            <SortTh label="Status" col="status" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} style="width:86px;text-align:center" />
             <div style={s('width:32px')} />
           </div>
 
@@ -332,6 +498,18 @@ function Stat({ label, value, color }) {
     <div>
       <div style={s('font-size:9px;letter-spacing:.8px;color:#5A5E64;text-transform:uppercase')}>{label}</div>
       <div style={s(`font-family:${MONO};font-size:14px;color:${color};margin-top:3px`)}>{value}</div>
+    </div>
+  );
+}
+
+// Clickable column header. First click sorts ascending, clicking the active column
+// again flips direction; the active column shows its arrow and the accent colour.
+function SortTh({ label, col, sortKey, sortDir, onSort, style }) {
+  const active = sortKey === col;
+  return (
+    <div onClick={() => onSort(col)} title={`Sort by ${label.toLowerCase()}`}
+      style={s(`${style};cursor:pointer;user-select:none;color:${active ? A : '#5A5E64'}`)}>
+      {label}{active ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
     </div>
   );
 }

@@ -13,6 +13,17 @@ function pick(patch, allowed) {
   return set;
 }
 
+// Domain ids key a uuid column and there is no uuid = text operator, so anything
+// that is not a uuid is dropped rather than trusted. Deduped and capped so a bulk
+// call can never smuggle in a huge or malformed id list.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function cleanDomainIds(ids, cap = 500) {
+  return Array.isArray(ids)
+    ? [...new Set(ids.map(String).filter((x) => UUID_RE.test(x)))].slice(0, cap)
+    : [];
+}
+
 export async function updateAdWorkflow(adId, patch) {
   await requireAdmin();
   const set = pick(patch, AD_FIELDS);
@@ -109,6 +120,14 @@ function clampDays(v, dflt) {
   return Math.min(365, Math.max(1, n));
 }
 
+// Keep a bulk-set Max Ads sane (1..1000) so one fat-fingered value can't blow up a
+// scrape's scope across many rows at once.
+function clampMaxAds(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return 100;
+  return Math.min(1000, Math.max(1, n));
+}
+
 export async function updateDomain(id, patch) {
   await requireAdmin();
   const set = pick(patch, DOMAIN_FIELDS);
@@ -136,6 +155,42 @@ export async function deleteDomain(id) {
   await requireAdmin();
   const sql = getSql();
   await sql`delete from domains where id = ${id}`;
+  revalidatePath('/');
+}
+
+// Apply one change (status, feed, max ads, or cadence) to many tracked rows at
+// once. Mirrors updateDomain's rules: fields are restricted to DOMAIN_FIELDS,
+// max_ads/interval_days are clamped, and an interval change re-spaces next_run_at
+// so "Next Due" reflects the new cadence immediately.
+export async function bulkUpdateDomains(ids, patch) {
+  await requireAdmin();
+  const clean = cleanDomainIds(ids);
+  if (!clean.length) return;
+  const set = pick(patch, DOMAIN_FIELDS);
+  if ('max_ads' in set) set.max_ads = clampMaxAds(set.max_ads);
+  if (!Object.keys(set).length) return;
+  const sql = getSql();
+  if ('interval_days' in set) {
+    const days = clampDays(set.interval_days, 3);
+    delete set.interval_days;
+    if (Object.keys(set).length) await sql`update domains set ${sql(set)} where id = any(${clean}::uuid[])`;
+    await sql`update domains
+                 set interval_days = ${days},
+                     next_run_at = coalesce(last_run_at, now()) + make_interval(days => ${days})
+               where id = any(${clean}::uuid[])`;
+    revalidatePath('/');
+    return;
+  }
+  await sql`update domains set ${sql(set)} where id = any(${clean}::uuid[])`;
+  revalidatePath('/');
+}
+
+export async function deleteDomains(ids) {
+  await requireAdmin();
+  const clean = cleanDomainIds(ids);
+  if (!clean.length) return;
+  const sql = getSql();
+  await sql`delete from domains where id = any(${clean}::uuid[])`;
   revalidatePath('/');
 }
 
@@ -192,14 +247,10 @@ export async function triggerScrape() {
 // main does not yet declare the domain_ids input, e.g. before this branch merges)
 // we fall back to marking just those rows due; the scheduled runner then picks
 // them up on its next tick, alongside anything else already due. Returns what it
-// did so the UI can report honestly.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
+// did so the UI can report honestly. Capped at 50 rows per targeted run.
 export async function runDomains(ids) {
   await requireAdmin();
-  const clean = Array.isArray(ids)
-    ? [...new Set(ids.map(String).filter((x) => UUID_RE.test(x)))].slice(0, 50)
-    : [];
+  const clean = cleanDomainIds(ids, 50);
   if (!clean.length) return { ok: false, reason: 'no-ids' };
 
   const sql = getSql();
