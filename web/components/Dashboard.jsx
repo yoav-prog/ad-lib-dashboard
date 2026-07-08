@@ -9,8 +9,9 @@ import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
 import { updateAdWorkflow } from '@/app/actions';
 
-export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastRunIso, nowIso }) {
+export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
+  const lastRunStart = lastRunStartIso ? new Date(lastRunStartIso).getTime() : null;
   const [ads, setAds] = useState(adsProp);
   const [view, setView] = useState('fresh');
   const [query, setQuery] = useState('');
@@ -28,8 +29,8 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
 
   const updateLocal = (id, patch) =>
     setAds((prev) => prev.map((a) => (a.ad_archive_id === id ? { ...a, ...patch } : a)));
-  const commit = (id, patch) => updateAdWorkflow(id, patch).catch((e) => console.error('save failed', e));
-  const update = (id, patch) => { updateLocal(id, patch); commit(id, patch); };
+  const commit = (id, patch) => { if (!canEdit) return; updateAdWorkflow(id, patch).catch((e) => console.error('save failed', e)); };
+  const update = (id, patch) => { if (!canEdit) return; updateLocal(id, patch); commit(id, patch); };
 
   // Precomputed lowercase haystack per ad -> fast multi-field smart search.
   const searchIndex = useMemo(() => {
@@ -161,7 +162,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
-          selIndex={selIndex} setSelIndex={setSelIndex} openDetail={openDetail}
+          selIndex={selIndex} setSelIndex={setSelIndex} openDetail={openDetail} lastRunStart={lastRunStart}
         />
       )}
 
@@ -171,13 +172,13 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], lastR
           NOW={NOW}
           back={() => setView('fresh')}
           prev={() => stepDetail(-1)} next={() => stepDetail(1)}
-          update={update} updateLocal={updateLocal} commit={commit}
+          update={update} updateLocal={updateLocal} commit={commit} canEdit={canEdit} lastRunStart={lastRunStart}
         />
       )}
 
       {view === 'competitor' && <CompetitorView ads={ads} NOW={NOW} openDetail={openDetail} matchesQuery={matchesQuery} />}
       {view === 'pipeline' && <PipelineView ads={ads} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />}
-      {view === 'settings' && <ControlRoom ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} />}
+      {view === 'settings' && <ControlRoom ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds} canEdit={canEdit} />}
 
       {paletteOpen && (
         <Palette
@@ -247,15 +248,16 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
 // ═════════════════════════════════════════════════════════════════════════════
 // FRESH FINDS
 // ═════════════════════════════════════════════════════════════════════════════
-function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail }) {
+function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart }) {
+  const isFresh = (a) => (lastRunStart ? new Date(a.first_seen_at).getTime() >= lastRunStart : hoursSince(a.first_seen_at, NOW) <= 24);
   const [gsearch, setGsearch] = useState({});
   const uniq = (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
   const countBy = (key, val) => ads.filter((a) => a[key] === val).length;
 
-  const fresh24 = ads.filter((a) => hoursSince(a.first_seen_at, NOW) <= 24).length;
+  const fresh24 = ads.filter(isFresh).length;
   const new7 = ads.filter((a) => hoursSince(a.first_seen_at, NOW) <= 168).length;
   const metrics = [
-    { label: 'Fresh 24h', value: pad(fresh24), color: A },
+    { label: lastRunStart ? 'New This Scrape' : 'Fresh 24h', value: pad(fresh24), color: A },
     { label: 'New 7d', value: pad(new7), color: '#E7E8EA' },
     { label: 'Total Tracked', value: pad(ads.length, 3), color: '#E7E8EA' },
     { label: 'Competitors', value: pad(uniq('domain').length), color: '#E7E8EA' },
@@ -404,7 +406,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
 
           {filtered.map((a, i) => {
             const days = daysRunning(a, NOW);
-            const fresh = hoursSince(a.first_seen_at, NOW) <= 24;
+            const fresh = isFresh(a);
             const sel = i === selIndex;
             const vid = isVideo(a);
             return (
@@ -482,12 +484,12 @@ function RangeFilter({ title, min, max, onMin, onMax }) {
   );
 }
 
-function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit }) {
+function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdit = true, lastRunStart }) {
   if (!ad) return <Placeholder view="detail" />;
   const vid = isVideo(ad);
   const days = daysRunning(ad, NOW);
   const src = thumbOf(ad);
-  const fresh = hoursSince(ad.first_seen_at, NOW) <= 24;
+  const fresh = lastRunStart ? new Date(ad.first_seen_at).getTime() >= lastRunStart : hoursSince(ad.first_seen_at, NOW) <= 24;
   const statuses = ['idea', 'drafting', 'published'];
   const owners = ['Mara K.', 'Devin R.', 'Priya S.', 'Ari L.'];
 
