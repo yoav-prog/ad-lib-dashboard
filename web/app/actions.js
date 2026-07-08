@@ -95,3 +95,18 @@ export async function triggerScrape() {
     return { ok: false, dispatched: false, reason: String(e) };
   }
 }
+
+// Mark a stalled run as failed from the dashboard, used when the heartbeat has
+// gone silent. Scoped to status='running' so it can never clobber a run that
+// completed on its own in the meantime.
+export async function markRunFailed(runId) {
+  await requireAdmin();
+  const sql = getSql();
+  await sql`
+    update runs
+       set status = 'failed', finished_at = now(),
+           error_detail = coalesce(error_detail, 'Marked failed from dashboard (stalled: no heartbeat for 90s+)')
+     where id = ${runId} and status = 'running'
+  `;
+  revalidatePath('/');
+}

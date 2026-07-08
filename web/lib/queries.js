@@ -114,3 +114,78 @@ export async function getFeeds() {
   const rows = await sql`select id, name from feeds order by name asc`;
   return rows.map((f) => ({ id: f.id, name: f.name }));
 }
+
+// The run currently in flight, plus a DB-computed `stale` flag. Liveness is judged
+// from last_heartbeat_at on the database clock (falling back to started_at before
+// the first heartbeat), never from `status` alone - a crashed run keeps status
+// 'running', so trusting it would make the banner lie for up to 30 minutes.
+export async function getActiveRun() {
+  const sql = getSql();
+  const rows = await sql`
+    select id, status, trigger_source, started_at, current_domain,
+           domains_total, domains_done, ads_found_so_far,
+           extract(epoch from (now() - started_at)) as elapsed_seconds,
+           coalesce(last_heartbeat_at, started_at) < now() - interval '90 seconds' as stale
+    from runs
+    where status = 'running'
+    order by started_at desc
+    limit 1
+  `;
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    id: r.id,
+    status: r.status,
+    trigger_source: r.trigger_source,
+    started_at: iso(r.started_at),
+    current_domain: r.current_domain,
+    domains_total: r.domains_total,
+    domains_done: r.domains_done,
+    ads_found_so_far: r.ads_found_so_far,
+    elapsed_seconds: Math.max(0, Math.floor(Number(r.elapsed_seconds) || 0)),
+    stale: r.stale === true,
+  };
+}
+
+// The most recently finished run (completed or failed), for the "just finished"
+// prompt and the head of the history list.
+export async function getLatestFinishedRun() {
+  const sql = getSql();
+  const rows = await sql`
+    select id, status, trigger_source, started_at, finished_at,
+           ads_found, ads_new, errors, error_detail
+    from runs
+    where finished_at is not null
+    order by finished_at desc
+    limit 1
+  `;
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    id: r.id,
+    status: r.status,
+    trigger_source: r.trigger_source,
+    started_at: iso(r.started_at),
+    finished_at: iso(r.finished_at),
+    ads_found: r.ads_found,
+    ads_new: r.ads_new,
+    errors: r.errors,
+    error_detail: r.error_detail,
+  };
+}
+
+// Stored log lines for a run after a cursor id. bigserial ids are monotonic, so
+// `id > since` is a reliable incremental cursor. Works for failed runs too - their
+// logs are the whole point when debugging a failure.
+export async function getRunLogs(runId, since = 0) {
+  if (!runId) return [];
+  const sql = getSql();
+  const rows = await sql`
+    select id, ts, level, message
+    from run_logs
+    where run_id = ${runId} and id > ${since}
+    order by id asc
+    limit 1000
+  `;
+  return rows.map((r) => ({ id: Number(r.id), ts: iso(r.ts), level: r.level, message: r.message }));
+}

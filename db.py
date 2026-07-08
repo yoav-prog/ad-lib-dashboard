@@ -18,6 +18,7 @@ The connection string comes from the DATABASE_URL environment variable, e.g.
 from __future__ import annotations
 
 import os
+import re
 from contextlib import contextmanager
 
 import psycopg
@@ -135,6 +136,98 @@ def fail_run(conn, run_id, error_detail):
              where id = %s
             """,
             (str(error_detail)[:2000], run_id),
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# RUN LOGS + PROGRESS - live visibility for the dashboard
+# ═════════════════════════════════════════════════════════════════════════════
+# Secrets never reach run_logs. We redact at the write boundary, so no matter what
+# a caller buffers, nothing sensitive is persisted. Known secret values (pulled
+# from the environment) are replaced verbatim; a couple of patterns catch DSN
+# passwords and Bearer tokens as defense in depth.
+_SECRET_ENV_KEYS = (
+    'DATABASE_URL', 'APIFY_API_TOKEN', 'SCRAPINGBEE_API_KEY', 'OPENAI_API_KEY',
+    'GCS_PRIVATE_KEY', 'GCS_PRIVATE_KEY_ID', 'GCS_CLIENT_ID', 'GH_DISPATCH_TOKEN',
+)
+_DSN_PASSWORD = re.compile(r'(postgres(?:ql)?://[^:\s/]+:)[^@\s]+(@)')
+_BEARER_TOKEN = re.compile(r'(Bearer\s+)[A-Za-z0-9._\-]+', re.IGNORECASE)
+_secret_values_cache: list[str] | None = None
+
+
+def _secret_values() -> list[str]:
+    """Distinct env secret values worth redacting (cached; env is fixed per run)."""
+    global _secret_values_cache
+    if _secret_values_cache is None:
+        vals = set()
+        for key in _SECRET_ENV_KEYS:
+            v = os.environ.get(key)
+            if v and len(v) >= 6:
+                vals.add(v)
+        _secret_values_cache = sorted(vals, key=len, reverse=True)  # longest first
+    return _secret_values_cache
+
+
+def redact(text: str) -> str:
+    """Strip known secret values and credential patterns from a log line."""
+    if not text:
+        return text
+    for value in _secret_values():
+        if value in text:
+            text = text.replace(value, '[redacted]')
+    text = _DSN_PASSWORD.sub(r'\1[redacted]\2', text)
+    text = _BEARER_TOKEN.sub(r'\1[redacted]', text)
+    return text
+
+
+def insert_run_logs(conn, run_id, rows) -> None:
+    """Batch-insert buffered log lines. rows: iterable of (ts, level, message)."""
+    values = [(run_id, ts, level, redact(message)) for (ts, level, message) in rows]
+    if not values:
+        return
+    with conn.cursor() as cur:
+        cur.executemany(
+            'insert into run_logs (run_id, ts, level, message) values (%s, %s, %s, %s)',
+            values,
+        )
+
+
+def update_progress(conn, run_id, *, current_domain=None, domains_total=None,
+                    domains_done=None, ads_found_so_far=None) -> None:
+    """Refresh the heartbeat and any provided progress fields in one UPDATE.
+
+    last_heartbeat_at is always bumped so liveness can be judged on the DB clock.
+    A field left as None is not touched (so an early call before the first domain
+    does not wipe current_domain).
+    """
+    sets = ['last_heartbeat_at = now()']
+    params: list = []
+    if current_domain is not None:
+        sets.append('current_domain = %s'); params.append(current_domain)
+    if domains_total is not None:
+        sets.append('domains_total = %s'); params.append(domains_total)
+    if domains_done is not None:
+        sets.append('domains_done = %s'); params.append(domains_done)
+    if ads_found_so_far is not None:
+        sets.append('ads_found_so_far = %s'); params.append(ads_found_so_far)
+    params.append(run_id)
+    with conn.cursor() as cur:
+        cur.execute(f'update runs set {", ".join(sets)} where id = %s', params)
+
+
+def prune_run_logs(conn, keep_days: int = 30) -> None:
+    """Delete logs for runs that finished more than keep_days ago (bounded growth)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            delete from run_logs
+             where run_id in (
+                 select id from runs
+                  where finished_at is not null
+                    and finished_at < now() - make_interval(days => %s)
+             )
+            """,
+            (keep_days,),
         )
 
 

@@ -27,6 +27,8 @@ except Exception:
 import argparse
 import asyncio
 import os
+import threading
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,6 +56,115 @@ _spec = importlib.util.spec_from_file_location(
 )
 fb = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fb)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Live run logging - mirror everything the run prints into run_logs, keep a fresh
+# heartbeat, and stream progress, so the dashboard shows exactly what is happening
+# without anyone opening GitHub Actions. Every part of this is fail-open: a logging
+# hiccup must never take the scrape down with it.
+# ═════════════════════════════════════════════════════════════════════════════
+class RunLogger:
+    """Thread-safe in-memory buffer of (ts, level, message) lines awaiting flush."""
+
+    def __init__(self):
+        self._buf = []
+        self._lock = threading.Lock()
+
+    def add_line(self, message, level='info'):
+        if not message:
+            return
+        ts = datetime.now(timezone.utc)
+        with self._lock:
+            self._buf.append((ts, level, message))
+
+    def drain(self):
+        with self._lock:
+            rows, self._buf = self._buf, []
+        return rows
+
+
+class _Tee:
+    """Mirror a text stream to the real console AND capture whole lines to a logger.
+
+    Partial writes (no trailing newline) are held until the line completes, so a
+    log row is always a full line. Redaction happens later at the DB boundary.
+    """
+
+    def __init__(self, stream, logger, level='info'):
+        self._stream = stream
+        self._logger = logger
+        self._level = level
+        self._partial = ''
+
+    def write(self, s):
+        try:
+            n = self._stream.write(s)
+        except Exception:
+            n = len(s) if s else 0
+        try:
+            self._capture(s)
+        except Exception:
+            pass
+        return n
+
+    def _capture(self, s):
+        if not s:
+            return
+        parts = (self._partial + s).split('\n')
+        self._partial = parts.pop()
+        for line in parts:
+            self._logger.add_line(line.rstrip('\r'), self._level)
+
+    def flush_partial(self):
+        """Emit any buffered incomplete line (called at teardown)."""
+        if self._partial.strip():
+            self._logger.add_line(self._partial.rstrip('\r'), self._level)
+        self._partial = ''
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _flush_once(run_id, logger, progress):
+    """Persist buffered logs + a heartbeat/progress snapshot. Never raises."""
+    rows = logger.drain()
+    try:
+        with db.connect() as conn:
+            if rows:
+                db.insert_run_logs(conn, run_id, rows)
+            db.update_progress(
+                conn, run_id,
+                current_domain=progress.get('current_domain'),
+                domains_total=progress.get('domains_total'),
+                domains_done=progress.get('domains_done'),
+                ads_found_so_far=progress.get('ads_found_so_far'),
+            )
+    except Exception as e:
+        # Fail-open: a dropped flush loses a few log lines, never the scrape.
+        print(f'[run-log flush failed: {e}]', file=sys.__stderr__)
+
+
+async def _run_heartbeat(run_id, logger, progress, stop_event, interval=2.0):
+    """Flush logs + heartbeat every `interval`s until stopped, then flush once more.
+
+    A dedicated task, so the heartbeat stays fresh even while a domain's Apify
+    fetch is running. A stale heartbeat therefore means the process died, not that
+    it is merely busy - which is what lets the dashboard flip to STALLED honestly.
+    """
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
+        await asyncio.to_thread(_flush_once, run_id, logger, progress)
+    await asyncio.to_thread(_flush_once, run_id, logger, progress)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -180,7 +291,7 @@ async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session):
 # ═════════════════════════════════════════════════════════════════════════════
 # Per-query scrape
 # ═════════════════════════════════════════════════════════════════════════════
-async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, domain, retries):
+async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, domain, retries, progress=None):
     ads = await fb.fetch_facebook_ads_apify_with_resume(params, max_retries=retries, retry_delay=90)
     if not ads:
         print(f'  no ads returned for "{domain}"')
@@ -215,6 +326,8 @@ async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, do
                     f, n = db.upsert_ads(conn, run_id, rows)
                 total_found += f
                 total_new += n
+                if progress is not None:
+                    progress['ads_found_so_far'] += n   # cumulative across all domains
                 print(f'    upserted batch: {n} new (running total {total_new})')
 
     return (total_found, total_new)
@@ -250,30 +363,55 @@ async def run(args):
     if not run_id:
         print('another run is already active; exiting')
         return
+
+    # ── Live visibility: from here on, everything printed is mirrored into
+    #    run_logs, the heartbeat stays fresh, and progress streams to the
+    #    dashboard. Tees are installed before the first print so the console the
+    #    user sees starts at "run ... claimed".
+    logger = RunLogger()
+    progress = {'current_domain': None, 'domains_total': 0,
+                'domains_done': 0, 'ads_found_so_far': 0}
+    tee_out = _Tee(sys.stdout, logger, 'info')
+    tee_err = _Tee(sys.stderr, logger, 'error')
+    sys.stdout, sys.stderr = tee_out, tee_err
+    stop_event = asyncio.Event()
+    hb_task = asyncio.create_task(_run_heartbeat(run_id, logger, progress, stop_event))
+    try:
+        with db.connect() as conn:
+            db.prune_run_logs(conn)          # bound table growth; cheap, best-effort
+    except Exception:
+        pass
+
     print(f'run {run_id} claimed | {len(verticals)} verticals | {len(existing_ids)} ads already stored')
 
     total_found = total_new = 0
     try:
         if args.query:
+            progress['domains_total'] = 1
+            progress['current_domain'] = args.query
             params = {'query': args.query, 'country': args.country,
                       'activeStatus': 'active', 'max_target_results': args.max}
             print(f'scraping query "{args.query}" (max {args.max})...')
             f, n = await scrape_query(run_id, bucket, verticals, existing_ids,
-                                      params, args.feed, args.query, args.retries)
+                                      params, args.feed, args.query, args.retries, progress)
             total_found, total_new = f, n
+            progress['domains_done'] = 1
         else:
             with db.connect() as conn:
                 due = db.get_due_domains(conn)
+            progress['domains_total'] = len(due)
             print(f'{len(due)} domain(s) due')
             for dom in due:
+                progress['current_domain'] = dom['query']
                 params = {'query': dom['query'], 'country': dom['country'],
                           'activeStatus': dom['active_status'],
                           'max_target_results': dom['max_ads']}
                 print(f'scraping "{dom["query"]}" (max {dom["max_ads"]})...')
                 f, n = await scrape_query(run_id, bucket, verticals, existing_ids,
-                                          params, dom.get('feed') or '', dom['query'], args.retries)
+                                          params, dom.get('feed') or '', dom['query'], args.retries, progress)
                 total_found += f
                 total_new += n
+                progress['domains_done'] += 1
                 with db.connect() as conn:
                     db.bump_domain_schedule(conn, dom['id'], dom['cadence'])
 
@@ -282,10 +420,26 @@ async def run(args):
         print(f'\nDONE: found={total_found} new={total_new}')
         _notify_slack(total_found, total_new)
     except Exception as e:
+        # Print the traceback first so it lands in run_logs (redacted), then record
+        # the failure. The full traceback is exactly what you want for a failed run.
+        print(f'\nrun FAILED: {e}\n{traceback.format_exc()}')
         with db.connect() as conn:
             db.fail_run(conn, run_id, e)
-        print(f'\nrun FAILED: {e}')
         raise
+    finally:
+        # Flush trailing partial lines, stop the heartbeat (its final tick drains
+        # the buffer, capturing the DONE/FAILED line), and restore the streams.
+        try:
+            tee_out.flush_partial()
+            tee_err.flush_partial()
+        except Exception:
+            pass
+        stop_event.set()
+        try:
+            await hb_task
+        except Exception:
+            pass
+        sys.stdout, sys.stderr = tee_out._stream, tee_err._stream
 
 
 def _notify_slack(found, new):

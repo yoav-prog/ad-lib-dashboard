@@ -1,21 +1,42 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, relTime, pad } from '@/lib/ui';
-import { addDomain, updateDomain, deleteDomain, addFeed, triggerScrape } from '@/app/actions';
+import { addDomain, updateDomain, deleteDomain, addFeed } from '@/app/actions';
 
 const CADENCES = ['hourly', 'daily', 'weekly', 'paused'];
 
-export default function ControlRoom({ ads, domains, runs, NOW, query = '', feeds = [], canEdit = true }) {
+export default function ControlRoom({
+  ads, domains, runs, NOW, query = '', feeds = [], canEdit = true,
+  runStatus = { active: null, lastRun: null }, runLogs = [], pending = false,
+  onRunNow, onMarkFailed, onSeeNewAds,
+}) {
   const [q, setQ] = useState('');
   const [country, setCountry] = useState('ALL');
   const [maxAds, setMaxAds] = useState(100);
   const [feed, setFeed] = useState('');
   const [newFeed, setNewFeed] = useState('');
   const [busy, setBusy] = useState(false);
-  const [running, setRunning] = useState(false);
   const [runMsg, setRunMsg] = useState('');
+
+  const active = runStatus?.active || null;
+  const lastRun = runStatus?.lastRun || null;
+  const isBusy = pending || !!active;
+
+  // What a click will actually scrape, so it is never a mystery: every active
+  // (enabled, non-paused) domain, each up to its own Max Ads.
+  const activeDomains = domains.filter((d) => d.enabled && d.cadence !== 'paused');
+  const scopeAdsMax = activeDomains.reduce((n, d) => n + (d.max_ads || 0), 0);
+  const scopeNames = activeDomains.slice(0, 3).map((d) => d.query).join(', ')
+    + (activeDomains.length > 3 ? `, +${activeDomains.length - 3} more` : '');
+  const scopeText = activeDomains.length
+    ? `Runs ${activeDomains.length} active ${activeDomains.length === 1 ? 'domain' : 'domains'} (${scopeNames}), up to ${scopeAdsMax} ads total.`
+    : 'No active domains. Add one below, or un-pause a domain, before running.';
+
+  const recentlyFinished = lastRun?.finished_at
+    && Date.now() - new Date(lastRun.finished_at).getTime() < 10 * 60 * 1000;
+  const showLivePanel = pending || !!active || recentlyFinished;
 
   const adsByDomain = {};
   ads.forEach((a) => { if (a.domain) adsByDomain[a.domain] = (adsByDomain[a.domain] || 0) + 1; });
@@ -47,18 +68,15 @@ export default function ControlRoom({ ads, domains, runs, NOW, query = '', feeds
   };
 
   const runNow = async () => {
-    if (running) return;
-    setRunning(true);
+    if (isBusy || !onRunNow) return;
     setRunMsg('');
     try {
-      const r = await triggerScrape();
-      if (r?.dispatched) setRunMsg('Scrape dispatched to GitHub Actions. New ads will appear here shortly.');
+      const r = await onRunNow();
+      if (r?.dispatched) setRunMsg('Scrape dispatched. The runner is spinning up now; live status appears below in a moment.');
       else if (r?.reason === 'no-dispatch-token') setRunMsg('All active domains marked due. Set GH_DISPATCH_TOKEN + GH_REPO to fire instantly, otherwise the scheduled runner picks them up on its next tick.');
       else setRunMsg(`Could not dispatch (status ${r?.status ?? '?'}). Domains were still marked due.`);
     } catch (e) {
       setRunMsg('Run failed: ' + String(e));
-    } finally {
-      setRunning(false);
     }
   };
 
@@ -84,14 +102,23 @@ export default function ControlRoom({ ads, domains, runs, NOW, query = '', feeds
             </div>
           </div>
           {canEdit && (
-            <button onClick={runNow} disabled={running}
-              style={s(`font-family:${MONO};font-size:11px;letter-spacing:.5px;color:#0B0C0E;background:${running ? '#5A5E64' : A};border:none;padding:9px 16px;cursor:${running ? 'default' : 'pointer'}`)}>
-              {running ? 'STARTING...' : '► RUN NOW'}
-            </button>
+            <div style={s('display:flex;flex-direction:column;align-items:flex-end;gap:7px')}>
+              <button onClick={runNow} disabled={isBusy}
+                style={s(`font-family:${MONO};font-size:11px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy ? '#5A5E64' : A};border:none;padding:9px 16px;cursor:${isBusy ? 'default' : 'pointer'}`)}>
+                {pending ? 'STARTING...' : active ? (active.stale ? 'STALLED' : 'RUNNING...') : '► RUN NOW'}
+              </button>
+              <span style={s('font-size:10px;color:#5A5E64;max-width:280px;text-align:right;line-height:1.4')}>{scopeText}</span>
+            </div>
           )}
         </div>
         {runMsg && <div style={s('font-size:11px;color:#9CA0A6;margin-top:12px;line-height:1.5;max-width:640px')}>{runMsg}</div>}
       </div>
+
+      {/* live run panel: exactly what the run is doing, its status, and full logs */}
+      {showLivePanel && (
+        <LiveRunPanel active={active} pending={pending} lastRun={lastRun} logs={runLogs}
+          canEdit={canEdit} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} />
+      )}
 
       {/* feeds */}
       {canEdit && (
@@ -196,6 +223,8 @@ export default function ControlRoom({ ads, domains, runs, NOW, query = '', feeds
           Changes write to the database immediately. The scheduled runner reads these to decide what to scrape and when; &ldquo;Run now&rdquo; makes every active domain due at once.
         </div>
       </div>
+
+      <RunHistory runs={runs} canEdit={canEdit} NOW={NOW} />
     </div>
   );
 }
@@ -217,4 +246,194 @@ function relFuture(iso, now) {
   const h = Math.round(m / 60);
   if (h < 24) return `in ${h}h`;
   return `in ${Math.round(h / 24)}d`;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LIVE RUN PANEL - what the run is doing, its exact status, and the full log
+// ═════════════════════════════════════════════════════════════════════════════
+const LEVEL_COLOR = { info: '#9CA0A6', warn: '#E8A33D', error: '#E06C5A', success: '#6FCF97' };
+
+function fmtDuration(totalSec) {
+  const sec = Math.max(0, Math.floor(totalSec || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s2 = sec % 60;
+  if (h > 0) return `${h}:${pad(m)}:${pad(s2)}`;
+  return `${m}:${pad(s2)}`;
+}
+
+function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, onSeeNewAds }) {
+  const stalled = active && active.stale;
+  const running = active && !active.stale;
+  const finished = !active && lastRun;
+  const failed = finished && lastRun.status === 'failed';
+  const completed = finished && lastRun.status === 'completed';
+
+  let tone = '#9CA0A6', label = '', dotColor = '#5A5E64', dotPulse = false;
+  if (pending && !active) { tone = A; label = 'STARTING'; dotColor = A; dotPulse = true; }
+  else if (running) { tone = A; label = 'RUNNING'; dotColor = A; dotPulse = true; }
+  else if (stalled) { tone = '#E8A33D'; label = 'STALLED'; dotColor = '#E8A33D'; }
+  else if (failed) { tone = '#E06C5A'; label = 'FAILED'; dotColor = '#E06C5A'; }
+  else if (completed) { tone = '#6FCF97'; label = 'COMPLETED'; dotColor = '#6FCF97'; }
+
+  const done = active?.domains_done ?? 0;
+  const total = active?.domains_total ?? 0;
+  const found = active?.ads_found_so_far ?? 0;
+  const pct = total > 0 ? Math.round((done / total) * 100) : (running ? 5 : 0);
+  const elapsed = active ? fmtDuration(active.elapsed_seconds) : '';
+
+  let eta = '';
+  if (running && total > 0 && done > 0 && done < total && active.elapsed_seconds > 5) {
+    const remaining = Math.round((active.elapsed_seconds / done) * (total - done));
+    if (remaining > 30) eta = `~${fmtDuration(remaining)} left`;
+  }
+
+  return (
+    <div style={s('padding:18px 24px;border-bottom:1px solid rgba(255,255,255,.06)')}>
+      <div style={s('display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap')}>
+        <span style={s(`width:8px;height:8px;border-radius:50%;background:${dotColor}${dotPulse ? ';animation:freshpulse 1.6s ease-in-out infinite' : ''}`)} />
+        <span style={s(`font-family:${MONO};font-size:11px;letter-spacing:1.5px;color:${tone}`)}>{label}</span>
+        {running && <span style={s('font-size:11px;color:#8A8E94')}>scraping <span style={s('color:#E7E8EA')}>{active.current_domain || '...'}</span></span>}
+        {pending && !active && <span style={s('font-size:11px;color:#8A8E94')}>waiting for the runner to spin up (up to a minute on first boot)</span>}
+        {completed && <span style={s('font-size:11px;color:#8A8E94')}>{lastRun.ads_new > 0 ? `+${lastRun.ads_new} new ${lastRun.ads_new === 1 ? 'ad' : 'ads'}` : 'no new ads this run'} · {relTime(Date.now() - new Date(lastRun.finished_at).getTime())}</span>}
+        {failed && <span style={s('font-size:11px;color:#B08A84')}>{(lastRun.error_detail || 'run failed').slice(0, 140)}</span>}
+      </div>
+
+      {(running || stalled) && total > 0 && (
+        <div style={s('display:flex;align-items:center;gap:26px;margin-bottom:14px;flex-wrap:wrap')}>
+          <LiveStat label="Competitor" value={`${done} / ${total}`} />
+          <LiveStat label="New Found" value={String(found)} color={A} />
+          <LiveStat label="Elapsed" value={elapsed} />
+          {eta && <LiveStat label="Remaining" value={eta} />}
+          <div style={s('flex:1;min-width:120px')}>
+            <div style={s('height:3px;background:rgba(255,255,255,.08)')}>
+              <div style={s(`height:100%;width:${Math.min(100, Math.max(3, pct))}%;background:${stalled ? '#E8A33D' : A};transition:width .4s`)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {stalled && canEdit && (
+        <div style={s('display:flex;align-items:center;gap:12px;margin-bottom:14px;padding:10px 12px;background:rgba(232,163,61,.07);border:1px solid rgba(232,163,61,.28)')}>
+          <span style={s('font-size:11.5px;color:#D8C08A;flex:1;line-height:1.5')}>No heartbeat for 90 seconds or more. The run may have died on the runner. Mark it failed to clear the lock, then you can run again.</span>
+          <button onClick={() => onMarkFailed && onMarkFailed(active.id)}
+            style={s(`font-family:${MONO};font-size:10px;letter-spacing:.5px;color:#0B0C0E;background:#E8A33D;border:none;padding:6px 12px;cursor:pointer;white-space:nowrap`)}>MARK FAILED</button>
+        </div>
+      )}
+
+      {completed && lastRun.ads_new > 0 && (
+        <div style={s('margin-bottom:14px')}>
+          <button onClick={() => onSeeNewAds && onSeeNewAds()}
+            style={s(`font-family:${MONO};font-size:11px;letter-spacing:.5px;color:#0B0C0E;background:${A};border:none;padding:8px 14px;cursor:pointer`)}>
+            SEE {lastRun.ads_new} NEW {lastRun.ads_new === 1 ? 'AD' : 'ADS'} →
+          </button>
+        </div>
+      )}
+
+      <LogConsole logs={logs} />
+    </div>
+  );
+}
+
+function LiveStat({ label, value, color = '#E7E8EA' }) {
+  return (
+    <div>
+      <div style={s('font-size:9px;letter-spacing:.8px;color:#5A5E64;text-transform:uppercase')}>{label}</div>
+      <div style={s(`font-family:${MONO};font-size:14px;color:${color};margin-top:3px;font-variant-numeric:tabular-nums`)}>{value}</div>
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RUN HISTORY - past runs, each expandable to its full stored logs (failed too)
+// ═════════════════════════════════════════════════════════════════════════════
+function RunHistory({ runs, canEdit, NOW }) {
+  const [openId, setOpenId] = useState(null);
+  const [logsById, setLogsById] = useState({});
+  const [loadingId, setLoadingId] = useState(null);
+
+  if (!runs || runs.length === 0) return null;
+
+  const toggle = async (id) => {
+    if (openId === id) { setOpenId(null); return; }
+    setOpenId(id);
+    if (canEdit && !logsById[id]) {
+      setLoadingId(id);
+      try {
+        const res = await fetch(`/api/run-logs?runId=${encodeURIComponent(id)}`, { cache: 'no-store' });
+        const data = res.ok ? await res.json() : { logs: [] };
+        setLogsById((m) => ({ ...m, [id]: data.logs || [] }));
+      } catch {
+        setLogsById((m) => ({ ...m, [id]: [] }));
+      } finally {
+        setLoadingId(null);
+      }
+    }
+  };
+
+  return (
+    <div style={s('padding:22px 24px;border-top:1px solid rgba(255,255,255,.06)')}>
+      <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:12px')}>Run History</div>
+      <div style={s('border:1px solid rgba(255,255,255,.08)')}>
+        {runs.map((r) => {
+          const open = openId === r.id;
+          const dur = r.finished_at && r.started_at
+            ? fmtDuration((new Date(r.finished_at).getTime() - new Date(r.started_at).getTime()) / 1000)
+            : (r.status === 'running' ? 'live' : '-');
+          const statusColor = r.status === 'completed' ? '#6FCF97' : r.status === 'failed' ? '#E06C5A' : A;
+          return (
+            <div key={r.id} style={s('border-bottom:1px solid rgba(255,255,255,.045)')}>
+              <div onClick={() => toggle(r.id)}
+                style={s(`display:flex;align-items:center;gap:12px;min-height:40px;padding:8px 14px;cursor:pointer;background:${open ? 'rgba(255,255,255,.02)' : 'transparent'}`)}>
+                <span style={s(`font-family:${MONO};font-size:9px;letter-spacing:.5px;color:${statusColor};border:1px solid ${statusColor}44;padding:2px 6px;width:76px;text-align:center;flex-shrink:0`)}>{r.status.toUpperCase()}</span>
+                <span style={s('font-size:11.5px;color:#C6C9CE;flex:1;min-width:0')}>{r.started_at ? relTime(NOW - new Date(r.started_at).getTime()) : '-'}</span>
+                <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;width:74px;text-align:right;flex-shrink:0`)}>{dur}</span>
+                <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;width:130px;text-align:right;flex-shrink:0`)}>+{r.ads_new ?? 0} new / {r.errors ?? 0} err</span>
+                <span style={s(`font-family:${MONO};font-size:12px;color:#5A5E64;width:14px;text-align:center;flex-shrink:0`)}>{open ? '−' : '+'}</span>
+              </div>
+              {open && (
+                <div style={s('padding:0 14px 14px')}>
+                  {!canEdit
+                    ? <div style={s('font-size:11px;color:#5A5E64')}>Logs are visible to admins only.</div>
+                    : loadingId === r.id
+                      ? <div style={s('font-size:11px;color:#5A5E64')}>loading logs...</div>
+                      : <LogConsole logs={logsById[r.id] || []} />}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Full raw console. Auto-scrolls to the newest line, but stops sticking the
+// moment you scroll up to read, so you can inspect history mid-run.
+function LogConsole({ logs }) {
+  const ref = useRef(null);
+  const stick = useRef(true);
+
+  const onScroll = () => {
+    const el = ref.current;
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [logs]);
+
+  return (
+    <div>
+      <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:8px')}>Live Log</div>
+      <div ref={ref} onScroll={onScroll}
+        style={s('height:260px;overflow-y:auto;background:#08090B;border:1px solid rgba(255,255,255,.08);padding:10px 12px')}>
+        {logs.length === 0 && <div style={s('font-size:11px;color:#45484D')}>waiting for output...</div>}
+        {logs.map((l) => (
+          <div key={l.id} style={s(`font-family:${MONO};font-size:11px;line-height:1.55;color:${LEVEL_COLOR[l.level] || '#9CA0A6'};white-space:pre-wrap;word-break:break-word`)}>{l.message}</div>
+        ))}
+      </div>
+    </div>
+  );
 }

@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
 import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, titleCase, tint, paras, relTime, pad } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
@@ -8,7 +9,7 @@ import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
-import { updateAdWorkflow } from '@/app/actions';
+import { updateAdWorkflow, triggerScrape, markRunFailed } from '@/app/actions';
 
 export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
@@ -19,7 +20,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
   const [sort, setSort] = useState('fresh');
   const [sortDir, setSortDir] = useState('desc');
   const [filters, setFilters] = useState({
-    domain: [], vertical: [], country: [], language: [], format: [], platform: [], status: [],
+    domain: [], feed: [], vertical: [], country: [], language: [], format: [], status: [],
     daysMin: '', daysMax: '', rankMin: '', rankMax: '',
   });
   const [dateRange, setDateRange] = useState('all');
@@ -32,6 +33,75 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
     setAds((prev) => prev.map((a) => (a.ad_archive_id === id ? { ...a, ...patch } : a)));
   const commit = (id, patch) => { if (!canEdit) return; updateAdWorkflow(id, patch).catch((e) => console.error('save failed', e)); };
   const update = (id, patch) => { if (!canEdit) return; updateLocal(id, patch); commit(id, patch); };
+
+  // ── live run status ─────────────────────────────────────────────────────────
+  // One poller for the whole dashboard, so the banner and the Control Room panel
+  // share it and it survives switching tabs. State lives in the DB, so leaving and
+  // returning (even a full reload) just resumes wherever the run is.
+  const router = useRouter();
+  const [runStatus, setRunStatus] = useState({ active: null, lastRun: null, runId: null });
+  const [runLogs, setRunLogs] = useState([]);
+  const [pending, setPending] = useState(false);
+  const cursorRef = useRef(0);         // highest run_log id seen (poll cursor)
+  const watchedRef = useRef(null);     // run whose logs are currently in runLogs
+  const dispatchedAtRef = useRef(0);   // when Run Now fired, for the "starting" window
+  const timerRef = useRef(null);
+  const pollRef = useRef(null);
+
+  // Keep the local feed in sync when the server sends fresh props (after router.refresh).
+  useEffect(() => { setAds(adsProp); }, [adsProp]);
+
+  const poll = useCallback(async () => {
+    let active = null;
+    try {
+      const rid = watchedRef.current || '';
+      const res = await fetch(`/api/run-status?since=${cursorRef.current}&runId=${encodeURIComponent(rid)}`, { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        active = data.active || null;
+        if (active) dispatchedAtRef.current = 0;   // a real run supersedes the "starting" window
+        const stillStarting = !active && dispatchedAtRef.current > 0 && Date.now() - dispatchedAtRef.current < 3 * 60 * 1000;
+        setPending(stillStarting);
+        setRunStatus({ active, lastRun: data.lastRun || null, runId: data.runId || null });
+        if (data.runId && data.runId !== watchedRef.current) {
+          watchedRef.current = data.runId;                 // switched runs: reset the console
+          const ls = data.logs || [];
+          setRunLogs(ls.slice(-2000));
+          cursorRef.current = ls.length ? ls[ls.length - 1].id : 0;
+        } else if (data.logs && data.logs.length) {
+          setRunLogs((prev) => [...prev, ...data.logs].slice(-2000));
+          cursorRef.current = data.logs[data.logs.length - 1].id;
+        }
+      }
+    } catch { /* transient network/db blip: just try again next tick */ }
+    const recentlyDispatched = dispatchedAtRef.current > 0 && Date.now() - dispatchedAtRef.current < 3 * 60 * 1000;
+    const delay = (active || recentlyDispatched) ? 2500 : 12000;  // fast while live, idle otherwise
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => pollRef.current && pollRef.current(), delay);
+  }, []);
+  pollRef.current = poll;
+
+  useEffect(() => {
+    poll();
+    return () => clearTimeout(timerRef.current);
+  }, [poll]);
+
+  const onRunNow = useCallback(async () => {
+    const r = await triggerScrape();
+    if (r?.dispatched) { dispatchedAtRef.current = Date.now(); setPending(true); }
+    poll();   // refresh + reschedule immediately
+    return r;
+  }, [poll]);
+
+  const onMarkFailed = useCallback(async (runId) => {
+    try { await markRunFailed(runId); } catch (e) { console.error('mark failed', e); }
+    poll();
+  }, [poll]);
+
+  const onSeeNewAds = useCallback(() => {
+    setView('fresh');
+    router.refresh();   // re-fetch server props; the ads-sync effect updates the feed
+  }, [router]);
 
   // Precomputed lowercase haystack per ad -> fast multi-field smart search.
   const searchIndex = useMemo(() => {
@@ -57,7 +127,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
       if (f.country.length && !f.country.includes(a.country)) return false;
       if (f.language.length && !f.language.includes(a.language)) return false;
       if (f.format.length && !f.format.includes(a.display_format)) return false;
-      if (f.platform.length && !(a.publisher_platform || []).some((p) => f.platform.includes(p))) return false;
+      if (f.feed.length && !f.feed.includes(a.feed)) return false;
       if (f.status.length && !f.status.includes(a.status)) return false;
       const days = daysRunning(a, NOW);
       if (f.daysMin !== '' && days < Number(f.daysMin)) return false;
@@ -155,12 +225,14 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
         openPalette={() => { setPaletteOpen(true); setPaletteQuery(''); setTimeout(() => document.getElementById('ai-palette')?.focus(), 30); }}
       />
 
+      <RunBanner status={runStatus} pending={pending} onClick={() => setView('settings')} />
+
       {view === 'fresh' && (
         <FreshFinds
           ads={ads} filtered={filtered} NOW={NOW}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
-          clearFilters={() => { setFilters({ domain: [], vertical: [], country: [], language: [], format: [], platform: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
+          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], language: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
@@ -181,7 +253,13 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
       {view === 'competitor' && <CompetitorView ads={ads} NOW={NOW} openDetail={openDetail} matchesQuery={matchesQuery} />}
       {view === 'trends' && <TrendsView ads={ads} NOW={NOW} matchesQuery={matchesQuery} openDetail={openDetail} />}
       {view === 'pipeline' && <PipelineView ads={ads} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />}
-      {view === 'settings' && <ControlRoom ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds} canEdit={canEdit} />}
+      {view === 'settings' && (
+        <ControlRoom
+          ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds} canEdit={canEdit}
+          runStatus={runStatus} runLogs={runLogs} pending={pending}
+          onRunNow={onRunNow} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds}
+        />
+      )}
 
       {paletteOpen && (
         <Palette
@@ -191,6 +269,34 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
           openDetail={(id) => { openDetail(id); setPaletteOpen(false); }}
         />
       )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RUN BANNER - always-visible "something is running" strip across every tab
+// ═════════════════════════════════════════════════════════════════════════════
+function RunBanner({ status, pending, onClick }) {
+  const active = status?.active;
+  if (!active && !pending) return null;
+  const stalled = active && active.stale;
+  const dot = stalled ? '#E8A33D' : A;
+  let text;
+  if (active && !stalled) {
+    const prog = active.domains_total > 0 ? `, ${active.domains_done}/${active.domains_total}` : '';
+    text = `Scrape running — ${active.current_domain || 'starting'}${prog}, ${active.ads_found_so_far} found`;
+  } else if (stalled) {
+    text = 'Scrape stalled — no heartbeat. Open Control Room to resolve.';
+  } else {
+    text = 'Scrape starting — waiting for the runner to spin up...';
+  }
+  return (
+    <div onClick={onClick}
+      style={s(`position:sticky;top:44px;z-index:39;display:flex;align-items:center;gap:10px;height:30px;padding:0 16px;background:#141210;border-bottom:1px solid ${stalled ? 'rgba(232,163,61,.3)' : 'rgba(232,163,61,.22)'};cursor:pointer`)}>
+      <span style={s(`width:7px;height:7px;border-radius:50%;background:${dot};animation:freshpulse 1.6s ease-in-out infinite`)} />
+      <span style={s(`font-family:${MONO};font-size:10.5px;letter-spacing:.4px;color:#D8C08A`)}>{text}</span>
+      <span style={s('flex:1')} />
+      <span style={s(`font-family:${MONO};font-size:9.5px;color:#8A7A5A;letter-spacing:.5px`)}>CONTROL ROOM →</span>
     </div>
   );
 }
@@ -274,17 +380,16 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
   const vertMix = Object.entries(vcount).sort((x, y) => y[1] - x[1]).slice(0, 4)
     .map(([label, n]) => ({ label, pct: `${Math.round((n / (ads.length || 1)) * 100)}%` }));
 
-  const platforms = [...new Set(ads.flatMap((a) => a.publisher_platform || []))];
   const groups = [
     { title: 'Domain', group: 'domain', vals: uniq('domain'), count: (v) => countBy('domain', v) },
+    { title: 'Feed', group: 'feed', vals: uniq('feed'), count: (v) => countBy('feed', v) },
     { title: 'Vertical', group: 'vertical', vals: uniq('vertical'), count: (v) => countBy('vertical', v) },
     { title: 'Country', group: 'country', vals: uniq('country'), count: (v) => countBy('country', v) },
     { title: 'Language', group: 'language', vals: uniq('language'), count: (v) => countBy('language', v) },
     { title: 'Format', group: 'format', vals: uniq('display_format'), count: (v) => countBy('display_format', v) },
-    { title: 'Platform', group: 'platform', vals: platforms, count: (v) => ads.filter((a) => (a.publisher_platform || []).includes(v)).length },
     { title: 'Status', group: 'status', vals: uniq('status'), count: (v) => countBy('status', v) },
   ];
-  const checkboxGroups = ['domain', 'vertical', 'country', 'language', 'format', 'platform', 'status'];
+  const checkboxGroups = ['domain', 'feed', 'vertical', 'country', 'language', 'format', 'status'];
   const activeFilterCount =
     checkboxGroups.reduce((n, k) => n + (filters[k]?.length || 0), 0)
     + (dateRange !== 'all' ? 1 : 0)
