@@ -25,6 +25,11 @@ export default function ControlRoom({
   const [sortDir, setSortDir] = useState('asc');
   const [bulkMaxAds, setBulkMaxAds] = useState('');  // pending bulk Max Ads / cadence inputs
   const [bulkDays, setBulkDays] = useState('');
+  const [allDays, setAllDays] = useState(() =>     // global "set every row to N days" input
+    (domains.length && domains.every((d) => d.interval_days === domains[0].interval_days))
+      ? String(domains[0].interval_days) : '3');
+  const [applyingAll, setApplyingAll] = useState(false);
+  const [allMsg, setAllMsg] = useState('');
 
   const active = runStatus?.active || null;
   const lastRun = runStatus?.lastRun || null;
@@ -199,6 +204,29 @@ export default function ControlRoom({
     }
   };
 
+  // Global "set every domain to the same cadence". Unlike the bulk bar (which acts on
+  // the selection), this hits every tracked row regardless of any search filter, so
+  // "all" always means all. Reuses bulkUpdateDomains, which re-spaces next_run_at.
+  const applyAllDays = async () => {
+    const raw = Math.round(Number(allDays));
+    if (!Number.isFinite(raw) || raw < 1) { setAllMsg('Enter a number of days (1-365).'); return; }
+    const n = Math.min(365, raw);
+    const total = domains.length;
+    if (!total) return;
+    if (!confirm(`Set all ${total} tracked ${total === 1 ? 'domain' : 'domains'} to scrape every ${n} ${n === 1 ? 'day' : 'days'}? This overrides each domain's current frequency, ignoring any search filter.`)) return;
+    setApplyingAll(true);
+    setAllMsg('');
+    try {
+      await bulkUpdateDomains(domains.map((d) => d.id), { interval_days: n });
+      setAllDays(String(n));
+      setAllMsg(`All ${total} set to every ${n} ${n === 1 ? 'day' : 'days'}.`);
+    } catch (e) {
+      setAllMsg('Failed: ' + String(e));
+    } finally {
+      setApplyingAll(false);
+    }
+  };
+
   const inputStyle ='background:#0B0C0E;border:1px solid rgba(255,255,255,.09);color:#E7E8EA;font-size:12px;padding:8px 10px;outline:none';
   const miniInput = `background:#0B0C0E;border:1px solid rgba(255,255,255,.12);color:#E7E8EA;font-family:${MONO};font-size:11px;text-align:center;padding:4px 6px;outline:none`;
   const bulkBtn = `background:#101216;border:1px solid rgba(255,255,255,.12);color:#C6C9CE;font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:5px 9px;cursor:pointer;white-space:nowrap`;
@@ -267,7 +295,23 @@ export default function ControlRoom({
 
       {/* domains */}
       <div style={s('padding:22px 24px')}>
-        <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:12px')}>Tracked Domains / Queries</div>
+        <div style={s('display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px')}>
+          <span style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>Tracked Domains / Queries</span>
+          {canEdit && domains.length > 0 && (
+            <div style={s('display:flex;align-items:center;gap:7px')}>
+              {allMsg && <span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px')}>{allMsg}</span>}
+              <span style={s('font-size:10px;color:#6C7076;white-space:nowrap')}>Set all to every</span>
+              <input type="number" min="1" max="365" value={allDays}
+                onChange={(e) => setAllDays(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && applyAllDays()}
+                style={s(`width:42px;${miniInput}`)} />
+              <span style={s('font-size:10px;color:#6C7076')}>days</span>
+              <button onClick={applyAllDays} disabled={applyingAll}
+                title="Set every tracked domain to this cadence, ignoring any search filter"
+                style={s(bulkBtn)}>{applyingAll ? 'APPLYING...' : 'APPLY TO ALL'}</button>
+            </div>
+          )}
+        </div>
 
         {/* quick search: matches domain, feed, country, status, max ads, cadence */}
         <div style={s('display:flex;align-items:center;gap:10px;margin-bottom:14px')}>
