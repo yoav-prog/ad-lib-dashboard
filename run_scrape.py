@@ -300,7 +300,8 @@ async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session):
         article_title, article_content = await fb.scrape_article_async(link_url)
 
     language, country, vertical = await asyncio.gather(
-        fb.gpt_detect_language(gpt_session, article_title, body_text),
+        # Language from the ad's OWN copy, never the (often English) landing page.
+        fb.gpt_detect_language(gpt_session, fb.ad_copy_text(snapshot)),
         fb.gpt_detect_country(gpt_session, article_title, body_text, article_content),
         fb.gpt_detect_vertical(gpt_session, article_title, body_text, article_content, verticals),
     )
