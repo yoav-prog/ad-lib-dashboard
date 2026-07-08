@@ -163,6 +163,53 @@ export async function triggerScrape() {
   }
 }
 
+// Targeted "Run selected": scrape exactly the given tracked rows (one or many),
+// each with its own settings, in isolation from the rest. Dispatches the scrape
+// workflow with the selected domain ids so the runner scrapes only those and
+// advances only their schedules. Without a dispatch token (or if the workflow on
+// main does not yet declare the domain_ids input, e.g. before this branch merges)
+// we fall back to marking just those rows due; the scheduled runner then picks
+// them up on its next tick, alongside anything else already due. Returns what it
+// did so the UI can report honestly.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function runDomains(ids) {
+  await requireAdmin();
+  const clean = Array.isArray(ids)
+    ? [...new Set(ids.map(String).filter((x) => UUID_RE.test(x)))].slice(0, 50)
+    : [];
+  if (!clean.length) return { ok: false, reason: 'no-ids' };
+
+  const sql = getSql();
+  const markDue = async () => {
+    // Cast to uuid[]: id is a uuid column and there is no uuid = text operator.
+    await sql`update domains set next_run_at = now(), enabled = true where id = any(${clean}::uuid[])`;
+    revalidatePath('/');
+  };
+
+  const token = process.env.GH_DISPATCH_TOKEN;
+  const repo = process.env.GH_REPO;
+  if (!token || !repo) {
+    await markDue();
+    return { ok: true, dispatched: false, count: clean.length, reason: 'no-dispatch-token' };
+  }
+  try {
+    const r = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/scrape.yml/dispatches`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+      body: JSON.stringify({ ref: 'main', inputs: { domain_ids: clean.join(',') } }),
+    });
+    if (r.ok) return { ok: true, dispatched: true, count: clean.length, status: r.status };
+    // Non-ok (e.g. 422 when main has not merged the domain_ids input yet): degrade
+    // to marking due so the click is never a no-op.
+    await markDue();
+    return { ok: true, dispatched: false, count: clean.length, reason: 'dispatch-failed', status: r.status };
+  } catch (e) {
+    await markDue();
+    return { ok: true, dispatched: false, count: clean.length, reason: String(e) };
+  }
+}
+
 // Stop the current scrape: mark any running run as stopped (frees the run-lock
 // and clears the dashboard) and cancel in-progress / queued GitHub workflow runs
 // so the runner actually halts, even a background job the dashboard never saw

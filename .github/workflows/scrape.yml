@@ -6,7 +6,12 @@ name: scrape
 on:
   schedule:
     - cron: '17 * * * *'   # hourly, offset off :00 to be polite to the API
-  workflow_dispatch: {}     # manual "Run workflow" button
+  workflow_dispatch:        # manual "Run workflow" button + dashboard dispatch
+    inputs:
+      domain_ids:
+        description: 'Comma-separated domain UUIDs to run (blank = every due domain)'
+        required: false
+        default: ''
 
 concurrency:
   group: scrape
@@ -26,6 +31,9 @@ jobs:
       - name: Run due scrapes
         run: python run_scrape.py
         env:
+          # Blank for scheduled runs (due-sweep); set by the dashboard's targeted
+          # "Run selected" dispatch to scrape only those rows.
+          DOMAIN_IDS: ${{ github.event.inputs.domain_ids }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
           SCRAPINGBEE_API_KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}

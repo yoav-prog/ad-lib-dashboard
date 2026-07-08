@@ -265,6 +265,23 @@ def get_due_domains(conn) -> list[dict]:
         return cur.fetchall()
 
 
+def get_domains_by_ids(conn, ids: list[str]) -> list[dict]:
+    """Specific domains by id - used by targeted manual runs ("run these rows").
+
+    Unlike get_due_domains this ignores enabled / cadence / next_run_at: an
+    explicit request runs the row regardless, so you can one-off a paused
+    competitor. Ids not present in the table are simply absent from the result.
+    """
+    if not ids:
+        return []
+    with conn.cursor() as cur:
+        # ids arrive as strings; cast the array to uuid[] so it compares against the
+        # uuid id column (there is no uuid = text operator). Ids are validated as
+        # UUIDs upstream, so the cast is safe.
+        cur.execute('select * from domains where id = any(%s::uuid[])', (list(ids),))
+        return cur.fetchall()
+
+
 def bump_domain_schedule(conn, domain_id, cadence: str):
     """Advance a domain's next_run_at by its cadence after a run."""
     interval = CADENCE_INTERVAL.get(cadence, '1 day')   # cadence is CHECK-constrained
