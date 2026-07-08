@@ -159,9 +159,10 @@ function cellData(cell) {
     const u = safeUrl(cell.value);
     return { userEnteredValue: u ? { formulaValue: `=IMAGE("${u}",1)` } : { stringValue: '' } };
   }
+  // 'link' holds the raw image URL as plain, copyable text (no HYPERLINK wrapper).
   if (cell.kind === 'link') {
-    const u = safeUrl(cell.value);
-    return { userEnteredValue: u ? { formulaValue: `=HYPERLINK("${u}","open")` } : { stringValue: '' } };
+    const u = String(cell.value || '').trim();
+    return { userEnteredValue: { stringValue: /^https?:\/\//i.test(u) ? u : '' } };
   }
   return { userEnteredValue: { stringValue: String(cell.value ?? '') } };
 }
@@ -190,11 +191,17 @@ function formatRequests(sheetId, columns, totalRows, oldBandingIds) {
   return reqs;
 }
 
-// Append the selected columns for `rows` to the named sheet/tab and re-apply the full
-// formatting. New rows are added; rows already present (matched by the Ad ID column,
-// when it is included) are skipped. The header is written only when the tab is empty,
-// and the tab is created if missing. `columns` and `rows` come from ui.buildSheetData.
-export async function appendRowsToSheet({ spreadsheetId, tabName, columns, rows }, nowMs) {
+const headerData = (columns) => ({ values: columns.map((c) => ({ userEnteredValue: { stringValue: c.header } })) });
+const dataRowData = (row) => ({ values: row.cells.map(cellData) });
+
+// Write the selected columns for `rows` to the named sheet/tab and re-apply the full
+// formatting; the tab is created if missing. `columns` and `rows` come from
+// ui.buildSheetData. Two modes:
+//   append  (default) - add rows, skipping any already present (matched by the Ad ID
+//                       column when it is included); the header is written only when
+//                       the tab is empty.
+//   replace           - clear whatever is in the tab and write this export fresh.
+export async function writeToSheet({ spreadsheetId, tabName, columns, rows, mode = 'append' }, nowMs) {
   const token = await getAccessToken(nowMs);
   const sheets = await getSheetMeta(token, spreadsheetId);
   let sheet = sheets.find((s) => s.title === tabName);
@@ -202,8 +209,42 @@ export async function appendRowsToSheet({ spreadsheetId, tabName, columns, rows 
   if (!sheet) { sheet = await addTab(token, spreadsheetId, tabName, columns.length); created = true; }
 
   const existing = created ? [] : await readRows(token, spreadsheetId, tabName);
-  const hasHeader = existing.length > 0;
+  const oldRows = existing.length;
+  const oldBandingIds = sheet.bandedRanges.map((b) => b.bandedRangeId);
+  // Grow the grid before writing when needed. appendCells auto-expands rows, but
+  // updateCells (replace) does not, so a Replace into a small tab must size it first.
+  const ensureGrid = (cols, rowsNeeded, reqs) => {
+    const gp = {};
+    if (sheet.columnCount && sheet.columnCount < cols) gp.columnCount = cols;
+    if (sheet.rowCount && rowsNeeded && sheet.rowCount < rowsNeeded) gp.rowCount = rowsNeeded;
+    if (Object.keys(gp).length) {
+      reqs.unshift({ updateSheetProperties: { properties: { sheetId: sheet.sheetId, gridProperties: gp }, fields: Object.keys(gp).map((k) => `gridProperties.${k}`).join(',') } });
+    }
+  };
 
+  if (mode === 'replace') {
+    // Overwrite from the top with header + every row and clear any leftover cells
+    // (rows/columns the previous, larger export left behind) in one write.
+    const allRows = [headerData(columns), ...rows.map(dataRowData)];
+    const totalRows = allRows.length;
+    const oldColMax = existing.reduce((m, r) => Math.max(m, r.length), 0);
+    const clearRows = Math.max(oldRows, totalRows);
+    const clearCols = Math.max(columns.length, oldColMax);
+    const requests = [
+      { updateCells: { range: rng(sheet.sheetId, 0, clearRows, 0, clearCols), rows: allRows, fields: 'userEnteredValue' } },
+      ...formatRequests(sheet.sheetId, columns, totalRows, oldBandingIds),
+    ];
+    // Rows that used to hold data but now do not keep their tall preview height; reset.
+    if (oldRows > totalRows) {
+      requests.push({ updateDimensionProperties: { range: { sheetId: sheet.sheetId, dimension: 'ROWS', startIndex: totalRows, endIndex: oldRows }, properties: { pixelSize: 21 }, fields: 'pixelSize' } });
+    }
+    ensureGrid(clearCols, clearRows, requests);
+    await batchUpdate(token, spreadsheetId, requests);
+    return { mode: 'replace', appended: rows.length, cleared: oldRows > 0 ? oldRows - 1 : 0, created };
+  }
+
+  // append mode
+  const hasHeader = oldRows > 0;
   // Dedupe by the Ad ID column when it is part of the export, matched by header name
   // so a reordered sheet still works. Without it, every row is appended.
   const adCol = columns.findIndex((c) => c.header === 'Ad ID');
@@ -213,21 +254,16 @@ export async function appendRowsToSheet({ spreadsheetId, tabName, columns, rows 
     if (eCol >= 0) for (let i = 1; i < existing.length; i++) if (existing[i][eCol]) seen.add(String(existing[i][eCol]));
   }
   const fresh = adCol >= 0 ? rows.filter((r) => !seen.has(String(r.cells[adCol].value))) : rows;
-  if (hasHeader && !fresh.length) return { appended: 0, skipped: rows.length, created, wroteHeader: false };
+  if (hasHeader && !fresh.length) return { mode: 'append', appended: 0, skipped: rows.length, created, wroteHeader: false };
 
-  const headerRow = { values: columns.map((c) => ({ userEnteredValue: { stringValue: c.header } })) };
-  const dataRows = fresh.map((r) => ({ values: r.cells.map(cellData) }));
-  const toAppend = hasHeader ? dataRows : [headerRow, ...dataRows];
-  const totalRows = existing.length + toAppend.length;
-
+  const dataRows = fresh.map(dataRowData);
+  const toAppend = hasHeader ? dataRows : [headerData(columns), ...dataRows];
+  const totalRows = oldRows + toAppend.length;
   const requests = [
     { appendCells: { sheetId: sheet.sheetId, rows: toAppend, fields: 'userEnteredValue' } },
-    ...formatRequests(sheet.sheetId, columns, totalRows, sheet.bandedRanges.map((b) => b.bandedRangeId)),
+    ...formatRequests(sheet.sheetId, columns, totalRows, oldBandingIds),
   ];
-  // Widen the grid first if the tab has fewer columns than we are about to write.
-  if (sheet.columnCount && sheet.columnCount < columns.length) {
-    requests.unshift({ updateSheetProperties: { properties: { sheetId: sheet.sheetId, gridProperties: { columnCount: columns.length } }, fields: 'gridProperties.columnCount' } });
-  }
+  ensureGrid(columns.length, 0, requests);
   await batchUpdate(token, spreadsheetId, requests);
-  return { appended: fresh.length, skipped: rows.length - fresh.length, created, wroteHeader: !hasHeader };
+  return { mode: 'append', appended: fresh.length, skipped: rows.length - fresh.length, created, wroteHeader: !hasHeader };
 }

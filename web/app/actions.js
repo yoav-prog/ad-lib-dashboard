@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { requireAdmin } from '@/lib/auth';
 import { getAdsByIds } from '@/lib/queries';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
-import { appendRowsToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
+import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
@@ -358,7 +358,7 @@ export async function markRunFailed(runId) {
 // 1000 ids so one call can never smuggle in an unbounded list.
 const SHEET_ID_RE = /^[a-zA-Z0-9-_]{20,}$/;
 
-export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys } = {}) {
+export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys, mode } = {}) {
   await requireAdmin();
   const id = String(spreadsheetId || '').trim();
   const tab = String(tabName || '').trim();
@@ -372,6 +372,7 @@ export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys 
   const allowed = new Set(DEFAULT_SHEET_COLUMN_KEYS);
   const keys = Array.isArray(columnKeys) ? columnKeys.filter((k) => allowed.has(k)) : [];
   if (Array.isArray(columnKeys) && !keys.length) return { ok: false, reason: 'no-columns', saEmail };
+  const writeMode = mode === 'replace' ? 'replace' : 'append';
 
   const ids = [...new Set(adIds.map(String))].slice(0, 1000);
   const ads = await getAdsByIds(ids);
@@ -379,7 +380,7 @@ export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys 
 
   const { columns, rows } = buildSheetData(ads, Date.now(), keys.length ? keys : DEFAULT_SHEET_COLUMN_KEYS);
   try {
-    const result = await appendRowsToSheet({ spreadsheetId: id, tabName: tab, columns, rows }, Date.now());
+    const result = await writeToSheet({ spreadsheetId: id, tabName: tab, columns, rows, mode: writeMode }, Date.now());
     return { ok: true, saEmail, sheetUrl: `https://docs.google.com/spreadsheets/d/${id}`, ...result };
   } catch (e) {
     return { ok: false, reason: e.code === 'PERMISSION' ? 'permission' : 'error', message: String(e.message || e), saEmail };
