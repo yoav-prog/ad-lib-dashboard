@@ -867,7 +867,8 @@ def fetch_facebook_ads_apify(params, resume_cursor=None):
         print(f"  ❌ Apify error: {e}")
         return [], None
 
-async def fetch_facebook_ads_apify_with_resume(params, max_retries=4, retry_delay=90):
+async def fetch_facebook_ads_apify_with_resume(params, max_retries=4, retry_delay=90,
+                                               empty_retries=3, empty_delay=15):
     all_collected = []
     seen_ids      = set()
     cursor        = None
@@ -884,6 +885,19 @@ async def fetch_facebook_ads_apify_with_resume(params, max_retries=4, retry_dela
               f"need {remaining} more ads (have {len(all_collected)})")
         attempt_params       = {**params, 'max_target_results': remaining}
         items, new_cursor    = fetch_facebook_ads_apify(attempt_params, resume_cursor=cursor)
+
+        # A SUCCEEDED actor run that returns 0 ads is usually a transient miss - a
+        # cold container start, a momentary Facebook block, or a proxy hiccup - not
+        # proof the advertiser has none. Re-run fresh a few times before believing
+        # the zero. Only fresh starts (no resume cursor) are retried; a
+        # mid-pagination empty just means the pages genuinely ran out.
+        empty_tries = 0
+        while not items and not cursor and empty_tries < empty_retries:
+            empty_tries += 1
+            print(f"  ⚠️  Actor SUCCEEDED but returned 0 ads — likely transient. "
+                  f"Retrying fresh ({empty_tries}/{empty_retries}) after {empty_delay}s...")
+            await asyncio.sleep(empty_delay)
+            items, new_cursor = fetch_facebook_ads_apify(attempt_params, resume_cursor=None)
 
         new_items = []
         for item in items:
