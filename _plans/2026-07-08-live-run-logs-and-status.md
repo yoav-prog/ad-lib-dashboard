@@ -1,8 +1,32 @@
 # Live Run Logs and Status
 
 Date: 2026-07-08
-Status: approved design, not yet built
+Status: built and verified (migration applied; runner, read path, and UI in place)
 Area: Control Room (web dashboard) + scraper runner + Supabase schema
+
+## Decisions taken during the build
+
+- Logs scope: full in-app console (user's choice over the council's hybrid), kept
+  safe with batched writes, secret redaction at the DB boundary, and fail-open
+  logging. Captured via a stdout/stderr tee so the console shows everything the run
+  prints, with no changes to the reused scraper module.
+- Liveness: computed in SQL from last_heartbeat_at (90s threshold), never status.
+- A background asyncio task flushes logs + heartbeat every ~2s, so the heartbeat
+  stays fresh even during a long Apify fetch.
+
+## Verified (automated, no scraping cost)
+
+- Migration applied to Supabase.
+- Runner end to end with a stubbed scrape_query: healthy run captured start..DONE,
+  progress + heartbeat persisted, status completed; failed run captured the full
+  traceback and was marked failed. Secret values redacted in stored logs.
+- Read path over live HTTP: unauthenticated -> 403; admin -> correct active-run
+  shape and logs; stale flips false->true when the heartbeat is aged past 90s;
+  per-run log endpoint admin-only.
+- Next build compiles; dashboard page renders (SSR 200).
+- Not driven in a browser here: the live panel's visual render. Golden-path check
+  is clicking Run Now (dispatch is wired) and watching, or running the runner
+  locally against the live dev server.
 
 ## Goal
 
