@@ -23,3 +23,33 @@ input::placeholder, textarea::placeholder { color: #4A4E54; }
 
 @keyframes freshpulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
 @keyframes fadein { from { opacity: 0 } to { opacity: 1 } }
+
+/* Copy-on-hover: a small button that surfaces only when a table cell is hovered,
+   so a value (slug, URL, headline, ...) can be lifted without opening the row.
+   pointer-events stay off while hidden so the invisible button never swallows a
+   row click. */
+.cpcell { position: relative; }
+.cpbtn {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: #1A1C20;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 3px;
+  color: #B6B9BE;
+  cursor: pointer;
+  transition: opacity .1s ease, color .1s ease, border-color .1s ease;
+}
+.cpcell:hover .cpbtn { opacity: 1; pointer-events: auto; }
+.cpbtn:hover { color: #E8A33D; border-color: rgba(232, 163, 61, .5); background: #23262B; }
+.cpbtn.cpbtn-done { opacity: 1; pointer-events: auto; color: #7BB06F; border-color: rgba(123, 176, 111, .55); }

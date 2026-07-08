@@ -414,6 +414,45 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
 // ═════════════════════════════════════════════════════════════════════════════
 // FRESH FINDS
 // ═════════════════════════════════════════════════════════════════════════════
+
+// A cell that reveals a copy button on hover (see .cpcell / .cpbtn in globals.css).
+// Renders no button when there is nothing to copy, and stops the click from
+// bubbling up to the row's open-detail handler.
+const COPY_ICON = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="9" width="13" height="13" rx="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  </svg>
+);
+const CHECK_ICON = (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M20 6 9 17l-5-5" />
+  </svg>
+);
+
+function CopyCell({ value, style, children }) {
+  const [done, setDone] = useState(false);
+  const copy = (e) => {
+    e.stopPropagation();
+    if (!value || !navigator.clipboard) return;
+    navigator.clipboard.writeText(value).then(() => {
+      setDone(true);
+      setTimeout(() => setDone(false), 1100);
+    }).catch(() => {});
+  };
+  return (
+    <div className="cpcell" style={style}>
+      {children}
+      {value ? (
+        <button className={`cpbtn${done ? ' cpbtn-done' : ''}`} onClick={copy}
+          title={done ? 'Copied' : 'Copy'} aria-label="Copy">
+          {done ? CHECK_ICON : COPY_ICON}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh }) {
   const selCount = selected ? selected.size : 0;
   const filteredIds = filtered.map((a) => a.ad_archive_id);
@@ -653,17 +692,17 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                   </div>
                 )}
                 <div style={s('width:56px;flex-shrink:0;padding-right:12px')}><Thumb ad={a} size={44} /></div>
-                <div style={s('width:148px;flex-shrink:0;padding-right:12px;min-width:0;display:flex;align-items:center;gap:6px')}>
+                <CopyCell value={a.page_name} style={s('width:148px;flex-shrink:0;padding-right:12px;min-width:0;display:flex;align-items:center;gap:6px')}>
                   {fresh && <span style={s('width:6px;height:6px;border-radius:50%;background:#E8A33D;flex-shrink:0;animation:freshpulse 2.4s ease-in-out infinite')} />}
                   <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{a.page_name || '(unknown)'}</span>
-                </div>
-                <div style={s('width:132px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                </CopyCell>
+                <CopyCell value={a.domain} style={s('width:132px;flex-shrink:0;padding-right:12px;min-width:0')}>
                   <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.domain || '-'}</span>
-                </div>
-                <div style={s('flex:1;min-width:0;padding-right:16px')}>
+                </CopyCell>
+                <CopyCell value={a.title || a.caption || a.body_text || ''} style={s('flex:1;min-width:0;padding-right:16px')}>
                   <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
-                </div>
-                <div style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                </CopyCell>
+                <CopyCell value={url} style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>
                   {url
                     ? <a href={url} target="_blank" rel="noreferrer" title={url} onClick={(e) => e.stopPropagation()}
                         style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
@@ -671,13 +710,13 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                         <span style={s('color:#5A5E64;font-size:9px;flex-shrink:0')}>&#8599;</span>
                       </a>
                     : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
-                </div>
+                </CopyCell>
                 {showSlug && (
-                  <div style={s('width:150px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                  <CopyCell value={slug} style={s('width:150px;flex-shrink:0;padding-left:16px;min-width:0')}>
                     {slug
                       ? <span title={slug} style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{slug}</span>
                       : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
-                  </div>
+                  </CopyCell>
                 )}
                 <div style={s('width:62px;flex-shrink:0;display:flex;justify-content:center')}>
                   <span style={s(`font-family:${MONO};font-size:9.5px;letter-spacing:.5px;color:${vid ? '#C6C9CE' : '#8A8E94'};border:1px solid rgba(255,255,255,.14);padding:2px 6px`)}>{a.display_format || '-'}</span>
@@ -696,9 +735,9 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                   <span style={s('font-size:9px;color:#5A5E64;margin-left:2px')}>d</span>
                   <div style={s('height:2px;margin-top:4px;background:rgba(255,255,255,.06)')}><div style={s(`height:100%;width:${Math.round((days / maxDays) * 100)}%;background:${days > 45 ? '#8A8E94' : 'rgba(255,255,255,.22)'}`)} /></div>
                 </div>
-                <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>
+                <CopyCell value={a.vertical} style={s('width:92px;flex-shrink:0;padding-left:16px')}>
                   <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.vertical || '-'}</span>
-                </div>
+                </CopyCell>
                 <div style={s('width:58px;flex-shrink:0;text-align:center')}>
                   <div style={s(`font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{a.country || '-'}</div>
                   <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)}>{(a.language || '').slice(0, 2).toUpperCase()}</div>
