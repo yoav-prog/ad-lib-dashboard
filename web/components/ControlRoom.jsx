@@ -5,8 +5,6 @@ import { s } from '@/lib/style';
 import { A, MONO, relTime, pad } from '@/lib/ui';
 import { addDomain, updateDomain, deleteDomain, addFeed } from '@/app/actions';
 
-const CADENCES = ['hourly', 'daily', 'weekly', 'paused'];
-
 export default function ControlRoom({
   ads, domains, runs, NOW, query = '', feeds = [], canEdit = true,
   runStatus = { active: null, lastRun: null }, runLogs = [], pending = false,
@@ -27,9 +25,9 @@ export default function ControlRoom({
   const lastRun = runStatus?.lastRun || null;
   const isBusy = pending || !!active;
 
-  // What a click will actually scrape, so it is never a mystery: every active
-  // (enabled, non-paused) domain, each up to its own Max Ads.
-  const activeDomains = domains.filter((d) => d.enabled && d.cadence !== 'paused');
+  // What a click will actually scrape, so it is never a mystery: every enabled
+  // domain, each up to its own Max Ads.
+  const activeDomains = domains.filter((d) => d.enabled);
   const scopeAdsMax = activeDomains.reduce((n, d) => n + (d.max_ads || 0), 0);
   const scopeNames = activeDomains.slice(0, 3).map((d) => d.query).join(', ')
     + (activeDomains.length > 3 ? `, +${activeDomains.length - 3} more` : '');
@@ -56,7 +54,7 @@ export default function ControlRoom({
   const selScopeMax = domains.filter((d) => sel.has(d.id)).reduce((n, d) => n + (d.max_ads || 0), 0);
 
   const lastCompleted = runs.find((r) => r.status === 'completed' && r.finished_at);
-  const dueTimes = domains.filter((d) => d.enabled && d.cadence !== 'paused' && d.next_run_at).map((d) => d.next_run_at).sort();
+  const dueTimes = domains.filter((d) => d.enabled && d.next_run_at).map((d) => d.next_run_at).sort();
   const nextDue = dueTimes[0];
 
   const addDomainSubmit = async () => {
@@ -254,7 +252,7 @@ export default function ControlRoom({
             <div style={s('width:66px;text-align:center')}>Country</div>
             <div style={s('width:80px;text-align:right')}>Max Ads</div>
             <div style={s('width:70px;text-align:center')}>Held</div>
-            <div style={s('width:100px;text-align:center')}>Cadence</div>
+            <div style={s('width:118px;text-align:center')}>Frequency</div>
             <div style={s('width:86px;text-align:center')}>Status</div>
             <div style={s('width:32px')} />
           </div>
@@ -281,15 +279,22 @@ export default function ControlRoom({
               <div style={s(`width:66px;text-align:center;font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{d.country}</div>
               <div style={s(`width:80px;text-align:right;font-family:${MONO};font-size:13px;color:#C6C9CE;font-variant-numeric:tabular-nums`)}>{d.max_ads}</div>
               <div style={s(`width:70px;text-align:center;font-family:${MONO};font-size:13px;color:#E7E8EA;font-variant-numeric:tabular-nums`)}>{adsByDomain[d.query] || 0}</div>
-              <div style={s('width:100px;display:flex;justify-content:center')}>
+              <div style={s('width:118px;display:flex;align-items:center;justify-content:center;gap:6px')}>
+                <span style={s('font-size:10px;color:#6C7076')}>every</span>
                 {canEdit ? (
-                  <button onClick={() => updateDomain(d.id, { cadence: CADENCES[(CADENCES.indexOf(d.cadence) + 1) % CADENCES.length] })}
-                    style={s(`font-family:${MONO};font-size:10px;color:${d.cadence === 'paused' ? '#6C7076' : A};background:none;border:1px solid rgba(255,255,255,.12);padding:3px 10px;cursor:pointer;letter-spacing:.5px`)}>
-                    {d.cadence.toUpperCase()}
-                  </button>
+                  <input key={d.interval_days} type="number" min="1" max="365" defaultValue={d.interval_days}
+                    title="Days between scrapes"
+                    onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                    onBlur={(e) => {
+                      const n = Math.min(365, Math.max(1, Math.round(Number(e.target.value)) || d.interval_days));
+                      e.target.value = n;
+                      if (n !== d.interval_days) updateDomain(d.id, { interval_days: n });
+                    }}
+                    style={s(`width:36px;background:#0B0C0E;border:1px solid rgba(255,255,255,.12);color:${A};font-family:${MONO};font-size:11px;text-align:center;padding:3px 2px;outline:none`)} />
                 ) : (
-                  <span style={s(`font-family:${MONO};font-size:10px;color:${d.cadence === 'paused' ? '#6C7076' : A}`)}>{d.cadence.toUpperCase()}</span>
+                  <span style={s(`font-family:${MONO};font-size:11px;color:${A}`)}>{d.interval_days}</span>
                 )}
+                <span style={s('font-size:10px;color:#6C7076')}>{d.interval_days === 1 ? 'day' : 'days'}</span>
               </div>
               <div style={s('width:86px;text-align:center')}>
                 {canEdit ? (

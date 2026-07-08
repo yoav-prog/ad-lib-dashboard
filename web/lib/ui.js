@@ -9,6 +9,21 @@ export const daysRunning = (ad, now) =>
 
 export const isVideo = (ad) => ad.display_format === 'VIDEO' || !!ad.video_hd_url;
 export const thumbOf = (ad) => ad.original_image_urls?.[0] || ad.video_preview_url || null;
+
+// An ad's landing page. link_url may pack several DCO destinations pipe-joined
+// ("a | b | c"); the first is the canonical article the creative points to.
+export const firstUrl = (linkUrl) => (linkUrl ? String(linkUrl).split(' | ')[0].trim() : '');
+
+// The Tarzo feed only. Their landing pages look like
+// https://<domain>/dcg/<id>/<slug>?<params>; pull just the readable <slug>,
+// keyed off the /dcg/<id>/ path so it works for any Tarzo domain. Returns ''
+// when the link isn't a Tarzo article (e.g. a bare social-profile URL).
+export const isTarzo = (ad) => (ad.feed || '').toLowerCase() === 'tarzo';
+export function tarzoSlug(ad) {
+  const m = firstUrl(ad.link_url).match(/\/dcg\/\d+\/([^/?#]+)/);
+  return m ? m[1] : '';
+}
+
 export const titleCase = (v) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v);
 export const pad = (n, w = 2) => String(n).padStart(w, '0');
 
@@ -32,6 +47,47 @@ export function relTime(ms) {
   const h = Math.round(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.round(h / 24)}d ago`;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Compact absolute date, e.g. "Jul 8, 26". Full ISO stays available for tooltips.
+export function fmtDate(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '-';
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${String(d.getFullYear()).slice(2)}`;
+}
+
+// Build a CSV string from ad rows. Every field is quoted and inner quotes doubled,
+// so commas, quotes, and newlines in ad copy never break the layout. Dates go out
+// as YYYY-MM-DD so they sort correctly in a spreadsheet.
+export function buildCsv(rows, now) {
+  const cols = [
+    ['Page', (a) => a.page_name],
+    ['Domain', (a) => a.domain],
+    ['Headline', (a) => a.title || a.caption || a.body_text],
+    ['Body', (a) => a.body_text],
+    ['Caption', (a) => a.caption],
+    ['CTA', (a) => a.cta_text],
+    ['Link', (a) => a.link_url],
+    ['Slug', (a) => tarzoSlug(a)],
+    ['Format', (a) => a.display_format],
+    ['Rank', (a) => (a.rank != null ? a.rank : '')],
+    ['Days Running', (a) => daysRunning(a, now)],
+    ['First Added Date', (a) => (a.first_seen_at ? a.first_seen_at.slice(0, 10) : '')],
+    ['Last Seen', (a) => (a.last_seen_at ? a.last_seen_at.slice(0, 10) : '')],
+    ['Vertical', (a) => a.vertical],
+    ['Country', (a) => a.country],
+    ['Language', (a) => a.language],
+    ['Feed', (a) => a.feed],
+    ['Status', (a) => a.status],
+    ['Ad ID', (a) => a.ad_archive_id],
+  ];
+  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [cols.map((c) => esc(c[0])).join(',')];
+  for (const a of rows) lines.push(cols.map((c) => esc(c[1](a))).join(','));
+  return lines.join('\r\n');
 }
 
 export const STATUSES = ['new', 'idea', 'drafting', 'published'];

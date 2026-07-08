@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, titleCase, tint, paras, relTime, pad } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, buildCsv } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
@@ -67,6 +67,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
   const [pending, setPending] = useState(false);
   const cursorRef = useRef(0);         // highest run_log id seen (poll cursor)
   const watchedRef = useRef(null);     // run whose logs are currently in runLogs
+  const prevActiveIdRef = useRef(null);// last active run id seen, to detect completion
   const dispatchedAtRef = useRef(0);   // when Run Now fired, for the "starting" window
   const timerRef = useRef(null);
   const pollRef = useRef(null);
@@ -86,6 +87,10 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
         const stillStarting = !active && dispatchedAtRef.current > 0 && Date.now() - dispatchedAtRef.current < 3 * 60 * 1000;
         setPending(stillStarting);
         setRunStatus({ active, lastRun: data.lastRun || null, runId: data.runId || null });
+        // A run just cleared: pull fresh server props so new finds land in the feed
+        // automatically, no "SEE N NEW ADS" click needed.
+        if (prevActiveIdRef.current && !active) router.refresh();
+        prevActiveIdRef.current = active ? active.id : null;
         if (data.runId && data.runId !== watchedRef.current) {
           watchedRef.current = data.runId;                 // switched runs: reset the console
           const ls = data.logs || [];
@@ -416,6 +421,10 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
   const bulkBtn = s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:#C6C9CE;font-family:${MONO};font-size:10px;padding:4px 9px;cursor:pointer`);
   const [bulkMsg, setBulkMsg] = useState('');
   const isFresh = (a) => (lastRunStart ? new Date(a.first_seen_at).getTime() >= lastRunStart : hoursSince(a.first_seen_at, NOW) <= 24);
+  // The Slug column is Tarzo-only, so it rides along only while the current view
+  // actually contains a Tarzo row; the table widens to make room when it does.
+  const showSlug = filtered.some(isTarzo);
+  const tableMinW = showSlug ? 1550 : 1400;
   const [gsearch, setGsearch] = useState({});
   const uniq = (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
   const countBy = (key, val) => ads.filter((a) => a[key] === val).length;
@@ -461,6 +470,22 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
     { id: 'domain', label: 'domain' },
     { id: 'vertical', label: 'vertical' },
   ];
+
+  // Download exactly what's on screen (current filters/search/date range) as CSV.
+  const exportCsv = () => {
+    if (!filtered.length) return;
+    // Prepend a UTF-8 BOM (U+FEFF) so Excel opens accented ad copy in the right encoding.
+    const bom = String.fromCharCode(0xFEFF);
+    const blob = new Blob([bom + buildCsv(filtered, NOW)], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `fresh-finds-${new Date(NOW).toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div>
@@ -573,6 +598,10 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                   ))}
                 </div>
                 <div style={s(`display:flex;align-items:center;gap:5px;font-family:${MONO};font-size:10px;color:#5A5E64`)}>
+                  <button onClick={exportCsv} disabled={!filtered.length}
+                    title="Download the current view (filters applied) as a CSV"
+                    style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>↓ EXPORT CSV</button>
+                  <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>J</kbd>
                   <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>K</kbd>
                   <span style={s('color:#45484D')}>move</span>
@@ -583,7 +612,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             )}
           </div>
 
-          <div style={s('display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1172px')}>
+          <div style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
             {canEdit && (
               <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
                 <span onClick={() => (allSelected ? clearSel() : setSelection(filteredIds))} title="Select all"
@@ -594,8 +623,11 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             <div style={s('width:148px;flex-shrink:0')}>Page</div>
             <div style={s('width:132px;flex-shrink:0')}>Domain</div>
             <div style={s('flex:1;min-width:0')}>Headline</div>
+            <div style={s('width:168px;flex-shrink:0')}>URL</div>
+            {showSlug && <div style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
             <div style={s('width:62px;flex-shrink:0;text-align:center')}>Format</div>
             <div style={s('width:46px;flex-shrink:0;text-align:right')}>Rank</div>
+            <div style={s('width:68px;flex-shrink:0;text-align:right')}>Added</div>
             <div style={s('width:66px;flex-shrink:0;text-align:right')}>Updated</div>
             <div style={s('width:70px;flex-shrink:0;text-align:right')}>Days Run</div>
             <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>
@@ -609,9 +641,11 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             const sel = i === selIndex;
             const isSel = selected ? selected.has(a.ad_archive_id) : false;
             const vid = isVideo(a);
+            const url = firstUrl(a.link_url);
+            const slug = showSlug ? tarzoSlug(a) : '';
             return (
               <div key={a.ad_archive_id} onClick={() => openDetail(a.ad_archive_id)} onMouseEnter={() => setSelIndex(i)}
-                style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:1172px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : (sel ? 'rgba(232,163,61,.05)' : 'transparent')};cursor:pointer`)}>
+                style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:${tableMinW}px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : (sel ? 'rgba(232,163,61,.05)' : 'transparent')};cursor:pointer`)}>
                 <div style={s(`position:absolute;left:0;top:0;bottom:0;width:2px;background:${isSel || sel ? A : (fresh ? 'rgba(232,163,61,.5)' : 'transparent')}`)} />
                 {canEdit && (
                   <div onClick={(e) => { e.stopPropagation(); toggleSel(a.ad_archive_id); }} style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer')}>
@@ -629,11 +663,30 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                 <div style={s('flex:1;min-width:0;padding-right:16px')}>
                   <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
                 </div>
+                <div style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                  {url
+                    ? <a href={url} target="_blank" rel="noreferrer" title={url} onClick={(e) => e.stopPropagation()}
+                        style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
+                        <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{url}</span>
+                        <span style={s('color:#5A5E64;font-size:9px;flex-shrink:0')}>&#8599;</span>
+                      </a>
+                    : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
+                </div>
+                {showSlug && (
+                  <div style={s('width:150px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                    {slug
+                      ? <span title={slug} style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{slug}</span>
+                      : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
+                  </div>
+                )}
                 <div style={s('width:62px;flex-shrink:0;display:flex;justify-content:center')}>
                   <span style={s(`font-family:${MONO};font-size:9.5px;letter-spacing:.5px;color:${vid ? '#C6C9CE' : '#8A8E94'};border:1px solid rgba(255,255,255,.14);padding:2px 6px`)}>{a.display_format || '-'}</span>
                 </div>
                 <div style={s('width:46px;flex-shrink:0;text-align:right')}>
                   <span style={s(`font-family:${MONO};font-size:12.5px;color:${a.rank != null && a.rank <= 3 ? A : '#B6B9BE'};font-variant-numeric:tabular-nums`)}>{a.rank != null ? a.rank : '-'}</span>
+                </div>
+                <div style={s('width:68px;flex-shrink:0;text-align:right')}>
+                  <span title={a.first_seen_at || ''} style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{fmtDate(a.first_seen_at)}</span>
                 </div>
                 <div style={s('width:66px;flex-shrink:0;text-align:right')}>
                   <span title={a.last_seen_at || ''} style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{a.last_seen_at ? relTime(NOW - new Date(a.last_seen_at).getTime()) : '-'}</span>

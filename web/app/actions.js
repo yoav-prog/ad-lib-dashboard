@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { requireAdmin } from '@/lib/auth';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url'];
-const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'cadence', 'enabled', 'feed'];
+const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
 
 function pick(patch, allowed) {
   const set = {};
@@ -62,8 +62,8 @@ export async function refreshAds(ids) {
   for (const d of doms) {
     if (tracked.has(d)) continue;
     const ins = await sql`
-      insert into domains (query, country, active_status, max_ads, cadence, next_run_at)
-      values (${d}, 'ALL', 'active', 100, 'daily', now())
+      insert into domains (query, country, active_status, max_ads, interval_days, next_run_at)
+      values (${d}, 'ALL', 'active', 100, 3, now())
       on conflict (query, country) do update set next_run_at = now(), enabled = true
       returning id
     `;
@@ -93,12 +93,20 @@ export async function addDomain(data) {
   await requireAdmin();
   const sql = getSql();
   await sql`
-    insert into domains (query, country, active_status, max_ads, cadence, feed)
+    insert into domains (query, country, active_status, max_ads, interval_days, feed)
     values (${data.query}, ${data.country || 'ALL'}, ${data.active_status || 'active'},
-            ${data.max_ads || 100}, ${data.cadence || 'daily'}, ${data.feed || null})
+            ${data.max_ads || 100}, ${clampDays(data.interval_days, 3)}, ${data.feed || null})
     on conflict (query, country) do nothing
   `;
   revalidatePath('/');
+}
+
+// Clamp an incoming interval to the DB's 1..365 CHECK so a bad value fails safe in
+// the app rather than at the database. Falls back to `dflt` when absent/unparseable.
+function clampDays(v, dflt) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return dflt;
+  return Math.min(365, Math.max(1, n));
 }
 
 export async function updateDomain(id, patch) {
@@ -106,6 +114,20 @@ export async function updateDomain(id, patch) {
   const set = pick(patch, DOMAIN_FIELDS);
   if (!Object.keys(set).length) return;
   const sql = getSql();
+  // Changing the frequency also re-spaces the next run from the last one, so
+  // "Next Due" reflects the new interval immediately instead of on the next scrape.
+  // Any other fields in the same patch are written first with the normal helper.
+  if ('interval_days' in set) {
+    const days = clampDays(set.interval_days, 3);
+    delete set.interval_days;
+    if (Object.keys(set).length) await sql`update domains set ${sql(set)} where id = ${id}`;
+    await sql`update domains
+                 set interval_days = ${days},
+                     next_run_at = coalesce(last_run_at, now()) + make_interval(days => ${days})
+               where id = ${id}`;
+    revalidatePath('/');
+    return;
+  }
   await sql`update domains set ${sql(set)} where id = ${id}`;
   revalidatePath('/');
 }
@@ -139,7 +161,7 @@ export async function deleteFeed(id) {
 export async function triggerScrape() {
   await requireAdmin();
   const sql = getSql();
-  await sql`update domains set next_run_at = now() where enabled and cadence <> 'paused'`;
+  await sql`update domains set next_run_at = now() where enabled`;
   revalidatePath('/');
 
   const token = process.env.GH_DISPATCH_TOKEN;

@@ -1,8 +1,8 @@
 name: scrape
 
 # Hourly self-checking runner. run_scrape.py exits immediately when no domain is
-# due (based on each domain's cadence in the DB), so most hourly runs cost ~nothing.
-# Change cadence per domain in the dashboard's Control Room, not here.
+# due (based on each domain's interval_days in the DB), so most hourly runs cost
+# ~nothing. Set how often per domain in the dashboard's Control Room, not here.
 on:
   schedule:
     - cron: '17 * * * *'   # hourly, offset off :00 to be polite to the API

@@ -472,7 +472,7 @@ async def run(args):
                 total_new += n
                 progress['domains_done'] += 1
                 with db.connect() as conn:
-                    db.bump_domain_schedule(conn, dom['id'], dom['cadence'])
+                    db.bump_domain_schedule(conn, dom['id'], dom['interval_days'])
 
         with db.connect() as conn:
             db.finish_run(conn, run_id, total_found, total_new)
