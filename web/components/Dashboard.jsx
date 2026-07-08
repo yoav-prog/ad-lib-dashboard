@@ -124,8 +124,10 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
   const onStop = useCallback(async () => {
     dispatchedAtRef.current = 0;
     setPending(false);
-    try { await stopRun(); } catch (e) { console.error('stop failed', e); }
+    let r;
+    try { r = await stopRun(); } catch (e) { console.error('stop failed', e); }
     poll();
+    return r;
   }, [poll]);
 
   const onSeeNewAds = useCallback(() => {
@@ -180,7 +182,16 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
     const dir = sortDir === 'desc' ? 1 : -1;
     list = [...list].sort((a, b) => {
       if (sort === 'days') return (daysRunning(b, NOW) - daysRunning(a, NOW)) * dir;
+      if (sort === 'rank') {
+        // Rank 1 is best; ads with no rank always sink to the bottom either way.
+        if (a.rank == null && b.rank == null) return 0;
+        if (a.rank == null) return 1;
+        if (b.rank == null) return -1;
+        return (a.rank - b.rank) * dir;
+      }
       if (sort === 'page') return (a.page_name || '').localeCompare(b.page_name || '') * -dir;
+      if (sort === 'domain') return (a.domain || '').localeCompare(b.domain || '') * -dir;
+      if (sort === 'vertical') return (a.vertical || '').localeCompare(b.vertical || '') * -dir;
       return (new Date(b.first_seen_at) - new Date(a.first_seen_at)) * dir;
     });
     return list;
@@ -433,7 +444,14 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
     + (filters.rankMin !== '' || filters.rankMax !== '' ? 1 : 0);
   const maxDays = Math.max(1, ...ads.map((a) => daysRunning(a, NOW)));
 
-  const sortDefs = [{ id: 'fresh', label: 'freshness' }, { id: 'days', label: 'days running' }, { id: 'page', label: 'page' }];
+  const sortDefs = [
+    { id: 'fresh', label: 'freshness' },
+    { id: 'rank', label: 'rank' },
+    { id: 'days', label: 'days running' },
+    { id: 'page', label: 'page' },
+    { id: 'domain', label: 'domain' },
+    { id: 'vertical', label: 'vertical' },
+  ];
 
   return (
     <div>
@@ -556,7 +574,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             )}
           </div>
 
-          <div style={s('display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1138px')}>
+          <div style={s('display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1172px')}>
             {canEdit && (
               <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
                 <span onClick={() => (allSelected ? clearSel() : setSelection(filteredIds))} title="Select all"
@@ -573,7 +591,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             <div style={s('width:70px;flex-shrink:0;text-align:right')}>Days Run</div>
             <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>
             <div style={s('width:58px;flex-shrink:0;text-align:center')}>Country</div>
-            <div style={s('width:58px;flex-shrink:0;text-align:center')}>Platform</div>
+            <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Feed</div>
           </div>
 
           {filtered.map((a, i) => {
@@ -584,7 +602,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             const vid = isVideo(a);
             return (
               <div key={a.ad_archive_id} onClick={() => openDetail(a.ad_archive_id)} onMouseEnter={() => setSelIndex(i)}
-                style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:1138px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : (sel ? 'rgba(232,163,61,.05)' : 'transparent')};cursor:pointer`)}>
+                style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:1172px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : (sel ? 'rgba(232,163,61,.05)' : 'transparent')};cursor:pointer`)}>
                 <div style={s(`position:absolute;left:0;top:0;bottom:0;width:2px;background:${isSel || sel ? A : (fresh ? 'rgba(232,163,61,.5)' : 'transparent')}`)} />
                 {canEdit && (
                   <div onClick={(e) => { e.stopPropagation(); toggleSel(a.ad_archive_id); }} style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer')}>
@@ -623,10 +641,8 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                   <div style={s(`font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{a.country || '-'}</div>
                   <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)}>{(a.language || '').slice(0, 2).toUpperCase()}</div>
                 </div>
-                <div style={s('width:58px;flex-shrink:0;display:flex;justify-content:center;gap:4px')}>
-                  {(a.publisher_platform || []).slice(0, 3).map((p, idx) => (
-                    <span key={idx} style={s(`width:16px;height:16px;border:1px solid rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;font-family:${MONO};font-size:9px;color:#8A8E94`)}>{(p || '?')[0].toUpperCase()}</span>
-                  ))}
+                <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>
+                  <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.feed || '-'}</span>
                 </div>
               </div>
             );

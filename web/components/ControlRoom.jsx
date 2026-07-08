@@ -19,6 +19,7 @@ export default function ControlRoom({
   const [newFeed, setNewFeed] = useState('');
   const [busy, setBusy] = useState(false);
   const [runMsg, setRunMsg] = useState('');
+  const [stopping, setStopping] = useState(false);
 
   const active = runStatus?.active || null;
   const lastRun = runStatus?.lastRun || null;
@@ -80,6 +81,34 @@ export default function ControlRoom({
     }
   };
 
+  // Always-available stop: works even for a background job the dashboard never
+  // saw claim a run (still spinning up on GitHub, or a page you just reloaded).
+  // It reports exactly what it halted, so a click is never a mystery.
+  const stopRunner = async () => {
+    if (stopping || !onStop) return;
+    setStopping(true);
+    setRunMsg('');
+    try {
+      const r = await onStop();
+      const cancelled = r?.cancelled || 0;
+      const cleared = r?.cleared || 0;
+      if (cleared || cancelled) {
+        const parts = [];
+        if (cleared) parts.push(cleared === 1 ? 'cleared the running scrape' : `cleared ${cleared} running scrapes`);
+        if (cancelled) parts.push(`cancelled ${cancelled} background ${cancelled === 1 ? 'job' : 'jobs'} on GitHub`);
+        setRunMsg('Stopped: ' + parts.join(' and ') + '.');
+      } else if (r && r.ghConfigured === false) {
+        setRunMsg('Nothing running in the database. GitHub cancel is not wired up here, so a spinning-up job cannot be reached (set GH_DISPATCH_TOKEN + GH_REPO).');
+      } else {
+        setRunMsg('Nothing was running to stop.');
+      }
+    } catch (e) {
+      setRunMsg('Stop failed: ' + String(e));
+    } finally {
+      setStopping(false);
+    }
+  };
+
   const inputStyle = 'background:#0B0C0E;border:1px solid rgba(255,255,255,.09);color:#E7E8EA;font-size:12px;padding:8px 10px;outline:none';
 
   return (
@@ -103,10 +132,17 @@ export default function ControlRoom({
           </div>
           {canEdit && (
             <div style={s('display:flex;flex-direction:column;align-items:flex-end;gap:7px')}>
-              <button onClick={runNow} disabled={isBusy}
-                style={s(`font-family:${MONO};font-size:11px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy ? '#5A5E64' : A};border:none;padding:9px 16px;cursor:${isBusy ? 'default' : 'pointer'}`)}>
-                {pending ? 'STARTING...' : active ? (active.stale ? 'STALLED' : 'RUNNING...') : '► RUN NOW'}
-              </button>
+              <div style={s('display:flex;align-items:center;gap:8px')}>
+                <button onClick={stopRunner} disabled={stopping}
+                  title="Cancel any scrape running in the background (on GitHub) and clear the run lock"
+                  style={s(`font-family:${MONO};font-size:10.5px;letter-spacing:.5px;color:#E06C5A;background:none;border:1px solid rgba(224,108,90,.45);padding:9px 13px;cursor:${stopping ? 'default' : 'pointer'};white-space:nowrap`)}>
+                  {stopping ? 'STOPPING...' : '■ STOP'}
+                </button>
+                <button onClick={runNow} disabled={isBusy}
+                  style={s(`font-family:${MONO};font-size:11px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy ? '#5A5E64' : A};border:none;padding:9px 16px;cursor:${isBusy ? 'default' : 'pointer'}`)}>
+                  {pending ? 'STARTING...' : active ? (active.stale ? 'STALLED' : 'RUNNING...') : '► RUN NOW'}
+                </button>
+              </div>
               <span style={s('font-size:10px;color:#5A5E64;max-width:280px;text-align:right;line-height:1.4')}>{scopeText}</span>
             </div>
           )}

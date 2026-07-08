@@ -49,13 +49,34 @@ from google.cloud import storage
 
 import db
 
-# ── Load the existing scraper as a module (its filename has hyphens, so it
-#    can't be imported normally). We reuse its functions, not its Sheets flow.
-_spec = importlib.util.spec_from_file_location(
-    'fb_scraper', Path(__file__).resolve().parent / 'facebookadscraperapify2026-v2.py'
-)
-fb = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(fb)
+# ── The existing scraper (reused for its Apify / ScrapingBee / GPT / GCS
+#    functions) is loaded lazily via _load_scraper(), not at import, and only
+#    after a run has been claimed. Its module-level code calls _require_env for
+#    the API keys, so a missing secret raises the moment it is exec'd. Deferring
+#    that load until inside the claimed run's try/except is what lets the failure
+#    surface in the dashboard as a FAILED run with the traceback in its log,
+#    instead of crashing before there is a run to show. Its filename has hyphens,
+#    so it can't be imported normally - hence the spec/exec dance.
+fb = None
+
+
+def _load_scraper():
+    """Exec the hyphen-named scraper module once and expose it as the global `fb`.
+
+    Kept out of module import on purpose: the module validates required API keys
+    at import time, and we want that validation to happen inside a claimed run so
+    any failure is recorded, not silent. Idempotent - safe to call more than once.
+    """
+    global fb
+    if fb is not None:
+        return fb
+    spec = importlib.util.spec_from_file_location(
+        'fb_scraper', Path(__file__).resolve().parent / 'facebookadscraperapify2026-v2.py'
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    fb = module
+    return fb
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -337,25 +358,20 @@ async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, do
 # Orchestration
 # ═════════════════════════════════════════════════════════════════════════════
 async def run(args):
-    fb.GPT_SEMAPHORE = asyncio.Semaphore(10)
-    fb.SCRAPING_SEMAPHORE = asyncio.Semaphore(10)
-
     # Scheduled mode (no --query): skip cheaply if nothing is due, so an hourly
-    # cron does not create an empty run record every hour.
+    # cron does not create an empty run record every hour. This check needs only
+    # the database - not the scraper or its API keys - so it stays before the load.
     if not args.query:
         with db.connect() as conn:
             if not db.any_domain_due(conn):
                 print('nothing due; exiting')
                 return
 
-    bucket = None
-    if not args.no_media:
-        bucket = get_bucket()
-        print(f'GCS bucket ready: {bucket.name}')
-    else:
-        print('media upload disabled (--no-media)')
-
-    # Claim the run and load config (short-lived connection).
+    # Claim the run and load config (short-lived connection). The claim happens
+    # BEFORE the scraper is loaded and the GCS client is built, so that if either
+    # of those fails (a missing API key, a bad service-account cred) it fails
+    # inside a claimed run - recorded as FAILED with the traceback in run_logs -
+    # instead of crashing before the dashboard has any run to show.
     with db.connect() as conn:
         verticals = [r['name'] for r in _all_verticals(conn)]
         existing_ids = db.existing_ad_ids(conn)
@@ -386,6 +402,21 @@ async def run(args):
 
     total_found = total_new = 0
     try:
+        # Now that we are inside the claimed run's failure boundary, load the
+        # scraper and build the media client. A missing API key or a bad GCS cred
+        # raises here and is captured as a FAILED run (with the traceback in the
+        # log), not a silent crash before there was anything to show.
+        _load_scraper()
+        fb.GPT_SEMAPHORE = asyncio.Semaphore(10)
+        fb.SCRAPING_SEMAPHORE = asyncio.Semaphore(10)
+
+        bucket = None
+        if not args.no_media:
+            bucket = get_bucket()
+            print(f'GCS bucket ready: {bucket.name}')
+        else:
+            print('media upload disabled (--no-media)')
+
         if args.query:
             progress['domains_total'] = 1
             progress['current_domain'] = args.query
