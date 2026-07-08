@@ -59,6 +59,17 @@ export async function getAds(limit = 500) {
   return rows.map(mapAd);
 }
 
+// Ads for an explicit id list, returned in the given id order (so an export matches
+// the on-screen ordering). Reuses the same row shape as getAds; ids not found are
+// dropped. Used by the "export to sheet" action, which sends only the ids on screen.
+export async function getAdsByIds(ids) {
+  if (!Array.isArray(ids) || !ids.length) return [];
+  const sql = getSql();
+  const rows = await sql`select * from ads where ad_archive_id = any(${ids})`;
+  const byId = new Map(rows.map((r) => [r.ad_archive_id, mapAd(r)]));
+  return ids.map((id) => byId.get(id)).filter(Boolean);
+}
+
 export async function getLastRun() {
   const sql = getSql();
   const rows = await sql`

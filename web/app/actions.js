@@ -3,6 +3,9 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { requireAdmin } from '@/lib/auth';
+import { getAdsByIds } from '@/lib/queries';
+import { buildSheetValues } from '@/lib/ui';
+import { appendRowsToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
@@ -343,4 +346,36 @@ export async function markRunFailed(runId) {
      where id = ${runId} and status = 'running'
   `;
   revalidatePath('/');
+}
+
+// Push the current Fresh Finds view to a Google Sheet the caller names by id + tab.
+// The client sends only the ad ids on screen; the rows are re-read from the DB here
+// so the payload is small and the exported data is server-authoritative. New rows
+// are appended and ones already in the tab (matched by Ad ID) are skipped. Auth is
+// the project's existing service account (see lib/sheets). Returns a summary, or an
+// { ok:false } with a reason the modal turns into a clear message. Capped at 1000
+// ids so one call can never smuggle in an unbounded list.
+const SHEET_ID_RE = /^[a-zA-Z0-9-_]{20,}$/;
+
+export async function exportToSheet({ spreadsheetId, tabName, adIds } = {}) {
+  await requireAdmin();
+  const id = String(spreadsheetId || '').trim();
+  const tab = String(tabName || '').trim();
+  const saEmail = serviceAccountEmail();
+  if (!SHEET_ID_RE.test(id)) return { ok: false, reason: 'bad-id', saEmail };
+  if (!tab) return { ok: false, reason: 'no-tab', saEmail };
+  if (!Array.isArray(adIds) || !adIds.length) return { ok: false, reason: 'no-rows', saEmail };
+  if (!sheetsConfigured()) return { ok: false, reason: 'not-configured', saEmail };
+
+  const ids = [...new Set(adIds.map(String))].slice(0, 1000);
+  const ads = await getAdsByIds(ids);
+  if (!ads.length) return { ok: false, reason: 'no-rows', saEmail };
+
+  const { header, values } = buildSheetValues(ads, Date.now());
+  try {
+    const result = await appendRowsToSheet({ spreadsheetId: id, tabName: tab, header, rows: values }, Date.now());
+    return { ok: true, saEmail, sheetUrl: `https://docs.google.com/spreadsheets/d/${id}`, ...result };
+  } catch (e) {
+    return { ok: false, reason: e.code === 'PERMISSION' ? 'permission' : 'error', message: String(e.message || e), saEmail };
+  }
 }

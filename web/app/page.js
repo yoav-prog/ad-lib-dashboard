@@ -24,6 +24,7 @@ export default async function Page() {
       lastRunStartIso={lastRun?.started_at ?? null}
       nowIso={new Date().toISOString()}
       canEdit={role === 'admin'}
+      exportSaEmail={role === 'admin' ? (process.env.GCS_CLIENT_EMAIL ?? null) : null}
     />
   );
 }
