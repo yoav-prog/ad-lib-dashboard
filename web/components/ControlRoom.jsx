@@ -10,7 +10,7 @@ const CADENCES = ['hourly', 'daily', 'weekly', 'paused'];
 export default function ControlRoom({
   ads, domains, runs, NOW, query = '', feeds = [], canEdit = true,
   runStatus = { active: null, lastRun: null }, runLogs = [], pending = false,
-  onRunNow, onMarkFailed, onSeeNewAds,
+  onRunNow, onMarkFailed, onSeeNewAds, onStop,
 }) {
   const [q, setQ] = useState('');
   const [country, setCountry] = useState('ALL');
@@ -117,7 +117,7 @@ export default function ControlRoom({
       {/* live run panel: exactly what the run is doing, its status, and full logs */}
       {showLivePanel && (
         <LiveRunPanel active={active} pending={pending} lastRun={lastRun} logs={runLogs}
-          canEdit={canEdit} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} />
+          canEdit={canEdit} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} onStop={onStop} />
       )}
 
       {/* feeds */}
@@ -262,7 +262,7 @@ function fmtDuration(totalSec) {
   return `${m}:${pad(s2)}`;
 }
 
-function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, onSeeNewAds }) {
+function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, onSeeNewAds, onStop }) {
   const stalled = active && active.stale;
   const running = active && !active.stale;
   const finished = !active && lastRun;
@@ -297,6 +297,13 @@ function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, o
         {pending && !active && <span style={s('font-size:11px;color:#8A8E94')}>waiting for the runner to spin up (up to a minute on first boot)</span>}
         {completed && <span style={s('font-size:11px;color:#8A8E94')}>{lastRun.ads_new > 0 ? `+${lastRun.ads_new} new ${lastRun.ads_new === 1 ? 'ad' : 'ads'}` : 'no new ads this run'} · {relTime(Date.now() - new Date(lastRun.finished_at).getTime())}</span>}
         {failed && <span style={s('font-size:11px;color:#B08A84')}>{(lastRun.error_detail || 'run failed').slice(0, 140)}</span>}
+        {(pending || running || stalled) && canEdit && (
+          <>
+            <span style={s('flex:1')} />
+            <button onClick={() => onStop && onStop()}
+              style={s(`font-family:${MONO};font-size:10px;letter-spacing:.5px;color:#E06C5A;background:none;border:1px solid rgba(224,108,90,.4);padding:5px 12px;cursor:pointer;white-space:nowrap`)}>&#9632; STOP</button>
+          </>
+        )}
       </div>
 
       {(running || stalled) && total > 0 && (

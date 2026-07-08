@@ -9,7 +9,7 @@ import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
-import { updateAdWorkflow, triggerScrape, markRunFailed, deleteAds, bulkUpdateAds, refreshAds } from '@/app/actions';
+import { updateAdWorkflow, triggerScrape, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun } from '@/app/actions';
 
 export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
@@ -118,6 +118,13 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
 
   const onMarkFailed = useCallback(async (runId) => {
     try { await markRunFailed(runId); } catch (e) { console.error('mark failed', e); }
+    poll();
+  }, [poll]);
+
+  const onStop = useCallback(async () => {
+    dispatchedAtRef.current = 0;
+    setPending(false);
+    try { await stopRun(); } catch (e) { console.error('stop failed', e); }
     poll();
   }, [poll]);
 
@@ -281,7 +288,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
         <ControlRoom
           ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds} canEdit={canEdit}
           runStatus={runStatus} runLogs={runLogs} pending={pending}
-          onRunNow={onRunNow} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds}
+          onRunNow={onRunNow} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} onStop={onStop}
         />
       )}
 

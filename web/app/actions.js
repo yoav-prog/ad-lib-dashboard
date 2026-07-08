@@ -163,6 +163,45 @@ export async function triggerScrape() {
   }
 }
 
+// Stop the current scrape: mark any running run as stopped (frees the run-lock
+// and clears the dashboard) and cancel in-progress / queued GitHub workflow runs
+// so the runner actually halts. A local CLI run is not killed by this; use Ctrl-C.
+export async function stopRun() {
+  await requireAdmin();
+  const sql = getSql();
+  await sql`
+    update runs set status = 'failed', finished_at = now(),
+           error_detail = coalesce(error_detail, 'Stopped from dashboard')
+     where status = 'running'
+  `;
+  revalidatePath('/');
+
+  const token = process.env.GH_DISPATCH_TOKEN;
+  const repo = process.env.GH_REPO;
+  let cancelled = 0;
+  if (token && repo) {
+    const gh = (path, method = 'GET') => fetch(`https://api.github.com/repos/${repo}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+    });
+    try {
+      const res = await gh('/actions/workflows/scrape.yml/runs?per_page=15');
+      if (res.ok) {
+        const data = await res.json();
+        for (const run of data.workflow_runs || []) {
+          if (run.status === 'in_progress' || run.status === 'queued' || run.status === 'waiting') {
+            const c = await gh(`/actions/runs/${run.id}/cancel`, 'POST');
+            if (c.ok) cancelled += 1;
+          }
+        }
+      }
+    } catch {
+      // ignore; the DB status flip already stopped the dashboard/lock
+    }
+  }
+  return { ok: true, cancelled };
+}
+
 // Mark a stalled run as failed from the dashboard, used when the heartbeat has
 // gone silent. Scoped to status='running' so it can never clobber a run that
 // completed on its own in the meantime.
