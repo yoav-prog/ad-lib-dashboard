@@ -749,6 +749,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
   const days = daysRunning(ad, NOW);
   const src = thumbOf(ad);
   const fresh = lastRunStart ? new Date(ad.first_seen_at).getTime() >= lastRunStart : hoursSince(ad.first_seen_at, NOW) <= 24;
+  const slug = tarzoSlug(ad);
   const statuses = ['idea', 'drafting', 'published'];
   const owners = ['Mara K.', 'Devin R.', 'Priya S.', 'Ari L.'];
 
@@ -841,6 +842,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
             <div style={s('display:flex;flex-direction:column;gap:2px;min-width:0')}>
               <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>CTA_TYPE &middot; {ad.cta_type || '-'}</span>
               {ad.link_url && <a href={ad.link_url.split(' | ')[0]} target="_blank" rel="noreferrer" style={s(`font-family:${MONO};font-size:11px;color:#E8A33D;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px`)}>{ad.link_url} &#8599;</a>}
+              {isTarzo(ad) && slug && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>SLUG &middot; <span style={s('color:#C6C9CE')}>{slug}</span></span>}
             </div>
           </div>
 
