@@ -83,7 +83,7 @@ export async function getDomains() {
     country: d.country,
     active_status: d.active_status,
     max_ads: d.max_ads,
-    cadence: d.cadence,
+    interval_days: d.interval_days,
     enabled: d.enabled,
     feed: d.feed,
     next_run_at: iso(d.next_run_at),

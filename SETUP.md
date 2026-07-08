@@ -82,13 +82,15 @@ The scraper will read what to pull from the `domains` table (this replaces the
 old `WA` Google Sheet). Add rows in the SQL editor, for example:
 
 ```sql
-insert into domains (query, country, active_status, max_ads, cadence) values
-  ('analogaudiohub.com', 'ALL', 'active', 100, 'daily'),
-  ('competitor2.com',    'US',  'active',  50, 'weekly');
+insert into domains (query, country, active_status, max_ads, interval_days) values
+  ('analogaudiohub.com', 'ALL', 'active', 100, 3),
+  ('competitor2.com',    'US',  'active',  50, 7);
 ```
 
-`cadence` is one of `hourly`, `daily`, `weekly`, `paused`. Default to `daily`;
-`hourly` multiplies scrape spend (Apify + ScrapingBee + OpenAI) roughly 24x.
+`interval_days` is how many days between scrapes (1..365, default 3). Set it, or
+edit it per domain in the Control Room. Smaller numbers scrape more often and cost
+more (Apify + ScrapingBee + OpenAI are billed per run). To pause a domain, flip its
+Status to paused (the `enabled` flag); the runner only scrapes enabled domains.
 
 ---
 

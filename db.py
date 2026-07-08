@@ -24,13 +24,6 @@ from contextlib import contextmanager
 import psycopg
 from psycopg.rows import dict_row
 
-# Cadence → interval used to schedule the next run for a domain.
-CADENCE_INTERVAL = {
-    'hourly': '1 hour',
-    'daily':  '1 day',
-    'weekly': '7 days',
-}
-
 # Columns written for every ad. Order matters: it maps positionally to the
 # values list built in upsert_ads(). Provenance/pipeline columns are handled
 # separately below.
@@ -245,7 +238,7 @@ def any_domain_due(conn) -> bool:
         cur.execute(
             """
             select 1 from domains
-             where enabled and cadence <> 'paused' and next_run_at <= now()
+             where enabled and next_run_at <= now()
              limit 1
             """
         )
@@ -258,7 +251,7 @@ def get_due_domains(conn) -> list[dict]:
         cur.execute(
             """
             select * from domains
-             where enabled and cadence <> 'paused' and next_run_at <= now()
+             where enabled and next_run_at <= now()
              order by next_run_at asc
             """
         )
@@ -268,9 +261,9 @@ def get_due_domains(conn) -> list[dict]:
 def get_domains_by_ids(conn, ids: list[str]) -> list[dict]:
     """Specific domains by id - used by targeted manual runs ("run these rows").
 
-    Unlike get_due_domains this ignores enabled / cadence / next_run_at: an
-    explicit request runs the row regardless, so you can one-off a paused
-    competitor. Ids not present in the table are simply absent from the result.
+    Unlike get_due_domains this ignores enabled / next_run_at: an explicit
+    request runs the row regardless, so you can one-off a paused competitor.
+    Ids not present in the table are simply absent from the result.
     """
     if not ids:
         return []
@@ -282,18 +275,17 @@ def get_domains_by_ids(conn, ids: list[str]) -> list[dict]:
         return cur.fetchall()
 
 
-def bump_domain_schedule(conn, domain_id, cadence: str):
-    """Advance a domain's next_run_at by its cadence after a run."""
-    interval = CADENCE_INTERVAL.get(cadence, '1 day')   # cadence is CHECK-constrained
+def bump_domain_schedule(conn, domain_id, interval_days: int):
+    """Advance a domain's next_run_at by its interval (in days) after a run."""
     with conn.cursor() as cur:
         cur.execute(
             """
             update domains
                set last_run_at = now(),
-                   next_run_at = now() + %s::interval
+                   next_run_at = now() + make_interval(days => %s)
              where id = %s
             """,
-            (interval, domain_id),
+            (interval_days, domain_id),
         )
 
 
