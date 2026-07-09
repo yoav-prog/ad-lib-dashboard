@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, buildCsv, parseSheetId, langCode, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
@@ -24,7 +24,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
   const [sort, setSort] = useState('fresh');
   const [sortDir, setSortDir] = useState('desc');
   const [filters, setFilters] = useState({
-    domain: [], feed: [], vertical: [], country: [], language: [], format: [], status: [],
+    domain: [], feed: [], vertical: [], country: [], geos: [], language: [], format: [], status: [],
     daysMin: '', daysMax: '', rankMin: '', rankMax: '',
   });
   const [dateRange, setDateRange] = useState('all');
@@ -195,6 +195,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
       if (f.domain.length && !f.domain.includes(a.domain)) return false;
       if (f.vertical.length && !f.vertical.includes(a.vertical)) return false;
       if (f.country.length && !f.country.includes(a.country)) return false;
+      if (f.geos.length && !geoCountries(a.sheet_geos).some((c) => f.geos.includes(c))) return false;
       if (f.language.length && !f.language.includes(a.language)) return false;
       if (f.format.length && !f.format.includes(a.display_format)) return false;
       if (f.feed.length && !f.feed.includes(a.feed)) return false;
@@ -322,7 +323,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
           ads={ads} filtered={filtered} NOW={NOW}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
-          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], language: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
+          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
@@ -536,16 +537,25 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
   const vertMix = Object.entries(vcount).sort((x, y) => y[1] - x[1]).slice(0, 4)
     .map(([label, n]) => ({ label, pct: `${Math.round((n / (ads.length || 1)) * 100)}%` }));
 
+  // GEOS facet: every country that appears in some ad's sheet revenue split,
+  // busiest first. Selecting one keeps ads that earn there at all (any share) -
+  // "show me everything making money in ES", per the sheet, not per AdIntel's
+  // own Country guess.
+  const geoCounts = new Map();
+  for (const a of ads) for (const c of geoCountries(a.sheet_geos)) geoCounts.set(c, (geoCounts.get(c) || 0) + 1);
+
   const groups = [
     { title: 'Domain', group: 'domain', vals: uniq('domain'), count: (v) => countBy('domain', v) },
     { title: 'Feed', group: 'feed', vals: uniq('feed'), count: (v) => countBy('feed', v) },
     { title: 'Vertical', group: 'vertical', vals: uniq('vertical'), count: (v) => countBy('vertical', v) },
     { title: 'Country', group: 'country', vals: uniq('country'), count: (v) => countBy('country', v) },
+    // Hidden entirely while no ad carries sheet data (fresh install, sheet unreachable).
+    ...(geoCounts.size ? [{ title: 'GEOS (Earns In)', group: 'geos', vals: [...geoCounts.keys()].sort((x, y) => geoCounts.get(y) - geoCounts.get(x)), count: (v) => geoCounts.get(v) || 0 }] : []),
     { title: 'Language', group: 'language', vals: uniq('language'), count: (v) => countBy('language', v) },
     { title: 'Format', group: 'format', vals: uniq('display_format'), count: (v) => countBy('display_format', v) },
     { title: 'Status', group: 'status', vals: uniq('status'), count: (v) => countBy('status', v) },
   ];
-  const checkboxGroups = ['domain', 'feed', 'vertical', 'country', 'language', 'format', 'status'];
+  const checkboxGroups = ['domain', 'feed', 'vertical', 'country', 'geos', 'language', 'format', 'status'];
   const activeFilterCount =
     checkboxGroups.reduce((n, k) => n + (filters[k]?.length || 0), 0)
     + (dateRange !== 'all' ? 1 : 0)

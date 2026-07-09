@@ -3,7 +3,7 @@
 // exports must carry the watchable video link, not the poster image.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -154,6 +154,13 @@ test('buildCsv includes the metric columns', () => {
   const [header, row] = buildCsv([metricAd], NOW).split('\r\n');
   assert.ok(header.includes('"Revenue Prediction"') && header.includes('"RPC"') && header.includes('"Top Keywords"'));
   assert.ok(row.includes('"11947.20"') && row.includes('"4883"') && row.includes('"2.45"'));
+});
+
+test('geoCountries lists the countries in a GEOS split, in order', () => {
+  assert.deepEqual(geoCountries('ES-90,MX-10'), ['ES', 'MX']);
+  assert.deepEqual(geoCountries('US-100'), ['US']);
+  assert.deepEqual(geoCountries(null), []);
+  assert.deepEqual(geoCountries(''), []);
 });
 
 test('fmtInt and fmtDec render numbers for reading and stay empty on null', () => {
