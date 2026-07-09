@@ -1,0 +1,51 @@
+name: backfill-review
+
+# One-click backfill for the review queue: re-classifies already-stored ads with
+# the scraper's relevance rule (backfill_review_status.py), flipping rows whose
+# destination does not match their tracked domain from 'approved' to 'pending'
+# so they surface in the dashboard's Review tab. Runs with the repo's existing
+# DATABASE_URL secret, so no one needs the connection string locally.
+#
+# Run it from the Actions tab ("Run workflow"). Safe to re-run any time: rows a
+# human already decided on (rejected, or pending awaiting review) are never
+# touched. Requires migration 0006 to be applied first.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: print what would change, write nothing'
+        type: boolean
+        default: false
+      domain:
+        description: 'Limit to one tracked domain (blank = all)'
+        required: false
+        default: ''
+
+concurrency:
+  group: backfill-review
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Re-classify stored ads
+        # Inputs reach the command through env vars, never through expression
+        # interpolation, so a crafted domain value cannot inject shell.
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ -n "$DOMAIN" ]; then args+=(--domain "$DOMAIN"); fi
+          python backfill_review_status.py "${args[@]}"
+        env:
+          PYTHONUNBUFFERED: '1'
+          DRY_RUN: ${{ inputs.dry_run }}
+          DOMAIN: ${{ inputs.domain }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
