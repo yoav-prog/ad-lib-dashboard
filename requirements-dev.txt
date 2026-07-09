@@ -1,0 +1,4 @@
+# Development / CI test dependencies. Production installs requirements.txt only.
+-r requirements.txt
+pytest
+pytest-asyncio

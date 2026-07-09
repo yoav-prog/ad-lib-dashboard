@@ -29,6 +29,7 @@ import argparse
 import asyncio
 import os
 import threading
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -360,6 +361,52 @@ async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, do
 # ═════════════════════════════════════════════════════════════════════════════
 # Orchestration
 # ═════════════════════════════════════════════════════════════════════════════
+DEFAULT_TIME_BUDGET_MINUTES = 45
+
+
+def _time_budget_minutes() -> float:
+    """The run's soft time budget in minutes (RUN_TIME_BUDGET_MINUTES env,
+    default 45). Once exhausted the run stops starting new domains and finishes
+    cleanly as completed - well before the workflow's hard timeout would kill it
+    mid-scrape, leave the run-lock hanging, and hide everything it captured
+    behind a 'failed' status. Invalid or non-positive values fall back to the
+    default, so a bad env value can never disable the guard."""
+    raw = os.environ.get('RUN_TIME_BUDGET_MINUTES', '')
+    try:
+        minutes = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TIME_BUDGET_MINUTES
+    return minutes if minutes > 0 else DEFAULT_TIME_BUDGET_MINUTES
+
+
+async def _scrape_domain_rows(run_id, bucket, verticals, existing_ids, rows,
+                              retries, progress, deadline, clock=time.monotonic):
+    """Scrape the given domain rows in order until done or `deadline` (a
+    `clock()` timestamp; time.monotonic by default) passes. Returns
+    (total_found, total_new, deferred_rows): deferred_rows are the rows the
+    deadline cut off, which the caller marks due so the next scheduled tick
+    continues exactly where this run stopped. The check runs before each
+    domain, so a domain is never abandoned midway - the budget bounds when
+    work starts, not how it ends. `clock` is injectable for tests."""
+    total_found = total_new = 0
+    for i, dom in enumerate(rows):
+        if clock() >= deadline:
+            return total_found, total_new, rows[i:]
+        progress['current_domain'] = dom['query']
+        params = {'query': dom['query'], 'country': dom['country'],
+                  'activeStatus': dom['active_status'],
+                  'max_target_results': dom['max_ads']}
+        print(f'scraping "{dom["query"]}" (max {dom["max_ads"]})...')
+        f, n = await scrape_query(run_id, bucket, verticals, existing_ids,
+                                  params, dom.get('feed') or '', dom['query'], retries, progress)
+        total_found += f
+        total_new += n
+        progress['domains_done'] += 1
+        with db.connect() as conn:
+            db.bump_domain_schedule(conn, dom['id'], dom['interval_days'])
+    return total_found, total_new, []
+
+
 def _target_domain_ids(args) -> list[str]:
     """Domain ids for a targeted run: the --domain-ids arg or the DOMAIN_IDS env
     (set by the dashboard's "Run selected" dispatch). Comma-separated; each token
@@ -405,6 +452,13 @@ async def run(args):
         print('another run is already active; exiting')
         return
 
+    # The soft time budget starts at the claim. When it runs out, the run stops
+    # starting new domains, marks the rest due, and finishes as COMPLETED - so
+    # its ads surface immediately and the lock is released cleanly, instead of
+    # the workflow's hard timeout killing it mid-scrape.
+    budget_minutes = _time_budget_minutes()
+    deadline = time.monotonic() + budget_minutes * 60
+
     # ── Live visibility: from here on, everything printed is mirrored into
     #    run_logs, the heartbeat stays fresh, and progress streams to the
     #    dashboard. Tees are installed before the first print so the console the
@@ -424,6 +478,7 @@ async def run(args):
         pass
 
     print(f'run {run_id} claimed | {len(verticals)} verticals | {len(existing_ids)} ads already stored')
+    print(f'[budget] time budget: {budget_minutes:g}m - domains not started by then stay due for the next tick')
 
     total_found = total_new = 0
     try:
@@ -461,19 +516,22 @@ async def run(args):
             progress['domains_total'] = len(rows)
             print(f'{len(rows)} selected domain(s) to run' if target_ids
                   else f'{len(rows)} domain(s) due')
-            for dom in rows:
-                progress['current_domain'] = dom['query']
-                params = {'query': dom['query'], 'country': dom['country'],
-                          'activeStatus': dom['active_status'],
-                          'max_target_results': dom['max_ads']}
-                print(f'scraping "{dom["query"]}" (max {dom["max_ads"]})...')
-                f, n = await scrape_query(run_id, bucket, verticals, existing_ids,
-                                          params, dom.get('feed') or '', dom['query'], args.retries, progress)
-                total_found += f
-                total_new += n
-                progress['domains_done'] += 1
-                with db.connect() as conn:
-                    db.bump_domain_schedule(conn, dom['id'], dom['interval_days'])
+            total_found, total_new, deferred = await _scrape_domain_rows(
+                run_id, bucket, verticals, existing_ids, rows,
+                args.retries, progress, deadline)
+            if deferred:
+                names = ', '.join(d['query'] for d in deferred)
+                print(f'[budget] time budget ({budget_minutes:g}m) reached after '
+                      f'{progress["domains_done"]}/{len(rows)} domains; marking '
+                      f'{len(deferred)} remaining domain(s) due for the next tick: {names}')
+                # Fail-open: the scraped data is good even if this write hiccups.
+                # Due-sweep leftovers are still due regardless; only a targeted
+                # row would lose its instant re-queue, which the log records.
+                try:
+                    with db.connect() as conn:
+                        db.mark_domains_due(conn, [d['id'] for d in deferred])
+                except Exception as e:
+                    print(f'[budget] could not mark deferred domains due: {e}')
 
         with db.connect() as conn:
             db.finish_run(conn, run_id, total_found, total_new)
