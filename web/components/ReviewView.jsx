@@ -54,7 +54,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
     if (sort === 'page') return [...list].sort((a, b) => reviewPageOf(a).localeCompare(reviewPageOf(b)));
     if (sort === 'domain') return [...list].sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
     if (sort === 'dest') return [...list].sort((a, b) => reviewDestOf(a).localeCompare(reviewDestOf(b)));
-    return list;   // 'newest' - the server already orders by first_seen_at desc
+    return list;   // 'newest' - the server orders by latest sighting, so just-reopened ads sit on top
   }, [ads, query, filters, sort]);
 
   const activeFilterCount = filters.domain.length + filters.dest.length + filters.page.length;

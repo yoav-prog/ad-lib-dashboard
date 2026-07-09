@@ -1,7 +1,8 @@
 """Review-queue routing: mismatched ads must be stored as pending (not fed to
 the dashboard as approved), pending ads must not spend a ScrapingBee call on
-their junk landing page, and a later re-sighting must never overwrite the
-human's approve/reject decision.
+their junk landing page, and the upsert must never overwrite a human's
+approve/reject decision. (The one sanctioned status change on re-sighting is
+the resurface path reopening rejected ads as pending - see test_resurface.py.)
 """
 
 from contextlib import contextmanager

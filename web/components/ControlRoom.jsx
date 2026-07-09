@@ -555,6 +555,15 @@ function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, o
   const done = active?.domains_done ?? 0;
   const total = active?.domains_total ?? 0;
   const found = active?.ads_found_so_far ?? 0;
+
+  // A completed run reports both halves of what it saw: brand-new imports and
+  // already-known ads it re-surfaced back into the fresh window.
+  const newCount = lastRun?.ads_new ?? 0;
+  const seenCount = lastRun?.ads_found ?? newCount;
+  const reSeen = Math.max(0, seenCount - newCount);
+  const runSummary = reSeen > 0
+    ? `${newCount > 0 ? `+${newCount} new` : 'no new ads'} · ${reSeen} re-surfaced`
+    : (newCount > 0 ? `+${newCount} new ${newCount === 1 ? 'ad' : 'ads'}` : 'no new ads this run');
   const pct = total > 0 ? Math.round((done / total) * 100) : (running ? 5 : 0);
   const elapsed = active ? fmtDuration(active.elapsed_seconds) : '';
 
@@ -571,7 +580,7 @@ function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, o
         <span style={s(`font-family:${MONO};font-size:11px;letter-spacing:1.5px;color:${tone}`)}>{label}</span>
         {running && <span style={s('font-size:11px;color:#8A8E94')}>scraping <span style={s('color:#E7E8EA')}>{active.current_domain || '...'}</span></span>}
         {pending && !active && <span style={s('font-size:11px;color:#8A8E94')}>waiting for the runner to spin up (up to a minute on first boot)</span>}
-        {completed && <span style={s('font-size:11px;color:#8A8E94')}>{lastRun.ads_new > 0 ? `+${lastRun.ads_new} new ${lastRun.ads_new === 1 ? 'ad' : 'ads'}` : 'no new ads this run'} · {relTime(Date.now() - new Date(lastRun.finished_at).getTime())}</span>}
+        {completed && <span style={s('font-size:11px;color:#8A8E94')}>{runSummary} · {relTime(Date.now() - new Date(lastRun.finished_at).getTime())}</span>}
         {failed && <span style={s('font-size:11px;color:#B08A84')}>{(lastRun.error_detail || 'run failed').slice(0, 140)}</span>}
         {(pending || running || stalled) && canEdit && (
           <>
@@ -585,7 +594,7 @@ function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, o
       {(running || stalled) && total > 0 && (
         <div style={s('display:flex;align-items:center;gap:26px;margin-bottom:14px;flex-wrap:wrap')}>
           <LiveStat label="Competitor" value={`${done} / ${total}`} />
-          <LiveStat label="New Found" value={String(found)} color={A} />
+          <LiveStat label="Ads Found" value={String(found)} color={A} />
           <LiveStat label="Elapsed" value={elapsed} />
           {eta && <LiveStat label="Remaining" value={eta} />}
           <div style={s('flex:1;min-width:120px')}>
@@ -604,11 +613,11 @@ function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, o
         </div>
       )}
 
-      {completed && lastRun.ads_new > 0 && (
+      {completed && seenCount > 0 && (
         <div style={s('margin-bottom:14px')}>
           <button onClick={() => onSeeNewAds && onSeeNewAds()}
             style={s(`font-family:${MONO};font-size:11px;letter-spacing:.5px;color:#0B0C0E;background:${A};border:none;padding:8px 14px;cursor:pointer`)}>
-            SEE {lastRun.ads_new} NEW {lastRun.ads_new === 1 ? 'AD' : 'ADS'} →
+            SEE {seenCount} {seenCount === 1 ? 'AD' : 'ADS'} FROM THIS RUN →
           </button>
         </div>
       )}

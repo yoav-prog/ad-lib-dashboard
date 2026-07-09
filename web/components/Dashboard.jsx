@@ -218,7 +218,9 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
       if (sort === 'page') return (a.page_name || '').localeCompare(b.page_name || '') * -dir;
       if (sort === 'domain') return (a.domain || '').localeCompare(b.domain || '') * -dir;
       if (sort === 'vertical') return (a.vertical || '').localeCompare(b.vertical || '') * -dir;
-      return (new Date(b.first_seen_at) - new Date(a.first_seen_at)) * dir;
+      // Freshness = latest sighting, not first discovery, so everything the
+      // last run saw (including re-surfaced ads) clusters at the top.
+      return (new Date(b.last_seen_at || b.first_seen_at) - new Date(a.last_seen_at || a.first_seen_at)) * dir;
     });
     return list;
   }, [ads, query, filters, dateRange, sort, sortDir, NOW, searchIndex]);
@@ -479,7 +481,9 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
   const allSelected = filteredIds.length > 0 && selected && filteredIds.every((id) => selected.has(id));
   const bulkBtn = s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:#C6C9CE;font-family:${MONO};font-size:10px;padding:4px 9px;cursor:pointer`);
   const [bulkMsg, setBulkMsg] = useState('');
-  const isFresh = (a) => (lastRunStart ? new Date(a.first_seen_at).getTime() >= lastRunStart : hoursSince(a.first_seen_at, NOW) <= 24);
+  // Fresh = seen by the latest run (the scraper re-surfaces every ad Meta
+  // still returns, not just never-seen ones), falling back to the last 24h.
+  const isFresh = (a) => (lastRunStart ? new Date(a.last_seen_at || a.first_seen_at).getTime() >= lastRunStart : hoursSince(a.last_seen_at || a.first_seen_at, NOW) <= 24);
 
   // Thumbnail size is user-controlled: these creatives are text-heavy, so a bigger
   // preview (shown whole, not cropped) is often needed to actually read them. S is
@@ -506,7 +510,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
   const new7 = ads.filter((a) => hoursSince(a.first_seen_at, NOW) <= 168).length;
   const winners = ads.filter((a) => daysRunning(a, NOW) >= 60).length;
   const metrics = [
-    { label: lastRunStart ? 'New This Scrape' : 'Fresh 24h', value: pad(fresh24), color: A },
+    { label: lastRunStart ? 'Seen This Scrape' : 'Fresh 24h', value: pad(fresh24), color: A },
     { label: 'New 7d', value: pad(new7), color: '#E7E8EA' },
     { label: 'Proven Winners', value: pad(winners), color: A },
     { label: 'Total Tracked', value: pad(ads.length, 3), color: '#E7E8EA' },
@@ -1010,7 +1014,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
   const vid = isVideo(ad);
   const days = daysRunning(ad, NOW);
   const src = thumbOf(ad);
-  const fresh = lastRunStart ? new Date(ad.first_seen_at).getTime() >= lastRunStart : hoursSince(ad.first_seen_at, NOW) <= 24;
+  const fresh = lastRunStart ? new Date(ad.last_seen_at || ad.first_seen_at).getTime() >= lastRunStart : hoursSince(ad.last_seen_at || ad.first_seen_at, NOW) <= 24;
   const slug = tarzoSlug(ad);
   const statuses = ['idea', 'drafting', 'published'];
   const owners = ['Mara K.', 'Devin R.', 'Priya S.', 'Ari L.'];
