@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, firstUrl, hostOf, pad, relTime, filterReviewAds, reviewDestOf, reviewPageOf } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
+import CopyCell from '@/components/CopyCell';
 
 // The review queue: ads the scraper fetched for a tracked domain whose
 // destination does NOT point at that domain (the Ad Library keyword search
@@ -31,7 +32,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
   const [imgKey, setImgKey] = useState('s');
   const img = IMG_SIZES.find((z) => z.key === imgKey) || IMG_SIZES[0];
   const thumbColW = img.px + 12; // image box + the cell's right padding
-  const tableMinW = 1100 + (img.px - 44);
+  const tableMinW = 1230 + (img.px - 44);
 
   const facetGroups = useMemo(() => {
     const count = (of) => {
@@ -187,6 +188,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
           <div style={s('width:140px;flex-shrink:0')}>Searched Domain</div>
           <div style={s('width:170px;flex-shrink:0')}>Actually Leads To</div>
           <div style={s('flex:1;min-width:0')}>Headline</div>
+          <div style={s('width:130px;flex-shrink:0')}>Ad Archive ID</div>
           <div style={s('width:80px;flex-shrink:0;text-align:right')}>Added</div>
           {canEdit && <div style={s('width:170px;flex-shrink:0;text-align:right')}>Decision</div>}
         </div>
@@ -219,6 +221,9 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
               <div style={s('flex:1;min-width:0;padding-right:16px')}>
                 <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
               </div>
+              <CopyCell value={a.ad_archive_id} style={s('width:130px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.ad_archive_id}</span>
+              </CopyCell>
               <div style={s(`width:80px;flex-shrink:0;text-align:right;font-family:${MONO};font-size:10.5px;color:#6C7076`)}>{relTime(NOW - new Date(a.first_seen_at).getTime())}</div>
               {canEdit && (
                 <div style={s('width:170px;flex-shrink:0;display:flex;justify-content:flex-end;gap:6px')}>
