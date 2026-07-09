@@ -80,19 +80,22 @@ function headerIndexes(headerRow) {
 
 const addNullable = (a, b) => (a == null && b == null ? null : (a || 0) + (b || 0));
 
-// The GEOS breakdown: how a URL's revenue splits across the sheet's countries,
-// as "CC-<percent>" pairs sorted biggest-first, e.g. "ES-90,MX-10". The sheet
-// team picks a country per campaign without knowing AdIntel's country, so this
-// column is what tells a reader WHERE an article actually earns - regardless of
-// what AdIntel's own Country column guessed. null when no row carried revenue.
-function geosOf(perCountry) {
+// The GEOS breakdown: how a URL's revenue splits across the sheet's countries.
+// Two forms from one computation: `geos`, the compact "CC-<percent>" string
+// sorted biggest-first ("ES-90,MX-10") that the column, exports, and facet
+// filter use; and `geoSplit`, the exact per-country revenue rows the breakdown
+// popup shows. The sheet team picks a country per campaign without knowing
+// AdIntel's country, so this is what tells a reader WHERE an article actually
+// earns - regardless of what AdIntel's own Country column guessed. Both are
+// null when no row carried revenue.
+function geoBreakdown(perCountry) {
   const entries = [...perCountry.entries()].filter(([, v]) => v > 0);
   const total = entries.reduce((n, [, v]) => n + v, 0);
-  if (!total) return null;
-  return entries
+  if (!total) return { geos: null, geoSplit: null };
+  const geoSplit = entries
     .sort((x, y) => y[1] - x[1])
-    .map(([c, v]) => `${c}-${Math.round((v / total) * 100)}`)
-    .join(',');
+    .map(([country, revenue]) => ({ country, revenue, share: revenue / total }));
+  return { geos: geoSplit.map((g) => `${g.country}-${Math.round(g.share * 100)}`).join(','), geoSplit };
 }
 
 // Raw tab values (header row first) -> Map of urlKey -> { revenue, clicks,
@@ -122,7 +125,7 @@ export function buildMetricsIndex(values) {
 
     let cur = index.get(key);
     if (!cur) {
-      cur = { revenue, clicks, rpc, keywords, geos: null, rows: 1, _topRev: revenue ?? -Infinity, _geo: new Map() };
+      cur = { revenue, clicks, rpc, keywords, geos: null, geoSplit: null, rows: 1, _topRev: revenue ?? -Infinity, _geo: new Map() };
       index.set(key, cur);
     } else {
       cur.revenue = addNullable(cur.revenue, revenue);
@@ -138,7 +141,9 @@ export function buildMetricsIndex(values) {
   }
   for (const e of index.values()) {
     if (e.rows > 1 && e.revenue != null && e.clicks > 0) e.rpc = e.revenue / e.clicks;
-    e.geos = geosOf(e._geo);
+    const { geos, geoSplit } = geoBreakdown(e._geo);
+    e.geos = geos;
+    e.geoSplit = geoSplit;
     delete e._topRev;
     delete e._geo;
   }
@@ -169,6 +174,7 @@ export function attachSheetMetrics(ads, index) {
       sheet_clicks: m ? m.clicks : null,
       sheet_rpc: m ? m.rpc : null,
       sheet_geos: m ? m.geos : null,
+      sheet_geo_split: m ? m.geoSplit : null,
       sheet_keywords: m && m.keywords ? m.keywords : null,
     };
   });
