@@ -153,6 +153,7 @@ _SECRET_ENV_KEYS = (
 )
 _DSN_PASSWORD = re.compile(r'(postgres(?:ql)?://[^:\s/]+:)[^@\s]+(@)')
 _BEARER_TOKEN = re.compile(r'(Bearer\s+)[A-Za-z0-9._\-]+', re.IGNORECASE)
+_ANSI_ESCAPE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')   # CSI sequences (colors etc.)
 _secret_values_cache: list[str] | None = None
 
 
@@ -181,9 +182,18 @@ def redact(text: str) -> str:
     return text
 
 
+def strip_ansi(text: str) -> str:
+    """Remove ANSI terminal escape sequences from a log line. The Apify actor's
+    streamed log is full of color codes, which the dashboard's log console would
+    otherwise render as escape-character garbage."""
+    return _ANSI_ESCAPE.sub('', text) if text else text
+
+
 def insert_run_logs(conn, run_id, rows) -> None:
-    """Batch-insert buffered log lines. rows: iterable of (ts, level, message)."""
-    values = [(run_id, ts, level, redact(message)) for (ts, level, message) in rows]
+    """Batch-insert buffered log lines, cleaned (ANSI stripped) and redacted at
+    this write boundary so nothing garbled or sensitive is ever persisted.
+    rows: iterable of (ts, level, message)."""
+    values = [(run_id, ts, level, redact(strip_ansi(message))) for (ts, level, message) in rows]
     if not values:
         return
     with conn.cursor() as cur:
