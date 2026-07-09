@@ -20,6 +20,19 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
   const [gsearch, setGsearch] = useState({});
   const [sort, setSort] = useState('newest');
 
+  // Same user-controlled thumbnail sizing as Fresh Finds: these creatives are
+  // text-heavy, and reading them is often what decides approve vs reject. S is
+  // the tidy default; M and L show the whole creative uncropped.
+  const IMG_SIZES = [
+    { key: 's', label: 'S', px: 44, fit: 'cover', hint: 'small' },
+    { key: 'm', label: 'M', px: 120, fit: 'contain', hint: 'medium' },
+    { key: 'l', label: 'L', px: 220, fit: 'contain', hint: 'large' },
+  ];
+  const [imgKey, setImgKey] = useState('s');
+  const img = IMG_SIZES.find((z) => z.key === imgKey) || IMG_SIZES[0];
+  const thumbColW = img.px + 12; // image box + the cell's right padding
+  const tableMinW = 1100 + (img.px - 44);
+
   const facetGroups = useMemo(() => {
     const count = (of) => {
       const m = new Map();
@@ -131,7 +144,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
       {/* queue */}
       <div style={s('flex:1;min-width:0;background:#0B0C0E;overflow-x:auto')}>
         {/* header strip: counts, sort, bulk actions */}
-        <div style={s('display:flex;align-items:center;gap:12px;height:40px;padding:0 16px;background:#0D0E11;border-bottom:1px solid rgba(255,255,255,.09);min-width:1100px')}>
+        <div style={s(`display:flex;align-items:center;gap:12px;height:40px;padding:0 16px;background:#0D0E11;border-bottom:1px solid rgba(255,255,255,.09);min-width:${tableMinW}px`)}>
           <span style={s(`font-family:${MONO};font-size:11.5px;color:#E7E8EA;font-variant-numeric:tabular-nums`)}>{pad(filtered.length)} <span style={s('color:#5A5E64')}>waiting for review{filtered.length !== ads.length ? ` of ${ads.length}` : ''}</span></span>
           <span style={s('color:#2E3136')}>|</span>
           <span style={s('font-size:10.5px;color:#5A5E64')}>sorted by</span>
@@ -139,6 +152,15 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
             <button key={sd.id} onClick={() => setSort(sd.id)}
               style={s(`background:none;border:none;color:${sort === sd.id ? '#E7E8EA' : '#6C7076'};font-size:10.5px;letter-spacing:.3px;cursor:pointer`)}>{sd.label}</button>
           ))}
+          <span style={s('color:#2E3136')}>|</span>
+          <span style={s(`font-family:${MONO};font-size:10px;color:#5A5E64;letter-spacing:.3px`)}>images</span>
+          <div style={s('display:flex;gap:1px;background:rgba(255,255,255,.08)')}>
+            {IMG_SIZES.map((z) => (
+              <button key={z.key} onClick={() => setImgKey(z.key)}
+                title={`Preview images ${z.hint}`}
+                style={s(`padding:3px 7px;background:${imgKey === z.key ? '#1A1C20' : '#0D0E11'};border:none;color:${imgKey === z.key ? A : '#8A8E94'};font-family:${MONO};font-size:10px;cursor:pointer`)}>{z.label}</button>
+            ))}
+          </div>
           <span style={s('flex:1')} />
           {canEdit && selIds.length > 0 ? (
             <>
@@ -153,14 +175,14 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
         </div>
 
         {/* column header */}
-        <div style={s('display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1100px')}>
+        <div style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
           {canEdit && (
             <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
               <span onClick={() => setSelected(allSelected ? new Set() : new Set(ids))} title="Select all filtered rows"
                 style={s(`width:13px;height:13px;border:1px solid ${allSelected ? A : 'rgba(255,255,255,.25)'};background:${allSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allSelected ? '✓' : ''}</span>
             </div>
           )}
-          <div style={s('width:56px;flex-shrink:0')} />
+          <div style={s(`width:${thumbColW}px;flex-shrink:0`)} />
           <div style={s('width:150px;flex-shrink:0')}>Page</div>
           <div style={s('width:140px;flex-shrink:0')}>Searched Domain</div>
           <div style={s('width:170px;flex-shrink:0')}>Actually Leads To</div>
@@ -175,13 +197,13 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
           const host = hostOf(url);
           return (
             <div key={a.ad_archive_id}
-              style={s(`display:flex;align-items:center;min-height:56px;min-width:1100px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : 'transparent'}`)}>
+              style={s(`display:flex;align-items:center;min-height:56px;min-width:${tableMinW}px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : 'transparent'}`)}>
               {canEdit && (
                 <div onClick={() => toggle(a.ad_archive_id)} style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer')}>
                   <span style={s(`width:13px;height:13px;border:1px solid ${isSel ? A : 'rgba(255,255,255,.22)'};background:${isSel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{isSel ? '✓' : ''}</span>
                 </div>
               )}
-              <div style={s('width:56px;flex-shrink:0;padding-right:12px')}><Thumb ad={a} size={44} /></div>
+              <div style={s(`width:${thumbColW}px;flex-shrink:0;padding-right:12px`)}><Thumb ad={a} size={img.px} fit={img.fit} /></div>
               <div style={s('width:150px;flex-shrink:0;padding-right:12px;min-width:0')}>
                 <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.page_name || '(unknown)'}</span>
               </div>
