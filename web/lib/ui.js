@@ -10,6 +10,10 @@ export const daysRunning = (ad, now) =>
 export const isVideo = (ad) => ad.display_format === 'VIDEO' || !!ad.video_hd_url;
 export const thumbOf = (ad) => ad.original_image_urls?.[0] || ad.video_preview_url || null;
 
+// The creative asset itself: the video for a video ad, the image otherwise. Exports
+// use this (not thumbOf) so a video row carries the watchable link, not its poster.
+export const mediaUrlOf = (ad) => ad.video_hd_url || thumbOf(ad);
+
 // An ad's landing page. link_url may pack several DCO destinations pipe-joined
 // ("a | b | c"); the first is the canonical article the creative points to.
 export const firstUrl = (linkUrl) => (linkUrl ? String(linkUrl).split(' | ')[0].trim() : '');
@@ -88,7 +92,7 @@ export function fmtDate(iso) {
 // as an ISO code (langCode), and dates as YYYY-MM-DD so a spreadsheet sorts them.
 export const SHEET_COLUMNS = [
   { key: 'preview',   header: 'Preview',          kind: 'image', get: (a) => thumbOf(a),                                            width: 130, align: 'CENTER', wrap: false },
-  { key: 'image_url', header: 'Image URL',        kind: 'link',  get: (a) => thumbOf(a),                                            width: 230, align: 'LEFT',   wrap: false },
+  { key: 'image_url', header: 'Media URL',        kind: 'link',  get: (a) => mediaUrlOf(a),                                         width: 230, align: 'LEFT',   wrap: false },
   { key: 'page',      header: 'Page',             kind: 'text',  get: (a) => a.page_name,                                           width: 130, align: 'LEFT',   wrap: false },
   { key: 'domain',    header: 'Domain',           kind: 'text',  get: (a) => a.domain,                                              width: 140, align: 'LEFT',   wrap: false },
   { key: 'headline',  header: 'Headline',         kind: 'text',  get: (a) => a.title || a.caption || a.body_text,                   width: 260, align: 'LEFT',   wrap: true  },
@@ -117,7 +121,7 @@ export const DEFAULT_SHEET_COLUMN_KEYS = SHEET_COLUMNS.map((c) => c.key);
 const cellText = (c, a, now) => { const v = c.get(a, now); return v == null ? '' : String(v); };
 
 // Build a CSV string from ad rows. Uses the same catalog as the Sheet, minus the
-// image-preview column (a CSV can't render an image; the Image URL column carries the
+// image-preview column (a CSV can't render an image; the Media URL column carries the
 // link). Every field is quoted and inner quotes doubled so commas, quotes, and
 // newlines in ad copy never break the layout.
 export function buildCsv(rows, now) {
