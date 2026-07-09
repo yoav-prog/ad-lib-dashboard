@@ -121,6 +121,13 @@ export function fmtDate(iso) {
   return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${String(d.getFullYear()).slice(2)}`;
 }
 
+// Numeric formats for the sheet-metrics columns. null/'' stay '' so an ad with
+// no sheet match renders a dash on screen and an empty cell in exports, never a
+// fake zero. fmtInt is for reading (thousands separators); fmtDec is for
+// exports and per-click money, where plain digits sort correctly in a sheet.
+export const fmtInt = (v) => (v == null || v === '' || !isFinite(Number(v)) ? '' : Math.round(Number(v)).toLocaleString('en-US'));
+export const fmtDec = (v, d = 2) => (v == null || v === '' || !isFinite(Number(v)) ? '' : Number(v).toFixed(d));
+
 // The master catalog of columns available to the Fresh Finds export, in canonical
 // order. Each column has a kind ('text' plain string, 'image' rendered preview,
 // 'link' clickable URL), a pure `get(ad, now)` accessor, and Google-Sheet layout
@@ -138,6 +145,10 @@ export const SHEET_COLUMNS = [
   { key: 'cta',       header: 'CTA',              kind: 'text',  get: (a) => a.cta_text,                                            width: 90,  align: 'LEFT',   wrap: false },
   { key: 'link',      header: 'Link',             kind: 'text',  get: (a) => a.link_url,                                            width: 170, align: 'LEFT',   wrap: false },
   { key: 'slug',      header: 'Slug',             kind: 'text',  get: (a) => tarzoSlug(a),                                          width: 150, align: 'LEFT',   wrap: false },
+  { key: 'revenue',   header: 'Revenue Prediction', kind: 'text', get: (a) => fmtDec(a.sheet_revenue),                              width: 110, align: 'RIGHT',  wrap: false },
+  { key: 'clicks',    header: 'Clicks',           kind: 'text',  get: (a) => (a.sheet_clicks != null ? a.sheet_clicks : ''),        width: 70,  align: 'RIGHT',  wrap: false },
+  { key: 'rpc',       header: 'RPC',              kind: 'text',  get: (a) => fmtDec(a.sheet_rpc),                                   width: 65,  align: 'RIGHT',  wrap: false },
+  { key: 'keywords',  header: 'Top Keywords',     kind: 'text',  get: (a) => a.sheet_keywords,                                      width: 260, align: 'LEFT',   wrap: true  },
   { key: 'format',    header: 'Format',           kind: 'text',  get: (a) => a.display_format,                                      width: 70,  align: 'CENTER', wrap: false },
   { key: 'rank',      header: 'Rank',             kind: 'text',  get: (a) => (a.rank != null ? a.rank : ''),                        width: 55,  align: 'CENTER', wrap: false },
   { key: 'days',      header: 'Days Running',     kind: 'text',  get: (a, now) => daysRunning(a, now),                              width: 80,  align: 'CENTER', wrap: false },
@@ -184,6 +195,16 @@ export function buildSheetData(ads, now, selectedKeys) {
     }),
   }));
   return { columns, rows };
+}
+
+// Table column picker: keep only keys the table still knows from a stored
+// selection. null when the stored value is unusable (first visit, corrupt
+// JSON), so callers fall back to their defaults; an empty array is a
+// legitimate choice (only the fixed columns stay visible).
+export function sanitizeColumnKeys(stored, defs) {
+  if (!Array.isArray(stored)) return null;
+  const known = new Set(defs.map((d) => d.key));
+  return stored.filter((k) => known.has(k));
 }
 
 // Accept either a bare spreadsheet id or a full Google Sheets URL and return the id.

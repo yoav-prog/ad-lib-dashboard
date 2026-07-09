@@ -194,6 +194,14 @@ function formatRequests(sheetId, columns, totalRows, oldBandingIds) {
 const headerData = (columns) => ({ values: columns.map((c) => ({ userEnteredValue: { stringValue: c.header } })) });
 const dataRowData = (row) => ({ values: row.cells.map(cellData) });
 
+// Read the whole used range of a tab as raw row arrays (header row included).
+// The metrics loader (lib/metrics) uses this to pull the team's campaign-
+// performance tab; same service-account auth and friendly errors as the export.
+export async function readSheetTab({ spreadsheetId, tabName }, nowMs) {
+  const token = await getAccessToken(nowMs);
+  return readRows(token, spreadsheetId, tabName);
+}
+
 // Write the selected columns for `rows` to the named sheet/tab and re-apply the full
 // formatting; the tab is created if missing. `columns` and `rows` come from
 // ui.buildSheetData. Two modes:

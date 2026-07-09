@@ -94,7 +94,27 @@ Status to paused (the `enabled` flag); the runner only scrapes enabled domains.
 
 ---
 
-## 5. What is built vs. what is next
+## 5. Campaign metrics from the "Comp Test" sheet (dashboard)
+
+Fresh Finds and Review show four columns joined live from the team's campaign
+sheet (revenue prediction, clicks, RPC, top keywords). Only the sheet's
+`facebook-rsoc` rows and only ads in the TONIC RSOC feed take part; rows and
+ads are matched by landing-page URL with tracking parameters stripped.
+
+One-time setup:
+1. The dashboard reuses the export credentials (`GCS_CLIENT_EMAIL` /
+   `GCS_PRIVATE_KEY` in the Vercel env). Nothing new to create.
+2. Share the metrics spreadsheet with `GCS_CLIENT_EMAIL` as **Viewer**.
+   Until then the columns show dashes and the server logs `[metrics] failed`.
+
+The sheet id and tab default to the team's current sheet (`DB2` tab) in
+`web/lib/metrics.js`; set `METRICS_SPREADSHEET_ID` / `METRICS_SHEET_TAB` in the
+Vercel env if the data ever moves. The join re-reads the sheet at most every
+10 minutes; the "⟳ METRICS" button in Fresh Finds forces an immediate re-read.
+
+---
+
+## 6. What is built vs. what is next
 
 **Built now (this foundation):**
 - `supabase/migrations/0001_initial_schema.sql` - schema, indexes, RLS, run lock.
