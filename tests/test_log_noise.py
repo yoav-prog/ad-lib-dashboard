@@ -64,11 +64,22 @@ def test_actor_logger_binds_streams_per_record_not_at_creation(fb, monkeypatch):
     assert second.getvalue() == '[apify] two\n'
 
 
-def test_actor_logger_is_created_once_and_does_not_propagate(fb):
+def test_actor_logger_never_duplicates_lines(fb, monkeypatch):
+    """Repeated _get_actor_logger() calls (one per Apify fetch) must never
+    stack handlers - one emitted record is exactly one output line. The
+    contract is line count, NOT the handler list: CI showed pytest's own
+    LogCaptureHandler instrumentation attached to this logger, so asserting
+    internals fails on environment differences the code does not control."""
     logger = fb._get_actor_logger()
-    assert fb._get_actor_logger() is logger
+    fb._get_actor_logger()
+    fb._get_actor_logger()
+
+    out = io.StringIO()
+    monkeypatch.setattr(sys, 'stdout', out)
+    _emit(fb, logging.INFO, 'once only')
+
+    assert out.getvalue() == '[apify] once only\n'
     assert logger.propagate is False
-    assert len(logger.handlers) == 1
 
 
 # ── the thread excepthook (run_scrape) ────────────────────────────────────────

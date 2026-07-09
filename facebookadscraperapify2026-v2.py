@@ -852,9 +852,6 @@ class _ActorLogHandler(logging.Handler):
             pass  # a log line is never worth a crash
 
 
-_actor_logger = None
-
-
 def _get_actor_logger():
     """Logger handed to ApifyClient.call() for the actor's redirected run log.
 
@@ -863,17 +860,23 @@ def _get_actor_logger():
     wall of red error lines full of escape-code garbage. apify-client guesses
     each line's level from its content, so genuine actor errors still arrive
     at ERROR and show red; everything else arrives at INFO and shows gray.
+
+    Idempotent by construction: getLogger() returns a process-global object
+    that outlives this module (which run_scrape loads via spec/exec and could
+    re-exec), so any existing handlers are cleared before ours is attached -
+    the same reset pattern apify-client's own create_redirect_logger uses.
+    Guarantees exactly one output line per record no matter how many times
+    this runs. Cheap enough to rebuild per call.
     """
-    global _actor_logger
-    if _actor_logger is None:
-        logger = logging.getLogger('apify_actor_run')
-        logger.setLevel(logging.INFO)
-        logger.propagate = False
-        handler = _ActorLogHandler()
-        handler.setFormatter(logging.Formatter('[apify] %(message)s'))
-        logger.addHandler(handler)
-        _actor_logger = logger
-    return _actor_logger
+    logger = logging.getLogger('apify_actor_run')
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+    handler = _ActorLogHandler()
+    handler.setFormatter(logging.Formatter('[apify] %(message)s'))
+    logger.addHandler(handler)
+    return logger
 
 
 def fetch_facebook_ads_apify(params, resume_cursor=None):
