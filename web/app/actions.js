@@ -36,6 +36,26 @@ export async function updateAdWorkflow(adId, patch) {
   revalidatePath('/');
 }
 
+// Decide review-queue ads: approve moves them into the feed, reject keeps the
+// row (so the scraper's dedup never re-imports the ad) but hides it for good.
+// Scoped to pending rows so a stale tab can never flip an ad someone else
+// already decided on.
+export async function reviewAds(ids, decision) {
+  await requireAdmin();
+  if (!Array.isArray(ids) || !ids.length) return { ok: false, reason: 'no-ids' };
+  if (!['approved', 'rejected'].includes(decision)) return { ok: false, reason: 'bad-decision' };
+  const clean = [...new Set(ids.map(String))].slice(0, 1000);
+  const sql = getSql();
+  const rows = await sql`
+    update ads set review_status = ${decision}
+    where ad_archive_id = any(${clean}) and review_status = 'pending'
+    returning ad_archive_id
+  `;
+  console.info('[review decide]', { decision, requested: clean.length, updated: rows.length });
+  revalidatePath('/');
+  return { ok: true, updated: rows.length };
+}
+
 export async function deleteAds(ids) {
   await requireAdmin();
   if (!Array.isArray(ids) || !ids.length) return;

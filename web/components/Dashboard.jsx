@@ -9,12 +9,14 @@ import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
-import { updateAdWorkflow, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet } from '@/app/actions';
+import ReviewView from '@/components/ReviewView';
+import { updateAdWorkflow, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, reviewAds as decideReviewAds } from '@/app/actions';
 
-export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true, exportSaEmail = null }) {
+export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [], domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true, exportSaEmail = null }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
   const lastRunStart = lastRunStartIso ? new Date(lastRunStartIso).getTime() : null;
   const [ads, setAds] = useState(adsProp);
+  const [reviewAds, setReviewAds] = useState(reviewAdsProp);
   const [view, setView] = useState('fresh');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('fresh');
@@ -74,6 +76,16 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
 
   // Keep the local feed in sync when the server sends fresh props (after router.refresh).
   useEffect(() => { setAds(adsProp); }, [adsProp]);
+  useEffect(() => { setReviewAds(reviewAdsProp); }, [reviewAdsProp]);
+
+  // Decide review-queue ads. Optimistic: the rows leave the queue immediately;
+  // router.refresh() then pulls fresh server props so approvals land in the feed.
+  const onReviewDecide = useCallback(async (ids, decision) => {
+    const idSet = new Set(ids);
+    setReviewAds((prev) => prev.filter((a) => !idSet.has(a.ad_archive_id)));
+    try { await decideReviewAds(ids, decision); } catch (e) { console.error('[review decide] failed', e); }
+    router.refresh();
+  }, [router]);
 
   const poll = useCallback(async () => {
     let active = null;
@@ -223,6 +235,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
     competitor: 'Search this competitor...',
     trends: 'Search trends...',
     pipeline: 'Search pipeline...',
+    review: 'Search review queue...',
     settings: 'Search domains...',
   }[view] || 'Search...';
 
@@ -276,7 +289,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
       <TopChrome
         view={view} setView={setView} query={query} setQuery={setQuery}
         placeholder={searchPlaceholder} showSearch={view !== 'detail'}
-        lastScrape={lastScrape}
+        lastScrape={lastScrape} reviewCount={reviewAds.length}
         openPalette={() => { setPaletteOpen(true); setPaletteQuery(''); setTimeout(() => document.getElementById('ai-palette')?.focus(), 30); }}
       />
 
@@ -310,6 +323,7 @@ export default function Dashboard({ ads: adsProp, domains = [], runs = [], feeds
       {view === 'competitor' && <CompetitorView ads={ads} NOW={NOW} openDetail={openDetail} matchesQuery={matchesQuery} />}
       {view === 'trends' && <TrendsView ads={ads} NOW={NOW} matchesQuery={matchesQuery} openDetail={openDetail} />}
       {view === 'pipeline' && <PipelineView ads={ads} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />}
+      {view === 'review' && <ReviewView ads={reviewAds} NOW={NOW} canEdit={canEdit} query={query} onDecide={onReviewDecide} />}
       {view === 'settings' && (
         <ControlRoom
           ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds} canEdit={canEdit}
@@ -361,12 +375,13 @@ function RunBanner({ status, pending, onClick }) {
 // ═════════════════════════════════════════════════════════════════════════════
 // TOP CHROME
 // ═════════════════════════════════════════════════════════════════════════════
-function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, lastScrape, openPalette }) {
+function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, lastScrape, reviewCount = 0, openPalette }) {
   const tabs = [
     { id: 'fresh', label: 'Fresh Finds' },
     { id: 'competitor', label: 'Competitors' },
     { id: 'trends', label: 'Trends' },
     { id: 'pipeline', label: 'Pipeline' },
+    { id: 'review', label: 'Review', badge: reviewCount },
     { id: 'settings', label: 'Control Room' },
   ];
   const logout = () => fetch('/api/logout', { method: 'POST' }).then(() => { window.location.href = '/login'; });
@@ -380,8 +395,11 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
       <div style={s('display:flex;align-items:stretch;height:100%;gap:2px')}>
         {tabs.map((t) => (
           <button key={t.id} onClick={() => setView(t.id)}
-            style={s(`background:transparent;border:none;border-bottom:2px solid ${view === t.id ? A : 'transparent'};color:${view === t.id ? '#E7E8EA' : '#8A8E94'};font-size:11.5px;letter-spacing:.4px;padding:0 13px;height:100%;cursor:pointer;text-transform:uppercase`)}>
+            style={s(`display:flex;align-items:center;gap:6px;background:transparent;border:none;border-bottom:2px solid ${view === t.id ? A : 'transparent'};color:${view === t.id ? '#E7E8EA' : '#8A8E94'};font-size:11.5px;letter-spacing:.4px;padding:0 13px;height:100%;cursor:pointer;text-transform:uppercase`)}>
             {t.label}
+            {t.badge > 0 && (
+              <span style={s(`font-family:${MONO};font-size:9px;color:#0B0C0E;background:${A};padding:1px 5px;border-radius:8px;font-variant-numeric:tabular-nums`)}>{t.badge}</span>
+            )}
           </button>
         ))}
       </div>
@@ -1220,6 +1238,7 @@ function Palette({ ads, paletteQuery, setPaletteQuery, close, go, openDetail }) 
     { kind: 'VIEW', kc: '#6C7076', label: 'Go to Fresh Finds', run: () => go('fresh') },
     { kind: 'VIEW', kc: '#6C7076', label: 'Go to Competitor Feed', run: () => go('competitor') },
     { kind: 'VIEW', kc: '#6C7076', label: 'Go to Pipeline Board', run: () => go('pipeline') },
+    { kind: 'VIEW', kc: '#6C7076', label: 'Go to Review Queue', run: () => go('review') },
     { kind: 'VIEW', kc: '#6C7076', label: 'Go to Control Room', run: () => go('settings') },
   ];
   const adItems = ads.map((a) => ({ kind: 'AD', kc: '#5A5E64', label: a.title || a.page_name || a.ad_archive_id, hint: a.domain, run: () => openDetail(a.ad_archive_id) }));

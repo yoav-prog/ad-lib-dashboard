@@ -15,7 +15,7 @@ from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
 from concurrent.futures import ThreadPoolExecutor
 from apify_client import ApifyClient
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from scrapingbee import ScrapingBeeClient
 import re
 import time
@@ -429,6 +429,76 @@ def is_ad_at_least_week_old(ad):
         return datetime.fromtimestamp(int(raw)) <= SEVEN_DAYS_AGO
     except Exception:
         return False
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AD ↔ DOMAIN RELEVANCE
+# ═════════════════════════════════════════════════════════════════════════════
+# The Ad Library query is a keyword search over ad text, so it returns plenty of
+# ads that merely MENTION the queried domain (or match its tokens) without
+# advertising it. These helpers are the single source of truth for "does this ad
+# actually belong to this domain": the scrape pipeline routes mismatches to the
+# review queue, and backfill_review_status.py applies the same rule to stored
+# rows. Matching is host-based on purpose - a plain substring test would approve
+# junk like temu.com/motorcycle.com-storage-box where the domain only appears in
+# the URL path.
+
+def normalize_domain(query):
+    """The tracked query as a bare lowercase host, or '' when the query is not
+    domain-shaped (a keyword query has no meaningful destination to check)."""
+    q = (query or '').strip().lower()
+    q = re.sub(r'^[a-z][a-z0-9+.-]*://', '', q)   # tolerate a pasted URL
+    q = q.split('/')[0].split('?')[0].split(':')[0]
+    if q.startswith('www.'):
+        q = q[4:]
+    if '.' not in q or ' ' in q or not q:
+        return ''
+    return q
+
+
+def _host_of(text):
+    """The lowercase host of a URL or of bare display text like 'DOMAIN.COM/path'.
+    Non-URL-ish text simply yields something that will never host-match."""
+    t = str(text or '').strip().lower()
+    if not t:
+        return ''
+    if '://' not in t:
+        t = '//' + t
+    try:
+        host = urlparse(t).netloc
+    except ValueError:
+        return ''
+    host = host.split('@')[-1].split(':')[0]
+    return host[4:] if host.startswith('www.') else host
+
+
+def _host_matches(host, domain):
+    return bool(host) and (host == domain or host.endswith('.' + domain))
+
+
+def ad_matches_domain(ad, query):
+    """True when any destination field of the ad - link_url, card link_urls, or
+    the display captions - points at the tracked domain (subdomains included).
+    Keyword (non-domain) queries always match: relevance is undefined for them.
+    Accepts raw Apify ads and the synthetic snapshots the backfill builds from
+    stored rows, whose multi-card fields are ' | '-joined strings."""
+    domain = normalize_domain(query)
+    if not domain:
+        return True
+    snapshot = ad.get('snapshot') or {}
+    candidates = [snapshot.get('link_url'), snapshot.get('caption')]
+    for card in snapshot.get('cards') or []:
+        if isinstance(card, dict):
+            candidates.append(card.get('link_url'))
+            candidates.append(card.get('caption'))
+    for value in candidates:
+        if isinstance(value, dict):
+            value = value.get('text', '')
+        if not isinstance(value, str):
+            continue
+        for part in value.split(' | '):
+            if _host_matches(_host_of(part), domain):
+                return True
+    return False
 
 # ═════════════════════════════════════════════════════════════════════════════
 # MEDIA UPLOAD HELPERS

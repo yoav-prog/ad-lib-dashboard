@@ -18,6 +18,19 @@ export const mediaUrlOf = (ad) => ad.video_hd_url || thumbOf(ad);
 // ("a | b | c"); the first is the canonical article the creative points to.
 export const firstUrl = (linkUrl) => (linkUrl ? String(linkUrl).split(' | ')[0].trim() : '');
 
+// The bare lowercase host of a URL ('' when unparseable). The Review tab uses it
+// to show WHERE a queued ad actually leads next to the domain that was searched.
+export function hostOf(url) {
+  const t = String(url || '').trim();
+  if (!t) return '';
+  try {
+    const host = new URL(t.includes('://') ? t : `https://${t}`).hostname.toLowerCase();
+    return host.startsWith('www.') ? host.slice(4) : host;
+  } catch {
+    return '';
+  }
+}
+
 // The Tarzo feed only. Their landing pages look like
 // https://<domain>/dcg/<id>/<slug>?<params>; pull just the readable <slug>,
 // keyed off the /dcg/<id>/ path so it works for any Tarzo domain. Returns ''

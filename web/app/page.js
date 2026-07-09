@@ -1,5 +1,5 @@
 import { requireAuth } from '@/lib/auth';
-import { getAds, getLastRun, getDomains, getRuns, getFeeds } from '@/lib/queries';
+import { getAds, getReviewAds, getLastRun, getDomains, getRuns, getFeeds } from '@/lib/queries';
 import Dashboard from '@/components/Dashboard';
 
 // Always read fresh from the database on each request.
@@ -7,8 +7,9 @@ export const dynamic = 'force-dynamic';
 
 export default async function Page() {
   const role = await requireAuth();
-  const [ads, lastRun, domains, runs, feeds] = await Promise.all([
+  const [ads, reviewAds, lastRun, domains, runs, feeds] = await Promise.all([
     getAds(),
+    getReviewAds(),
     getLastRun(),
     getDomains(),
     getRuns(),
@@ -17,6 +18,7 @@ export default async function Page() {
   return (
     <Dashboard
       ads={ads}
+      reviewAds={reviewAds}
       domains={domains}
       runs={runs}
       feeds={feeds}

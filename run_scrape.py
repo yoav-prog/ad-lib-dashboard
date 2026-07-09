@@ -238,7 +238,7 @@ def get_bucket():
 # Ad -> database row
 # ═════════════════════════════════════════════════════════════════════════════
 def build_ad_dict(ad, media, article_title, article_content, rank, feed, domain,
-                  language, country, vertical):
+                  language, country, vertical, review_status='approved'):
     """Map a raw Apify ad + enrichment + media to a db.AD_COLUMNS dict."""
     snapshot = ad.get('snapshot', {})
     body = snapshot.get('body', {})
@@ -303,6 +303,7 @@ def build_ad_dict(ad, media, article_title, article_content, rank, feed, domain,
         'language': language,
         'country': country,
         'vertical': vertical,
+        'review_status': review_status,
     }
 
 
@@ -310,7 +311,8 @@ _EMPTY_MEDIA = {'main_images': [], 'video_hd': '', 'video_preview': '',
                 'extra_images': [], 'extra_videos': []}
 
 
-async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session):
+async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session,
+                     review_status='approved'):
     """Scrape article, run GPT enrichment, upload media, return a db row dict."""
     snapshot = ad.get('snapshot', {})
     body_obj = snapshot.get('body', {})
@@ -319,8 +321,11 @@ async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session):
     if not link_url and snapshot.get('cards'):
         link_url = snapshot['cards'][0].get('link_url', '')
 
+    # Pending ads (destination does not match the domain) skip the paid article
+    # scrape - a junk landing page is not worth a ScrapingBee call. Media still
+    # uploads so the Review tab has thumbnails after the FB CDN links expire.
     article_title, article_content = '', ''
-    if link_url:
+    if link_url and review_status == 'approved':
         article_title, article_content = await fb.scrape_article_async(link_url)
 
     language, country, vertical = await asyncio.gather(
@@ -333,7 +338,7 @@ async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session):
     media = await fb.process_ad_media(ad, bucket, {}) if bucket is not None else dict(_EMPTY_MEDIA)
 
     return build_ad_dict(ad, media, article_title, article_content, rank,
-                         feed, domain, language, country, vertical)
+                         feed, domain, language, country, vertical, review_status)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -347,7 +352,17 @@ async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, do
 
     old_enough = [a for a in ads if fb.is_ad_at_least_week_old(a)]
     new_ads = [a for a in old_enough if str(a.get('ad_archive_id', '')) not in existing_ids]
-    print(f'  {len(ads)} fetched, {len(old_enough)} old-enough, {len(new_ads)} new to process')
+
+    # Relevance gate (see fb.ad_matches_domain): ads whose destination points at
+    # the tracked domain enter the feed as approved; the rest are stored as
+    # pending and only surface in the dashboard's Review tab until a human
+    # approves or rejects them. The keyword search is what drags the junk in.
+    review_of = {str(a.get('ad_archive_id', '')):
+                 'approved' if fb.ad_matches_domain(a, domain) else 'pending'
+                 for a in new_ads}
+    matched = sum(1 for v in review_of.values() if v == 'approved')
+    print(f'  {len(ads)} fetched, {len(old_enough)} old-enough, {len(new_ads)} new to process '
+          f'({matched} match "{domain}", {len(new_ads) - matched} sent to review)')
     if not new_ads:
         return (0, 0)
 
@@ -357,7 +372,8 @@ async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, do
         for start in range(0, len(new_ads), batch_size):
             batch = new_ads[start:start + batch_size]
             results = await asyncio.gather(*[
-                process_ad(ad, start + i + 1, bucket, verticals, feed, domain, gpt_session)
+                process_ad(ad, start + i + 1, bucket, verticals, feed, domain, gpt_session,
+                           review_of[str(ad.get('ad_archive_id', ''))])
                 for i, ad in enumerate(batch)
             ], return_exceptions=True)
 

@@ -36,11 +36,13 @@ AD_COLUMNS = [
     'extra_image_urls', 'extra_video_urls',
     'publisher_platform', 'start_date', 'total_active_time',
     'article_title', 'article_content', 'rank',
-    'language', 'country', 'vertical',
+    'language', 'country', 'vertical', 'review_status',
 ]
 
-# Refreshed every time an ad is re-seen (everything except its identity).
-_UPDATE_COLUMNS = [c for c in AD_COLUMNS if c != 'ad_archive_id']
+# Refreshed every time an ad is re-seen (everything except its identity), with
+# one deliberate exception: review_status is set on insert only, so a later
+# scrape can never overwrite a human's approve/reject decision.
+_UPDATE_COLUMNS = [c for c in AD_COLUMNS if c not in ('ad_archive_id', 'review_status')]
 
 
 # ═════════════════════════════════════════════════════════════════════════════

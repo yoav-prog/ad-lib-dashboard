@@ -40,19 +40,39 @@ function mapAd(r) {
     is_saved: r.is_saved,
     tags: r.tags || [],
     notes: r.notes,
+    review_status: r.review_status,
   };
 }
 
 // Only surface ads confirmed by a completed run, so a failed / mid-flight scrape
 // never leaks half-enriched rows into the feed. Rows with no run association
-// (e.g. a backfill) are shown as-is.
+// (e.g. a backfill) are shown as-is. Only approved ads reach the feed - pending
+// ones live in the Review tab (getReviewAds) and rejected ones are kept solely
+// so the scraper's dedup never re-imports them.
 export async function getAds(limit = 500) {
   const sql = getSql();
   const rows = await sql`
     select a.* from ads a
-    where (a.first_run_id is null and a.last_run_id is null)
+    where a.review_status = 'approved'
+      and ((a.first_run_id is null and a.last_run_id is null)
        or a.first_run_id in (select id from runs where status = 'completed')
-       or a.last_run_id in (select id from runs where status = 'completed')
+       or a.last_run_id in (select id from runs where status = 'completed'))
+    order by a.first_seen_at desc
+    limit ${limit}
+  `;
+  return rows.map(mapAd);
+}
+
+// The review queue: ads whose destination did not match their tracked domain,
+// awaiting a human approve/reject. Same completed-run guard as the feed.
+export async function getReviewAds(limit = 500) {
+  const sql = getSql();
+  const rows = await sql`
+    select a.* from ads a
+    where a.review_status = 'pending'
+      and ((a.first_run_id is null and a.last_run_id is null)
+       or a.first_run_id in (select id from runs where status = 'completed')
+       or a.last_run_id in (select id from runs where status = 'completed'))
     order by a.first_seen_at desc
     limit ${limit}
   `;
