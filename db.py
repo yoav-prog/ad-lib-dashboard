@@ -360,8 +360,45 @@ def upsert_ads(conn, run_id, ads: list[dict]) -> tuple[int, int]:
     return (found, new)
 
 
+def resurface_ads(conn, run_id, ad_ids: list[str], domain: str | None = None) -> tuple[int, int]:
+    """
+    Cheap re-sighting for ads the scraper fetched but already has stored: bump
+    last_seen_at / last_run_id so the dashboard's fresh window ("what the
+    latest run saw") picks them up again - no ScrapingBee, GPT, or media cost.
+
+    A rejected ad reopens as pending: Meta still running it means it deserves
+    another human look (product decision 2026-07-09). Approved and pending
+    rows keep their status - this is deliberately the only transition here.
+
+    Pass domain to re-stamp rows whose destination matches the scraped domain;
+    without it the stored domain stays (shared junk-pool ads keep the row that
+    first dragged them in). Returns (touched, reopened).
+    """
+    if not ad_ids:
+        return (0, 0)
+    restamp = 'domain = %s,' if domain is not None else ''
+    sql = f"""
+        update ads a
+           set {restamp}
+               review_status = case when a.review_status = 'rejected'
+                                    then 'pending' else a.review_status end,
+               last_seen_at  = now(),
+               last_run_id   = %s
+          from (select ad_archive_id, review_status as old_status
+                  from ads where ad_archive_id = any(%s)) o
+         where a.ad_archive_id = o.ad_archive_id
+     returning o.old_status
+    """
+    params = ([domain] if domain is not None else []) + [run_id, ad_ids]
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        old = [row['old_status'] for row in cur.fetchall()]
+    return (len(old), sum(1 for status in old if status == 'rejected'))
+
+
 def existing_ad_ids(conn) -> set[str]:
-    """All ad_archive_ids already stored - lets the scraper skip known ads."""
+    """All ad_archive_ids already stored - routes known ads to the cheap
+    resurface path (resurface_ads) instead of the full pipeline."""
     with conn.cursor() as cur:
         cur.execute('select ad_archive_id from ads')
         return {row['ad_archive_id'] for row in cur.fetchall()}

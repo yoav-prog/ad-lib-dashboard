@@ -47,8 +47,10 @@ function mapAd(r) {
 // Only surface ads confirmed by a completed run, so a failed / mid-flight scrape
 // never leaks half-enriched rows into the feed. Rows with no run association
 // (e.g. a backfill) are shown as-is. Only approved ads reach the feed - pending
-// ones live in the Review tab (getReviewAds) and rejected ones are kept solely
-// so the scraper's dedup never re-imports them.
+// ones live in the Review tab (getReviewAds); rejected ones stay hidden until a
+// scrape sees Meta still running them, which reopens them as pending. The cap
+// keeps the most recently SEEN rows (not first-discovered), so an ad the
+// scraper just re-surfaced always makes it onto the page.
 export async function getAds(limit = 500) {
   const sql = getSql();
   const rows = await sql`
@@ -57,7 +59,7 @@ export async function getAds(limit = 500) {
       and ((a.first_run_id is null and a.last_run_id is null)
        or a.first_run_id in (select id from runs where status = 'completed')
        or a.last_run_id in (select id from runs where status = 'completed'))
-    order by a.first_seen_at desc
+    order by a.last_seen_at desc nulls last
     limit ${limit}
   `;
   return rows.map(mapAd);
@@ -73,7 +75,7 @@ export async function getReviewAds(limit = 500) {
       and ((a.first_run_id is null and a.last_run_id is null)
        or a.first_run_id in (select id from runs where status = 'completed')
        or a.last_run_id in (select id from runs where status = 'completed'))
-    order by a.first_seen_at desc
+    order by a.last_seen_at desc nulls last
     limit ${limit}
   `;
   return rows.map(mapAd);

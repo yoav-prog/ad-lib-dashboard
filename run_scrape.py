@@ -351,7 +351,26 @@ async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, do
         return (0, 0)
 
     old_enough = [a for a in ads if fb.is_ad_at_least_week_old(a)]
+    known = [a for a in old_enough if str(a.get('ad_archive_id', '')) in existing_ids]
     new_ads = [a for a in old_enough if str(a.get('ad_archive_id', '')) not in existing_ids]
+
+    # Already-stored ads get a cheap re-sighting (db.resurface_ads: a pure DB
+    # touch, no ScrapingBee / GPT / media spend) so everything Meta still runs
+    # re-enters the fresh window - including ads that had fallen off the feed.
+    # Rejected ones reopen for review; destination matches are re-stamped to
+    # this domain on the way.
+    resurfaced = reopened = 0
+    if known:
+        matched_known = {str(a.get('ad_archive_id', '')) for a in known
+                         if fb.ad_matches_domain(a, domain)}
+        other_known = [str(a.get('ad_archive_id', '')) for a in known
+                       if str(a.get('ad_archive_id', '')) not in matched_known]
+        with db.connect() as conn:
+            t_m, r_m = db.resurface_ads(conn, run_id, sorted(matched_known), domain=domain)
+            t_o, r_o = db.resurface_ads(conn, run_id, other_known)
+        resurfaced, reopened = t_m + t_o, r_m + r_o
+        if progress is not None:
+            progress['ads_found_so_far'] += resurfaced
 
     # Relevance gate (see fb.ad_matches_domain): ads whose destination points at
     # the tracked domain enter the feed as approved; the rest are stored as
@@ -361,12 +380,14 @@ async def scrape_query(run_id, bucket, verticals, existing_ids, params, feed, do
                  'approved' if fb.ad_matches_domain(a, domain) else 'pending'
                  for a in new_ads}
     matched = sum(1 for v in review_of.values() if v == 'approved')
-    print(f'  {len(ads)} fetched, {len(old_enough)} old-enough, {len(new_ads)} new to process '
+    print(f'  {len(ads)} fetched, {len(old_enough)} old-enough, '
+          f'{resurfaced} re-surfaced ({reopened} reopened for review), '
+          f'{len(new_ads)} new to process '
           f'({matched} match "{domain}", {len(new_ads) - matched} sent to review)')
     if not new_ads:
-        return (0, 0)
+        return (resurfaced, 0)
 
-    total_found = total_new = 0
+    total_found, total_new = resurfaced, 0
     batch_size = fb.AD_BATCH_SIZE
     async with aiohttp.ClientSession() as gpt_session:
         for start in range(0, len(new_ads), batch_size):
