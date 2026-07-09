@@ -198,6 +198,13 @@ export function buildSheetData(ads, now, selectedKeys) {
   return { columns, rows };
 }
 
+// Country codes present in a GEOS revenue split ("ES-90,MX-10" -> ['ES','MX']).
+// The Fresh Finds GEOS facet uses this to filter ads by where they earn.
+export function geoCountries(geos) {
+  if (!geos) return [];
+  return String(geos).split(',').map((p) => p.split('-')[0].trim()).filter(Boolean);
+}
+
 // Table column picker: keep only keys the table still knows from a stored
 // selection. null when the stored value is unusable (first visit, corrupt
 // JSON), so callers fall back to their defaults; an empty array is a
