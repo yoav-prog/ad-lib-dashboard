@@ -3,7 +3,7 @@
 // exports must carry the watchable video link, not the poster image.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -134,4 +134,50 @@ test('buildCsv escapes quotes, commas, and newlines in ad copy', () => {
 test('parseSheetId accepts a bare id or a full URL', () => {
   assert.equal(parseSheetId('abc-123_XYZ'), 'abc-123_XYZ');
   assert.equal(parseSheetId('https://docs.google.com/spreadsheets/d/abc-123_XYZ/edit#gid=0'), 'abc-123_XYZ');
+});
+
+// Campaign metrics joined from the team's sheet ride along in both exports.
+const metricAd = { ...imageAd, sheet_revenue: 11947.19693, sheet_clicks: 4883, sheet_rpc: 2.446839428, sheet_keywords: 'online diploma, adults' };
+
+test('buildSheetData carries the four sheet-metric columns', () => {
+  const { columns, rows } = buildSheetData([metricAd], NOW, ['revenue', 'clicks', 'rpc', 'keywords']);
+  assert.deepEqual(columns.map((c) => c.header), ['Revenue Prediction', 'Clicks', 'RPC', 'Top Keywords']);
+  assert.deepEqual(rows[0].cells.map((c) => c.value), ['11947.20', '4883', '2.45', 'online diploma, adults']);
+});
+
+test('buildSheetData exports empty metric cells (not zeros) for unmatched ads', () => {
+  const { rows } = buildSheetData([imageAd], NOW, ['revenue', 'clicks', 'rpc', 'keywords']);
+  assert.deepEqual(rows[0].cells.map((c) => c.value), ['', '', '', '']);
+});
+
+test('buildCsv includes the metric columns', () => {
+  const [header, row] = buildCsv([metricAd], NOW).split('\r\n');
+  assert.ok(header.includes('"Revenue Prediction"') && header.includes('"RPC"') && header.includes('"Top Keywords"'));
+  assert.ok(row.includes('"11947.20"') && row.includes('"4883"') && row.includes('"2.45"'));
+});
+
+test('fmtInt and fmtDec render numbers for reading and stay empty on null', () => {
+  assert.equal(fmtInt(11947.19693), '11,947');
+  assert.equal(fmtInt(null), '');
+  assert.equal(fmtDec(2.446839428), '2.45');
+  assert.equal(fmtDec(''), '');
+  assert.equal(fmtDec('abc'), '');
+});
+
+// The tables' COLUMNS picker: stored selections survive only for keys the
+// table still knows; anything unusable falls back to the caller's defaults.
+const pickerDefs = [{ key: 'a', label: 'A', w: 1 }, { key: 'b', label: 'B', w: 1 }];
+
+test('sanitizeColumnKeys drops unknown keys and keeps known ones', () => {
+  assert.deepEqual(sanitizeColumnKeys(['b', 'zombie', 'a'], pickerDefs), ['b', 'a']);
+});
+
+test('sanitizeColumnKeys keeps a legitimate empty selection', () => {
+  assert.deepEqual(sanitizeColumnKeys([], pickerDefs), []);
+});
+
+test('sanitizeColumnKeys returns null for unusable stored values', () => {
+  assert.equal(sanitizeColumnKeys(null, pickerDefs), null);
+  assert.equal(sanitizeColumnKeys('a,b', pickerDefs), null);
+  assert.equal(sanitizeColumnKeys(undefined, pickerDefs), null);
 });

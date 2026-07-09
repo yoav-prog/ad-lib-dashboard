@@ -4,6 +4,7 @@ import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { requireAdmin } from '@/lib/auth';
 import { getAdsByIds } from '@/lib/queries';
+import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
 
@@ -368,6 +369,20 @@ export async function markRunFailed(runId) {
   revalidatePath('/');
 }
 
+// Manual "refresh metrics": re-read the campaign metrics sheet right now,
+// bypassing the 10-minute cache, then revalidate so every open view re-renders
+// with the fresh numbers. The regular path needs no button - each page render
+// joins the (cached) sheet automatically - this exists for "the sheet just
+// changed, show me now".
+export async function refreshMetrics() {
+  await requireAdmin();
+  await getSheetMetricsIndex(Date.now(), { force: true });
+  const status = metricsStatus();
+  console.info('[metrics] manual refresh', status);
+  revalidatePath('/');
+  return { ok: !status.error, campaigns: status.campaigns, error: status.error };
+}
+
 // Push the current Fresh Finds view to a Google Sheet the caller names by id + tab,
 // exporting only the columns they picked. The client sends only the on-screen ad ids
 // and the chosen column keys; the rows are re-read from the DB here so the payload is
@@ -395,8 +410,11 @@ export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys,
   const writeMode = mode === 'replace' ? 'replace' : 'append';
 
   const ids = [...new Set(adIds.map(String))].slice(0, 1000);
-  const ads = await getAdsByIds(ids);
-  if (!ads.length) return { ok: false, reason: 'no-rows', saEmail };
+  const rows0 = await getAdsByIds(ids);
+  if (!rows0.length) return { ok: false, reason: 'no-rows', saEmail };
+  // The DB rows carry no campaign metrics; re-attach them here so the exported
+  // Revenue/Clicks/RPC/Keywords columns match what the table showed.
+  const { ads } = attachSheetMetrics(rows0, await getSheetMetricsIndex());
 
   const { columns, rows } = buildSheetData(ads, Date.now(), keys.length ? keys : DEFAULT_SHEET_COLUMN_KEYS);
   try {

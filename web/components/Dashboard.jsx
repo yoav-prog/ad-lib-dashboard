@@ -3,15 +3,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, buildCsv, parseSheetId, langCode, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, buildCsv, parseSheetId, langCode, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
+import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
 import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
-import { updateAdWorkflow, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, reviewAds as decideReviewAds } from '@/app/actions';
+import { updateAdWorkflow, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds } from '@/app/actions';
 
 export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [], domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true, exportSaEmail = null }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
@@ -162,6 +163,15 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     router.refresh();   // re-fetch server props; the ads-sync effect updates the feed
   }, [router]);
 
+  // Force a re-read of the campaign metrics sheet, then pull fresh server props
+  // so the new numbers land in every table (Fresh Finds and Review alike).
+  const onRefreshMetrics = useCallback(async () => {
+    let r;
+    try { r = await refreshMetrics(); } catch (e) { r = { ok: false, error: String(e?.message || e) }; }
+    router.refresh();
+    return r;
+  }, [router]);
+
   // Precomputed lowercase haystack per ad -> fast multi-field smart search.
   const searchIndex = useMemo(() => {
     const m = new Map();
@@ -170,6 +180,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
         a.title, a.page_name, a.domain, a.vertical, a.country, a.language,
         a.body_text, a.caption, a.cta_text, a.cta_type, a.link_url,
         a.link_description, a.article_title, a.article_content, a.notes,
+        a.sheet_keywords,
         ...(a.tags || []),
       ].filter(Boolean).join(' ').toLowerCase());
     }
@@ -215,6 +226,14 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
         if (a.rank == null) return 1;
         if (b.rank == null) return -1;
         return (a.rank - b.rank) * dir;
+      }
+      if (sort === 'revenue' || sort === 'rpc') {
+        // Sheet metrics; ads with no matching campaign always sink to the bottom.
+        const key = sort === 'revenue' ? 'sheet_revenue' : 'sheet_rpc';
+        if (a[key] == null && b[key] == null) return 0;
+        if (a[key] == null) return 1;
+        if (b[key] == null) return -1;
+        return (b[key] - a[key]) * dir;
       }
       if (sort === 'page') return (a.page_name || '').localeCompare(b.page_name || '') * -dir;
       if (sort === 'domain') return (a.domain || '').localeCompare(b.domain || '') * -dir;
@@ -309,7 +328,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
           selIndex={selIndex} setSelIndex={setSelIndex} openDetail={openDetail} lastRunStart={lastRunStart}
           canEdit={canEdit} selected={selected} toggleSel={toggleSel} setSelection={setSelection} clearSel={clearSel} bulkDelete={bulkDelete} bulkSet={bulkSet} bulkRefresh={bulkRefresh}
-          exportSaEmail={exportSaEmail}
+          exportSaEmail={exportSaEmail} onRefreshMetrics={onRefreshMetrics}
         />
       )}
 
@@ -437,7 +456,31 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
 // FRESH FINDS
 // ═════════════════════════════════════════════════════════════════════════════
 
-function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail }) {
+// Every Fresh Finds column the COLUMNS picker can hide, with the width (its own
+// padding included) each one contributes to the table's min-width. Thumbnail and
+// Headline are structural and always render; Slug manages itself (it only
+// appears while the current view holds a Tarzo row).
+const FRESH_COLS = [
+  { key: 'page',     label: 'Page',               w: 148 },
+  { key: 'domain',   label: 'Domain',             w: 132 },
+  { key: 'url',      label: 'URL',                w: 168 },
+  { key: 'revenue',  label: 'Revenue Prediction', w: 96 },
+  { key: 'clicks',   label: 'Clicks',             w: 76 },
+  { key: 'rpc',      label: 'RPC',                w: 60 },
+  { key: 'keywords', label: 'Top Keywords',       w: 186 },
+  { key: 'format',   label: 'Format',             w: 62 },
+  { key: 'rank',     label: 'Rank',               w: 46 },
+  { key: 'added',    label: 'Added',              w: 68 },
+  { key: 'updated',  label: 'Updated',            w: 66 },
+  { key: 'days',     label: 'Days Run',           w: 70 },
+  { key: 'vertical', label: 'Vertical',           w: 108 },
+  { key: 'country',  label: 'Country',            w: 58 },
+  { key: 'feed',     label: 'Feed',               w: 108 },
+  { key: 'ad_id',    label: 'Ad Archive ID',      w: 146 },
+];
+const FRESH_COLS_LS = 'adintel.cols.freshfinds';
+
+function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail, onRefreshMetrics }) {
   const selCount = selected ? selected.size : 0;
   const [sheetOpen, setSheetOpen] = useState(false);
   const filteredIds = filtered.map((a) => a.ad_archive_id);
@@ -460,11 +503,18 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
   const img = IMG_SIZES.find((z) => z.key === imgKey) || IMG_SIZES[0];
   const thumbColW = img.px + 12; // image box + the cell's right padding
 
+  // Which columns this table shows, chosen from the COLUMNS picker and
+  // remembered per browser.
+  const { visible: cols, toggle: toggleCol, reset: resetCols } = useColumnPrefs(FRESH_COLS_LS, FRESH_COLS);
+
   // The Slug column is Tarzo-only, so it rides along only while the current view
   // actually contains a Tarzo row; the table widens to make room when it does.
   // Enlarging the thumbnail widens the table by the same delta so nothing crushes.
+  // 294 covers the structural parts (row padding, select box, Headline's share);
+  // the rest is the sum of whichever columns are actually visible.
   const showSlug = filtered.some(isTarzo);
-  const tableMinW = (showSlug ? 1680 : 1530) + (img.px - 44);
+  const tableMinW = 294 + thumbColW + (showSlug ? 150 : 0)
+    + FRESH_COLS.reduce((n, c) => n + (cols.has(c.key) ? c.w : 0), 0);
   const [gsearch, setGsearch] = useState({});
   const uniq = (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
   const countBy = (key, val) => ads.filter((a) => a[key] === val).length;
@@ -506,6 +556,8 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
     { id: 'fresh', label: 'freshness' },
     { id: 'rank', label: 'rank' },
     { id: 'days', label: 'days running' },
+    { id: 'revenue', label: 'revenue' },
+    { id: 'rpc', label: 'rpc' },
     { id: 'page', label: 'page' },
     { id: 'domain', label: 'domain' },
     { id: 'vertical', label: 'vertical' },
@@ -647,6 +699,9 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                     ))}
                   </div>
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
+                  <ColumnPicker defs={FRESH_COLS} visible={cols} toggle={toggleCol} reset={resetCols} />
+                  {canEdit && <MetricsRefreshButton onRefresh={onRefreshMetrics} />}
+                  <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <button onClick={exportCsv} disabled={!filtered.length}
                     title="Download the current view (filters applied) as a CSV"
                     style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>↓ EXPORT CSV</button>
@@ -674,20 +729,24 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
               </div>
             )}
             <div style={s(`width:${thumbColW}px;flex-shrink:0`)} />
-            <div style={s('width:148px;flex-shrink:0')}>Page</div>
-            <div style={s('width:132px;flex-shrink:0')}>Domain</div>
+            {cols.has('page') && <div style={s('width:148px;flex-shrink:0')}>Page</div>}
+            {cols.has('domain') && <div style={s('width:132px;flex-shrink:0')}>Domain</div>}
             <div style={s('flex:1;min-width:0')}>Headline</div>
-            <div style={s('width:168px;flex-shrink:0')}>URL</div>
+            {cols.has('url') && <div style={s('width:168px;flex-shrink:0')}>URL</div>}
             {showSlug && <div style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
-            <div style={s('width:62px;flex-shrink:0;text-align:center')}>Format</div>
-            <div style={s('width:46px;flex-shrink:0;text-align:right')}>Rank</div>
-            <div style={s('width:68px;flex-shrink:0;text-align:right')}>Added</div>
-            <div style={s('width:66px;flex-shrink:0;text-align:right')}>Updated</div>
-            <div style={s('width:70px;flex-shrink:0;text-align:right')}>Days Run</div>
-            <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>
-            <div style={s('width:58px;flex-shrink:0;text-align:center')}>Country</div>
-            <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Feed</div>
-            <div style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>
+            {cols.has('revenue') && <div title="Revenue prediction from the campaign metrics sheet" style={s('width:96px;flex-shrink:0;text-align:right')}>Rev. Predict</div>}
+            {cols.has('clicks') && <div style={s('width:76px;flex-shrink:0;text-align:right')}>Clicks</div>}
+            {cols.has('rpc') && <div title="Revenue per click" style={s('width:60px;flex-shrink:0;text-align:right')}>RPC</div>}
+            {cols.has('keywords') && <div style={s('width:170px;flex-shrink:0;padding-left:16px')}>Top Keywords</div>}
+            {cols.has('format') && <div style={s('width:62px;flex-shrink:0;text-align:center')}>Format</div>}
+            {cols.has('rank') && <div style={s('width:46px;flex-shrink:0;text-align:right')}>Rank</div>}
+            {cols.has('added') && <div style={s('width:68px;flex-shrink:0;text-align:right')}>Added</div>}
+            {cols.has('updated') && <div style={s('width:66px;flex-shrink:0;text-align:right')}>Updated</div>}
+            {cols.has('days') && <div style={s('width:70px;flex-shrink:0;text-align:right')}>Days Run</div>}
+            {cols.has('vertical') && <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>}
+            {cols.has('country') && <div style={s('width:58px;flex-shrink:0;text-align:center')}>Country</div>}
+            {cols.has('feed') && <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Feed</div>}
+            {cols.has('ad_id') && <div style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
           </div>
 
           {filtered.map((a, i) => {
@@ -708,25 +767,31 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                   </div>
                 )}
                 <div style={s(`width:${thumbColW}px;flex-shrink:0;padding-right:12px`)}><Thumb ad={a} size={img.px} fit={img.fit} /></div>
-                <CopyCell value={a.page_name} style={s('width:148px;flex-shrink:0;padding-right:12px;min-width:0;display:flex;align-items:center;gap:6px')}>
-                  {fresh && <span style={s('width:6px;height:6px;border-radius:50%;background:#E8A33D;flex-shrink:0;animation:freshpulse 2.4s ease-in-out infinite')} />}
-                  <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{a.page_name || '(unknown)'}</span>
-                </CopyCell>
-                <CopyCell value={a.domain} style={s('width:132px;flex-shrink:0;padding-right:12px;min-width:0')}>
-                  <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.domain || '-'}</span>
-                </CopyCell>
+                {cols.has('page') && (
+                  <CopyCell value={a.page_name} style={s('width:148px;flex-shrink:0;padding-right:12px;min-width:0;display:flex;align-items:center;gap:6px')}>
+                    {fresh && <span style={s('width:6px;height:6px;border-radius:50%;background:#E8A33D;flex-shrink:0;animation:freshpulse 2.4s ease-in-out infinite')} />}
+                    <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{a.page_name || '(unknown)'}</span>
+                  </CopyCell>
+                )}
+                {cols.has('domain') && (
+                  <CopyCell value={a.domain} style={s('width:132px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                    <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.domain || '-'}</span>
+                  </CopyCell>
+                )}
                 <CopyCell value={a.title || a.caption || a.body_text || ''} style={s('flex:1;min-width:0;padding-right:16px')}>
                   <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
                 </CopyCell>
-                <CopyCell value={url} style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>
-                  {url
-                    ? <a href={url} target="_blank" rel="noreferrer" title={url} onClick={(e) => e.stopPropagation()}
-                        style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
-                        <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{url}</span>
-                        <span style={s('color:#5A5E64;font-size:9px;flex-shrink:0')}>&#8599;</span>
-                      </a>
-                    : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
-                </CopyCell>
+                {cols.has('url') && (
+                  <CopyCell value={url} style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                    {url
+                      ? <a href={url} target="_blank" rel="noreferrer" title={url} onClick={(e) => e.stopPropagation()}
+                          style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
+                          <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{url}</span>
+                          <span style={s('color:#5A5E64;font-size:9px;flex-shrink:0')}>&#8599;</span>
+                        </a>
+                      : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
+                  </CopyCell>
+                )}
                 {showSlug && (
                   <CopyCell value={slug} style={s('width:150px;flex-shrink:0;padding-left:16px;min-width:0')}>
                     {slug
@@ -734,36 +799,78 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                       : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
                   </CopyCell>
                 )}
-                <div style={s('width:62px;flex-shrink:0;display:flex;justify-content:center')}>
-                  <span style={s(`font-family:${MONO};font-size:9.5px;letter-spacing:.5px;color:${vid ? '#C6C9CE' : '#8A8E94'};border:1px solid rgba(255,255,255,.14);padding:2px 6px`)}>{a.display_format || '-'}</span>
-                </div>
-                <div style={s('width:46px;flex-shrink:0;text-align:right')}>
-                  <span style={s(`font-family:${MONO};font-size:12.5px;color:${a.rank != null && a.rank <= 3 ? A : '#B6B9BE'};font-variant-numeric:tabular-nums`)}>{a.rank != null ? a.rank : '-'}</span>
-                </div>
-                <div style={s('width:68px;flex-shrink:0;text-align:right')}>
-                  <span title={a.first_seen_at || ''} style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{fmtDate(a.first_seen_at)}</span>
-                </div>
-                <div style={s('width:66px;flex-shrink:0;text-align:right')}>
-                  <span title={a.last_seen_at || ''} style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{a.last_seen_at ? relTime(NOW - new Date(a.last_seen_at).getTime()) : '-'}</span>
-                </div>
-                <div style={s('width:70px;flex-shrink:0;text-align:right')}>
-                  {days >= 60 && <span title="Proven winner" style={s(`color:${A};font-size:10px;margin-right:3px`)}>★</span>}<span style={s(`font-family:${MONO};font-size:14px;color:${days >= 60 ? A : (days > 45 ? '#E7E8EA' : '#B6B9BE')};font-variant-numeric:tabular-nums`)}>{days}</span>
-                  <span style={s('font-size:9px;color:#5A5E64;margin-left:2px')}>d</span>
-                  <div style={s('height:2px;margin-top:4px;background:rgba(255,255,255,.06)')}><div style={s(`height:100%;width:${Math.round((days / maxDays) * 100)}%;background:${days > 45 ? '#8A8E94' : 'rgba(255,255,255,.22)'}`)} /></div>
-                </div>
-                <CopyCell value={a.vertical} style={s('width:92px;flex-shrink:0;padding-left:16px')}>
-                  <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.vertical || '-'}</span>
-                </CopyCell>
-                <div style={s('width:58px;flex-shrink:0;text-align:center')}>
-                  <div style={s(`font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{a.country || '-'}</div>
-                  <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)} title={a.language || ''}>{langCode(a.language)}</div>
-                </div>
-                <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>
-                  <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.feed || '-'}</span>
-                </div>
-                <CopyCell value={a.ad_archive_id} style={s('width:130px;flex-shrink:0;padding-left:16px;min-width:0')}>
-                  <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.ad_archive_id}</span>
-                </CopyCell>
+                {cols.has('revenue') && (
+                  <div style={s('width:96px;flex-shrink:0;text-align:right')}>
+                    <span title={a.sheet_revenue != null ? String(a.sheet_revenue) : 'No matching campaign in the metrics sheet'}
+                      style={s(`font-family:${MONO};font-size:12px;color:${a.sheet_revenue != null ? '#E7E8EA' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_revenue != null ? fmtInt(a.sheet_revenue) : '-'}</span>
+                  </div>
+                )}
+                {cols.has('clicks') && (
+                  <div style={s('width:76px;flex-shrink:0;text-align:right')}>
+                    <span style={s(`font-family:${MONO};font-size:11px;color:${a.sheet_clicks != null ? '#B6B9BE' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_clicks != null ? fmtInt(a.sheet_clicks) : '-'}</span>
+                  </div>
+                )}
+                {cols.has('rpc') && (
+                  <div style={s('width:60px;flex-shrink:0;text-align:right')}>
+                    <span title={a.sheet_rpc != null ? String(a.sheet_rpc) : ''}
+                      style={s(`font-family:${MONO};font-size:11px;color:${a.sheet_rpc != null ? '#B6B9BE' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_rpc != null ? fmtDec(a.sheet_rpc) : '-'}</span>
+                  </div>
+                )}
+                {cols.has('keywords') && (
+                  <CopyCell value={a.sheet_keywords || ''} style={s('width:170px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                    {a.sheet_keywords
+                      ? <span title={a.sheet_keywords} style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.sheet_keywords}</span>
+                      : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
+                  </CopyCell>
+                )}
+                {cols.has('format') && (
+                  <div style={s('width:62px;flex-shrink:0;display:flex;justify-content:center')}>
+                    <span style={s(`font-family:${MONO};font-size:9.5px;letter-spacing:.5px;color:${vid ? '#C6C9CE' : '#8A8E94'};border:1px solid rgba(255,255,255,.14);padding:2px 6px`)}>{a.display_format || '-'}</span>
+                  </div>
+                )}
+                {cols.has('rank') && (
+                  <div style={s('width:46px;flex-shrink:0;text-align:right')}>
+                    <span style={s(`font-family:${MONO};font-size:12.5px;color:${a.rank != null && a.rank <= 3 ? A : '#B6B9BE'};font-variant-numeric:tabular-nums`)}>{a.rank != null ? a.rank : '-'}</span>
+                  </div>
+                )}
+                {cols.has('added') && (
+                  <div style={s('width:68px;flex-shrink:0;text-align:right')}>
+                    <span title={a.first_seen_at || ''} style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{fmtDate(a.first_seen_at)}</span>
+                  </div>
+                )}
+                {cols.has('updated') && (
+                  <div style={s('width:66px;flex-shrink:0;text-align:right')}>
+                    <span title={a.last_seen_at || ''} style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{a.last_seen_at ? relTime(NOW - new Date(a.last_seen_at).getTime()) : '-'}</span>
+                  </div>
+                )}
+                {cols.has('days') && (
+                  <div style={s('width:70px;flex-shrink:0;text-align:right')}>
+                    {days >= 60 && <span title="Proven winner" style={s(`color:${A};font-size:10px;margin-right:3px`)}>★</span>}<span style={s(`font-family:${MONO};font-size:14px;color:${days >= 60 ? A : (days > 45 ? '#E7E8EA' : '#B6B9BE')};font-variant-numeric:tabular-nums`)}>{days}</span>
+                    <span style={s('font-size:9px;color:#5A5E64;margin-left:2px')}>d</span>
+                    <div style={s('height:2px;margin-top:4px;background:rgba(255,255,255,.06)')}><div style={s(`height:100%;width:${Math.round((days / maxDays) * 100)}%;background:${days > 45 ? '#8A8E94' : 'rgba(255,255,255,.22)'}`)} /></div>
+                  </div>
+                )}
+                {cols.has('vertical') && (
+                  <CopyCell value={a.vertical} style={s('width:92px;flex-shrink:0;padding-left:16px')}>
+                    <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.vertical || '-'}</span>
+                  </CopyCell>
+                )}
+                {cols.has('country') && (
+                  <div style={s('width:58px;flex-shrink:0;text-align:center')}>
+                    <div style={s(`font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{a.country || '-'}</div>
+                    <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)} title={a.language || ''}>{langCode(a.language)}</div>
+                  </div>
+                )}
+                {cols.has('feed') && (
+                  <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>
+                    <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.feed || '-'}</span>
+                  </div>
+                )}
+                {cols.has('ad_id') && (
+                  <CopyCell value={a.ad_archive_id} style={s('width:130px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                    <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.ad_archive_id}</span>
+                  </CopyCell>
+                )}
               </div>
             );
           })}
@@ -780,6 +887,41 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
         <SheetExportModal filtered={filtered} saEmail={exportSaEmail} onClose={() => setSheetOpen(false)} />
       )}
     </div>
+  );
+}
+
+// Manual re-pull of the campaign metrics sheet (revenue, clicks, RPC, keywords).
+// The server re-reads the tab immediately, bypassing its cache, and the fresh
+// numbers arrive with the next server props. The button narrates its own state
+// so a click is never a silent no-op.
+function MetricsRefreshButton({ onRefresh }) {
+  const [state, setState] = useState('idle'); // idle | working | done | error
+  const [note, setNote] = useState('');
+  const timerRef = useRef(null);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  const run = async (e) => {
+    e.stopPropagation();
+    if (state === 'working') return;
+    setState('working');
+    const r = await onRefresh();
+    console.info('[metrics] refresh clicked', r);
+    if (r?.ok) { setState('done'); setNote(`${r.campaigns} campaigns`); }
+    else { setState('error'); setNote(r?.error || 'refresh failed'); }
+    timerRef.current = setTimeout(() => { setState('idle'); setNote(''); }, 5000);
+  };
+
+  const color = state === 'error' ? '#ff8a80' : state === 'done' ? '#86C99A' : '#C6C9CE';
+  const label = state === 'working' ? '⟳ REFRESHING...'
+    : state === 'done' ? `✓ METRICS · ${note}`
+    : state === 'error' ? '✕ METRICS FAILED'
+    : '⟳ METRICS';
+  return (
+    <button onClick={run}
+      title={state === 'error' ? note : 'Re-read the campaign metrics sheet now (revenue, clicks, RPC, keywords)'}
+      style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${color};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${state === 'working' ? 'wait' : 'pointer'}`)}>
+      {label}
+    </button>
   );
 }
 
