@@ -27,7 +27,8 @@ function mapAd(r) {
     start_date: iso(r.start_date),
     total_active_time: r.total_active_time,
     article_title: r.article_title,
-    article_content: r.article_content,
+    article_content: r.article_content ?? null,
+    has_article: r.has_article ?? (r.article_content != null && r.article_content !== ''),
     rank: r.rank,
     language: r.language,
     country: r.country,
@@ -44,50 +45,69 @@ function mapAd(r) {
   };
 }
 
+// Every ad column the feed ships to the browser. article_content is deliberately
+// absent: the landing-article bodies dwarf every other field combined (tens of MB
+// across a few thousand ads) and only the Detail view reads them, so it fetches
+// the one it needs on demand (getAdArticle) guided by the has_article flag.
+const FEED_COLUMNS = [
+  'ad_archive_id', 'page_id', 'page_name', 'domain', 'feed', 'caption', 'cta_text',
+  'body_text', 'cta_type', 'title', 'link_description', 'link_url', 'display_format',
+  'extra_texts', 'original_image_urls', 'video_hd_url', 'video_preview_url',
+  'extra_image_urls', 'extra_video_urls', 'publisher_platform', 'start_date',
+  'total_active_time', 'article_title', 'rank', 'language', 'country', 'vertical',
+  'first_seen_at', 'last_seen_at', 'status', 'owner', 'linked_article_url',
+  'is_saved', 'tags', 'notes', 'review_status',
+];
+
 // Only surface ads confirmed by a completed run, so a failed / mid-flight scrape
 // never leaks half-enriched rows into the feed. Rows with no run association
 // (e.g. a backfill) are shown as-is. Only approved ads reach the feed - pending
 // ones live in the Review tab (getReviewAds); rejected ones stay hidden until a
-// scrape sees Meta still running them, which reopens them as pending. The cap
-// keeps the most recently SEEN rows (not first-discovered), so an ad the
-// scraper just re-surfaced always makes it onto the page.
-export async function getAds(limit = 500) {
+// scrape sees Meta still running them, which reopens them as pending. No row
+// cap: every eligible ad ships, and the client paginates the rendering - a
+// LIMIT here silently hid everything past the newest N.
+export async function getAds() {
   const sql = getSql();
   const rows = await sql`
-    select a.* from ads a
+    select ${sql(FEED_COLUMNS)},
+           (article_content is not null and article_content <> '') as has_article
+    from ads a
     where a.review_status = 'approved'
       and ((a.first_run_id is null and a.last_run_id is null)
        or a.first_run_id in (select id from runs where status = 'completed')
        or a.last_run_id in (select id from runs where status = 'completed'))
     order by a.last_seen_at desc nulls last
-    limit ${limit}
   `;
   return rows.map(mapAd);
 }
 
 // The review queue: ads whose destination did not match their tracked domain,
-// awaiting a human approve/reject. Same completed-run guard as the feed.
-export async function getReviewAds(limit = 500) {
+// awaiting a human approve/reject. Same completed-run guard (and same no-cap,
+// no-article-body rule) as the feed.
+export async function getReviewAds() {
   const sql = getSql();
   const rows = await sql`
-    select a.* from ads a
+    select ${sql(FEED_COLUMNS)},
+           (article_content is not null and article_content <> '') as has_article
+    from ads a
     where a.review_status = 'pending'
       and ((a.first_run_id is null and a.last_run_id is null)
        or a.first_run_id in (select id from runs where status = 'completed')
        or a.last_run_id in (select id from runs where status = 'completed'))
     order by a.last_seen_at desc nulls last
-    limit ${limit}
   `;
   return rows.map(mapAd);
 }
 
 // Ads for an explicit id list, returned in the given id order (so an export matches
-// the on-screen ordering). Reuses the same row shape as getAds; ids not found are
-// dropped. Used by the "export to sheet" action, which sends only the ids on screen.
+// the on-screen ordering). Reuses the same row shape as getAds - article bodies
+// excluded here too, since no export column carries them and an id list can span
+// thousands of rows. Used by the "export to sheet" action, which sends only the
+// ids on screen.
 export async function getAdsByIds(ids) {
   if (!Array.isArray(ids) || !ids.length) return [];
   const sql = getSql();
-  const rows = await sql`select * from ads where ad_archive_id = any(${ids})`;
+  const rows = await sql`select ${sql(FEED_COLUMNS)} from ads where ad_archive_id = any(${ids})`;
   const byId = new Map(rows.map((r) => [r.ad_archive_id, mapAd(r)]));
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }

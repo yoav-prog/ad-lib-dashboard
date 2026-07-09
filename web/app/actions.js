@@ -2,7 +2,7 @@
 
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
-import { requireAdmin } from '@/lib/auth';
+import { getRole, requireAdmin } from '@/lib/auth';
 import { getAdsByIds } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
@@ -26,6 +26,21 @@ function cleanDomainIds(ids, cap = 500) {
   return Array.isArray(ids)
     ? [...new Set(ids.map(String).filter((x) => UUID_RE.test(x)))].slice(0, cap)
     : [];
+}
+
+// The feed ships every ad WITHOUT its landing-article body (the bodies dwarf
+// everything else combined), so the Detail view fetches the one it shows here.
+// Read-only, so any valid session (viewer included) may call it.
+export async function getAdArticle(adId) {
+  const role = await getRole();
+  if (!role) throw new Error('Forbidden: sign in required');
+  const sql = getSql();
+  const rows = await sql`
+    select article_title, article_content from ads where ad_archive_id = ${String(adId)}
+  `;
+  if (!rows.length) return { ok: false, reason: 'not-found' };
+  console.info('[detail article] served', { adId: String(adId), chars: (rows[0].article_content || '').length });
+  return { ok: true, article_title: rows[0].article_title, article_content: rows[0].article_content };
 }
 
 export async function updateAdWorkflow(adId, patch) {

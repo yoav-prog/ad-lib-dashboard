@@ -7,13 +7,15 @@ import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, 
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
+import Pager, { PageSizePicker, usePageSize } from '@/components/Pager';
+import { pageSlice, pageRange, pageCount, clampPage } from '@/lib/paging';
 import GeoSplitCell from '@/components/GeoSplitCell';
 import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
-import { updateAdWorkflow, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds } from '@/app/actions';
+import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds } from '@/app/actions';
 
 export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [], domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true, exportSaEmail = null }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
@@ -29,6 +31,8 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     daysMin: '', daysMax: '', rankMin: '', rankMax: '',
   });
   const [dateRange, setDateRange] = useState('all');
+  const [page, setPage] = useState(0);
+  const { pageSize, setPageSize } = usePageSize('adintel.pagesize.freshfinds');
   const [selIndex, setSelIndex] = useState(0);
   const [detailId, setDetailId] = useState(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -174,13 +178,15 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
   }, [router]);
 
   // Precomputed lowercase haystack per ad -> fast multi-field smart search.
+  // Article BODIES are not indexed: the server no longer ships them with the
+  // feed (they dwarf every other field combined), only the titles.
   const searchIndex = useMemo(() => {
     const m = new Map();
     for (const a of ads) {
       m.set(a.ad_archive_id, [
         a.title, a.page_name, a.domain, a.vertical, a.country, a.language,
         a.body_text, a.caption, a.cta_text, a.cta_type, a.link_url,
-        a.link_description, a.article_title, a.article_content, a.notes,
+        a.link_description, a.article_title, a.notes,
         a.sheet_keywords,
         ...(a.tags || []),
       ].filter(Boolean).join(' ').toLowerCase());
@@ -247,6 +253,24 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     return list;
   }, [ads, query, filters, dateRange, sort, sortDir, NOW, searchIndex]);
 
+  // Only the current page of rows reaches the DOM; filters, search, sort, facet
+  // counts and exports all keep seeing the full filtered list. This is what lets
+  // the feed hold every ad ever found without the browser rendering them all.
+  const paged = useMemo(() => pageSlice(filtered, page, pageSize), [filtered, page, pageSize]);
+
+  // Back to page one whenever the visible set changes shape - staying on page 7
+  // of a brand-new list is disorienting. The list can also shrink under us
+  // (bulk delete, refreshed server props), so clamp separately.
+  useEffect(() => { setPage(0); setSelIndex(0); }, [query, filters, dateRange, sort, sortDir, pageSize]);
+  useEffect(() => { setPage((p) => clampPage(p, filtered.length, pageSize)); }, [filtered.length, pageSize]);
+
+  const goPage = useCallback((p, total, size) => {
+    setPage(p);
+    setSelIndex(0);
+    window.scrollTo(0, 0);
+    console.info('[feed paging] page', { table: 'fresh', page: p + 1, pages: pageCount(total, size), pageSize: size, total });
+  }, []);
+
   // Same smart-match, reused by the Competitor and Pipeline views so search is per-page.
   const matchesQuery = (a) => {
     const q = query.trim().toLowerCase();
@@ -293,9 +317,18 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
       if (typing) return;
       if (e.key === '/') { e.preventDefault(); document.getElementById('ai-search')?.focus(); return; }
       if (view === 'fresh') {
-        if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); setSelIndex((i) => Math.min(filtered.length - 1, i + 1)); }
-        else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); setSelIndex((i) => Math.max(0, i - 1)); }
-        else if (e.key === 'Enter') { const a = filtered[selIndex]; if (a) openDetail(a.ad_archive_id); }
+        // j/k walk the visible page and roll over to the neighbor page at the
+        // edges, so the keyboard can traverse the whole feed without the mouse.
+        const pages = pageCount(filtered.length, pageSize);
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (selIndex >= paged.length - 1 && page < pages - 1) goPage(page + 1, filtered.length, pageSize);
+          else setSelIndex((i) => Math.min(paged.length - 1, i + 1));
+        } else if (e.key === 'k' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (selIndex === 0 && page > 0) { goPage(page - 1, filtered.length, pageSize); setSelIndex(pageSize - 1); }
+          else setSelIndex((i) => Math.max(0, i - 1));
+        } else if (e.key === 'Enter') { const a = paged[selIndex]; if (a) openDetail(a.ad_archive_id); }
       } else if (view === 'detail') {
         if (e.key === 'j') stepDetail(1);
         else if (e.key === 'k') stepDetail(-1);
@@ -321,7 +354,8 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
 
       {view === 'fresh' && (
         <FreshFinds
-          ads={ads} filtered={filtered} NOW={NOW}
+          ads={ads} filtered={filtered} paged={paged} NOW={NOW}
+          page={page} pageSize={pageSize} setPageSize={setPageSize} goPage={goPage}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
           clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
@@ -483,7 +517,7 @@ const FRESH_COLS = [
 ];
 const FRESH_COLS_LS = 'adintel.cols.freshfinds';
 
-function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail, onRefreshMetrics }) {
+function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail, onRefreshMetrics }) {
   const selCount = selected ? selected.size : 0;
   const [sheetOpen, setSheetOpen] = useState(false);
   const filteredIds = filtered.map((a) => a.ad_archive_id);
@@ -509,6 +543,12 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
   // Which columns this table shows, chosen from the COLUMNS picker and
   // remembered per browser.
   const { visible: cols, toggle: toggleCol, reset: resetCols } = useColumnPrefs(FRESH_COLS_LS, FRESH_COLS);
+
+  // Paging bookkeeping for the toolbar counter and the bottom pager. The row
+  // slice itself (`paged`) is computed by the parent, which also owns the
+  // keyboard navigation across pages.
+  const pages = pageCount(filtered.length, pageSize);
+  const range = pageRange(filtered.length, page, pageSize);
 
   // The Slug column is Tarzo-only, so it rides along only while the current view
   // actually contains a Tarzo row; the table widens to make room when it does.
@@ -691,7 +731,10 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             ) : (
               <>
                 <div style={s('display:flex;align-items:center;gap:12px')}>
-                  <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{pad(filtered.length)} <span style={s('color:#5A5E64')}>ads</span></span>
+                  <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>
+                    {pad(filtered.length)} <span style={s('color:#5A5E64')}>ads</span>
+                    {pages > 1 && <span style={s('color:#5A5E64')}> &middot; showing {fmtInt(range.from)}-{fmtInt(range.to)}</span>}
+                  </span>
                   <span style={s('color:#2E3136')}>|</span>
                   <span style={s('font-size:10.5px;color:#5A5E64')}>sorted by</span>
                   {sortDefs.map((sd) => (
@@ -710,6 +753,8 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
                         style={s(`padding:3px 7px;background:${imgKey === z.key ? '#1A1C20' : '#0D0E11'};border:none;color:${imgKey === z.key ? A : '#8A8E94'};font-family:${MONO};font-size:10px;cursor:pointer`)}>{z.label}</button>
                     ))}
                   </div>
+                  <span style={s('color:#2E3136;margin:0 4px')}>|</span>
+                  <PageSizePicker value={pageSize} onChange={setPageSize} />
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <ColumnPicker defs={FRESH_COLS} visible={cols} toggle={toggleCol} reset={resetCols} />
                   {canEdit && <MetricsRefreshButton onRefresh={onRefreshMetrics} />}
@@ -736,7 +781,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
           <div style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
             {canEdit && (
               <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
-                <span onClick={() => (allSelected ? clearSel() : setSelection(filteredIds))} title="Select all"
+                <span onClick={() => (allSelected ? clearSel() : setSelection(filteredIds))} title={`Select all ${filtered.length} filtered ads (every page)`}
                   style={s(`width:13px;height:13px;border:1px solid ${allSelected ? A : 'rgba(255,255,255,.25)'};background:${allSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allSelected ? '✓' : ''}</span>
               </div>
             )}
@@ -762,7 +807,7 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             {cols.has('ad_id') && <div style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
           </div>
 
-          {filtered.map((a, i) => {
+          {paged.map((a, i) => {
             const days = daysRunning(a, NOW);
             const fresh = isFresh(a);
             const sel = i === selIndex;
@@ -891,8 +936,11 @@ function FreshFinds({ ads, filtered, NOW, filters, toggleFilter, setRange, clear
             );
           })}
 
+          <Pager page={page} total={filtered.length} pageSize={pageSize} onPage={(p) => goPage(p, filtered.length, pageSize)} />
           <div style={s('padding:20px 16px;text-align:center')}>
-            <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D;letter-spacing:.5px`)}>END OF FEED &middot; {pad(filtered.length)} RECORDS</span>
+            <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D;letter-spacing:.5px`)}>
+              {pages > 1 ? <>PAGE {page + 1} OF {fmtInt(pages)}</> : <>END OF FEED</>} &middot; {pad(filtered.length)} RECORDS
+            </span>
           </div>
           {filtered.length === 0 && (
             <div style={s('padding:60px 16px;text-align:center;color:#5A5E64;font-size:13px')}>No ads match. Run a scrape or clear filters.</div>
@@ -1144,6 +1192,26 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
   const statuses = ['idea', 'drafting', 'published'];
   const owners = ['Mara K.', 'Devin R.', 'Priya S.', 'Ari L.'];
 
+  // The feed ships ads without their article bodies (they dwarf everything else
+  // combined), so pull this ad's body on first open and cache it into the shared
+  // ads state - stepping back to this ad is then instant. `alive` drops a stale
+  // response if the user has already moved to another ad; a failure is remembered
+  // per ad so the section says so instead of spinning forever.
+  const [articleFailedId, setArticleFailedId] = useState(null);
+  useEffect(() => {
+    if (!ad.has_article || ad.article_content) return;
+    let alive = true;
+    console.info('[detail article] loading', { adId: ad.ad_archive_id });
+    getAdArticle(ad.ad_archive_id)
+      .then((r) => {
+        if (!alive) return;
+        if (r?.ok) updateLocal(ad.ad_archive_id, { article_title: r.article_title, article_content: r.article_content });
+        else setArticleFailedId(ad.ad_archive_id);
+      })
+      .catch((e) => { console.error('[detail article] load failed', e); if (alive) setArticleFailedId(ad.ad_archive_id); });
+    return () => { alive = false; };
+  }, [ad.ad_archive_id]);
+
   const [draft, setDraft] = useState(null);
   const [drafting, setDrafting] = useState(false);
   const genDraft = async () => {
@@ -1237,7 +1305,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
             </div>
           </div>
 
-          {(ad.article_title || ad.article_content) && (
+          {(ad.article_title || ad.article_content || ad.has_article) && (
             <div style={s('margin-top:28px;padding-top:22px;border-top:1px solid rgba(255,255,255,.09)')}>
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:14px')}>
                 <span style={s(`font-family:${MONO};font-size:9.5px;letter-spacing:1.2px;color:#5A5E64`)}>SCRAPED LANDING ARTICLE</span>
@@ -1245,7 +1313,13 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
               </div>
               {ad.article_title && <h2 style={s('font-size:18px;font-weight:600;color:#E7E8EA;line-height:1.35;margin:0 0 14px')}>{ad.article_title}</h2>}
               <div style={s('font-size:13px;line-height:1.72;color:#A8ABB1;max-width:62ch')}>
-                {paras(ad.article_content).slice(0, 12).map((p, i) => <p key={i} style={s('margin:0 0 13px')}>{p}</p>)}
+                {ad.article_content
+                  ? paras(ad.article_content).slice(0, 12).map((p, i) => <p key={i} style={s('margin:0 0 13px')}>{p}</p>)
+                  : !ad.has_article
+                    ? null
+                    : articleFailedId === ad.ad_archive_id
+                      ? <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>The article could not be loaded. Reopen this ad to retry.</span>
+                      : <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>Loading article...</span>}
               </div>
             </div>
           )}
