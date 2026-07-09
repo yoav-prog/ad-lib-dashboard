@@ -1,12 +1,14 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, firstUrl, hostOf, pad, relTime, fmtInt, fmtDec, filterReviewAds, reviewDestOf, reviewPageOf } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
 import GeoSplitCell from '@/components/GeoSplitCell';
+import Pager, { PageSizePicker, usePageSize } from '@/components/Pager';
+import { pageSlice, pageRange, pageCount, clampPage } from '@/lib/paging';
 
 // The review queue: ads the scraper fetched for a tracked domain whose
 // destination does NOT point at that domain (the Ad Library keyword search
@@ -40,6 +42,8 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
   const [filters, setFilters] = useState({ domain: [], dest: [], page: [] });
   const [gsearch, setGsearch] = useState({});
   const [sort, setSort] = useState('newest');
+  const [page, setPage] = useState(0);
+  const { pageSize, setPageSize } = usePageSize('adintel.pagesize.review');
 
   // Same user-controlled thumbnail sizing as Fresh Finds: these creatives are
   // text-heavy, and reading them is often what decides approve vs reject. S is
@@ -83,6 +87,20 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
     if (sort === 'dest') return [...list].sort((a, b) => reviewDestOf(a).localeCompare(reviewDestOf(b)));
     return list;   // 'newest' - the server orders by latest sighting, so just-reopened ads sit on top
   }, [ads, query, filters, sort]);
+
+  // Only the current page of rows reaches the DOM; facets, select-all and bulk
+  // decisions keep operating on the full filtered queue. Page one whenever the
+  // queue changes shape; clamp when decisions shrink it out from under us.
+  const paged = useMemo(() => pageSlice(filtered, page, pageSize), [filtered, page, pageSize]);
+  useEffect(() => { setPage(0); }, [query, filters, sort, pageSize]);
+  useEffect(() => { setPage((p) => clampPage(p, filtered.length, pageSize)); }, [filtered.length, pageSize]);
+  const pages = pageCount(filtered.length, pageSize);
+  const range = pageRange(filtered.length, page, pageSize);
+  const goPage = (p) => {
+    setPage(p);
+    window.scrollTo(0, 0);
+    console.info('[feed paging] page', { table: 'review', page: p + 1, pages, pageSize, total: filtered.length });
+  };
 
   const activeFilterCount = filters.domain.length + filters.dest.length + filters.page.length;
   const toggleFilter = (group, val) =>
@@ -172,7 +190,10 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
       <div style={s('flex:1;min-width:0;background:#0B0C0E;overflow-x:auto')}>
         {/* header strip: counts, sort, bulk actions */}
         <div style={s(`display:flex;align-items:center;gap:12px;height:40px;padding:0 16px;background:#0D0E11;border-bottom:1px solid rgba(255,255,255,.09);min-width:${tableMinW}px`)}>
-          <span style={s(`font-family:${MONO};font-size:11.5px;color:#E7E8EA;font-variant-numeric:tabular-nums`)}>{pad(filtered.length)} <span style={s('color:#5A5E64')}>waiting for review{filtered.length !== ads.length ? ` of ${ads.length}` : ''}</span></span>
+          <span style={s(`font-family:${MONO};font-size:11.5px;color:#E7E8EA;font-variant-numeric:tabular-nums`)}>
+            {pad(filtered.length)} <span style={s('color:#5A5E64')}>waiting for review{filtered.length !== ads.length ? ` of ${ads.length}` : ''}</span>
+            {pages > 1 && <span style={s('color:#5A5E64')}> &middot; showing {fmtInt(range.from)}-{fmtInt(range.to)}</span>}
+          </span>
           <span style={s('color:#2E3136')}>|</span>
           <span style={s('font-size:10.5px;color:#5A5E64')}>sorted by</span>
           {sortDefs.map((sd) => (
@@ -188,6 +209,8 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
                 style={s(`padding:3px 7px;background:${imgKey === z.key ? '#1A1C20' : '#0D0E11'};border:none;color:${imgKey === z.key ? A : '#8A8E94'};font-family:${MONO};font-size:10px;cursor:pointer`)}>{z.label}</button>
             ))}
           </div>
+          <span style={s('color:#2E3136')}>|</span>
+          <PageSizePicker value={pageSize} onChange={setPageSize} />
           <span style={s('color:#2E3136')}>|</span>
           <ColumnPicker defs={REVIEW_COLS} visible={cols} toggle={toggleCol} reset={resetCols} />
           <span style={s('flex:1')} />
@@ -226,7 +249,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
           {canEdit && <div style={s('width:170px;flex-shrink:0;text-align:right')}>Decision</div>}
         </div>
 
-        {filtered.map((a) => {
+        {paged.map((a) => {
           const isSel = selected.has(a.ad_archive_id);
           const url = firstUrl(a.link_url);
           const host = hostOf(url);
@@ -306,6 +329,8 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
             </div>
           );
         })}
+
+        <Pager page={page} total={filtered.length} pageSize={pageSize} onPage={goPage} />
 
         {filtered.length === 0 && (
           <div style={s('padding:60px 0;text-align:center')}>
