@@ -450,6 +450,13 @@ def check_media_exists_in_storage(bucket, ad_archive_id, media_type, index):
         print(f"  ⚠️  Storage check error {media_type}{index}: {e}")
         return None
 
+async def check_media_exists_async(bucket, ad_archive_id, media_type, index):
+    """Threaded wrapper for check_media_exists_in_storage: the GCS list call is
+    sync network I/O and must not block the event loop (heartbeats/log flushes
+    run on it — see process_ad_media)."""
+    return await asyncio.to_thread(
+        check_media_exists_in_storage, bucket, ad_archive_id, media_type, index)
+
 def generate_filename(ad_archive_id, display_format, extension):
     date_str  = datetime.now().strftime('%y%m%d')
     clean_fmt = display_format.lower().replace(' ', '_') if display_format else 'unknown'
@@ -529,7 +536,7 @@ async def process_ad_media(ad, bucket, media_cache):
         for img in snapshot.get('images', []):
             url = img.get('original_image_url', '')
             if url:
-                ex = check_media_exists_in_storage(bucket, ad_archive_id, 'img', image_counter)
+                ex = await check_media_exists_async(bucket, ad_archive_id, 'img', image_counter)
                 if ex:
                     storage_checks[('image', 'main', image_counter)] = ex
                 else:
@@ -541,7 +548,7 @@ async def process_ad_media(ad, bucket, media_cache):
         for card in snapshot.get('cards', []):
             url = card.get('original_image_url', '')
             if url:
-                ex = check_media_exists_in_storage(bucket, ad_archive_id, 'img', image_counter)
+                ex = await check_media_exists_async(bucket, ad_archive_id, 'img', image_counter)
                 if ex:
                     storage_checks[('image', 'main', image_counter)] = ex
                 else:
@@ -556,7 +563,7 @@ async def process_ad_media(ad, bucket, media_cache):
                 hd   = item.get('video_hd_url', '')
                 prev = item.get('video_preview_image_url', '')
                 if hd:
-                    ex = check_media_exists_in_storage(bucket, ad_archive_id, 'vid', video_counter)
+                    ex = await check_media_exists_async(bucket, ad_archive_id, 'vid', video_counter)
                     if ex:
                         storage_checks[('video', 'hd', video_counter)] = ex
                     else:
@@ -564,7 +571,7 @@ async def process_ad_media(ad, bucket, media_cache):
                         upload_tasks.append(async_upload_video(session, bucket, hd, fn))
                         media_map[len(upload_tasks) - 1] = ('video', 'hd', video_counter)
                 if prev:
-                    ex = check_media_exists_in_storage(bucket, ad_archive_id, 'vidpreview', video_counter)
+                    ex = await check_media_exists_async(bucket, ad_archive_id, 'vidpreview', video_counter)
                     if ex:
                         storage_checks[('video', 'preview', video_counter)] = ex
                     else:
@@ -577,7 +584,7 @@ async def process_ad_media(ad, bucket, media_cache):
         for img in snapshot.get('extra_images', []):
             url = img.get('original_image_url', '')
             if url:
-                ex = check_media_exists_in_storage(bucket, ad_archive_id, 'extra', extra_img_counter)
+                ex = await check_media_exists_async(bucket, ad_archive_id, 'extra', extra_img_counter)
                 if ex:
                     storage_checks[('image', 'extra', extra_img_counter)] = ex
                 else:
@@ -590,7 +597,7 @@ async def process_ad_media(ad, bucket, media_cache):
         for video in snapshot.get('extra_videos', []):
             hd = video.get('video_hd_url', '')
             if hd:
-                ex = check_media_exists_in_storage(bucket, ad_archive_id, 'extravid', extra_vid_counter)
+                ex = await check_media_exists_async(bucket, ad_archive_id, 'extravid', extra_vid_counter)
                 if ex:
                     storage_checks[('video', 'extra', extra_vid_counter)] = ex
                 else:
@@ -918,7 +925,11 @@ async def fetch_facebook_ads_apify_with_resume(params, max_retries=4, retry_dela
         print(f"\n  🔄 Apify attempt {attempts}/{max_retries} — "
               f"need {remaining} more ads (have {len(all_collected)})")
         attempt_params       = {**params, 'max_target_results': remaining}
-        items, new_cursor    = fetch_facebook_ads_apify(attempt_params, resume_cursor=cursor)
+        # to_thread: the Apify client's call() blocks until the actor finishes
+        # (minutes). Run it off the event loop so heartbeats/log flushes keep
+        # ticking — otherwise the dashboard reads a healthy run as STALLED.
+        items, new_cursor    = await asyncio.to_thread(
+            fetch_facebook_ads_apify, attempt_params, resume_cursor=cursor)
 
         # A SUCCEEDED actor run that returns 0 ads is usually a transient miss - a
         # cold container start, a momentary Facebook block, or a proxy hiccup - not
@@ -931,7 +942,8 @@ async def fetch_facebook_ads_apify_with_resume(params, max_retries=4, retry_dela
             print(f"  ⚠️  Actor SUCCEEDED but returned 0 ads — likely transient. "
                   f"Retrying fresh ({empty_tries}/{empty_retries}) after {empty_delay}s...")
             await asyncio.sleep(empty_delay)
-            items, new_cursor = fetch_facebook_ads_apify(attempt_params, resume_cursor=None)
+            items, new_cursor = await asyncio.to_thread(
+                fetch_facebook_ads_apify, attempt_params, resume_cursor=None)
 
         new_items = []
         for item in items:

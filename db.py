@@ -74,14 +74,17 @@ def connect():
 # ═════════════════════════════════════════════════════════════════════════════
 # RUNS - concurrency lock + integrity boundary
 # ═════════════════════════════════════════════════════════════════════════════
-def claim_run(conn, trigger_source: str = 'schedule', stale_minutes: int = 30):
+def claim_run(conn, trigger_source: str = 'schedule', stale_minutes: int = 10):
     """
     Start a run and take the single-active-run lock.
 
-    First, any run left 'running' longer than stale_minutes (a crashed job) is
-    marked 'failed' so it stops blocking. Then a new run is inserted. If another
-    run is genuinely active, the runs_single_active index rejects the insert and
-    we return None (caller should exit quietly).
+    First, any run whose heartbeat has been silent longer than stale_minutes
+    (a crashed job - a live one heartbeats every 2s) is marked 'failed' so it
+    stops blocking. Judged on last_heartbeat_at, not started_at: a healthy run
+    may legitimately live past 30 minutes under the time budget, and its age
+    says nothing about whether it is alive. Then a new run is inserted. If
+    another run is genuinely active, the runs_single_active index rejects the
+    insert and we return None (caller should exit quietly).
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -91,7 +94,7 @@ def claim_run(conn, trigger_source: str = 'schedule', stale_minutes: int = 30):
                    finished_at = now(),
                    error_detail = 'reclaimed as stale'
              where status = 'running'
-               and started_at < now() - make_interval(mins => %s)
+               and coalesce(last_heartbeat_at, started_at) < now() - make_interval(mins => %s)
             """,
             (stale_minutes,),
         )
@@ -286,6 +289,20 @@ def bump_domain_schedule(conn, domain_id, interval_days: int):
              where id = %s
             """,
             (interval_days, domain_id),
+        )
+
+
+def mark_domains_due(conn, ids: list[str]) -> None:
+    """Make the given domains due immediately - used when a run's time budget
+    expires before it reaches them, so the next scheduled tick picks them up
+    (targeted rows included, which are otherwise not necessarily due)."""
+    if not ids:
+        return
+    with conn.cursor() as cur:
+        # Cast to uuid[]: ids are validated upstream; there is no uuid = text operator.
+        cur.execute(
+            'update domains set next_run_at = now() where id = any(%s::uuid[])',
+            (list(ids),),
         )
 
 

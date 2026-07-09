@@ -20,7 +20,10 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Belt only. The real limit is the runner's soft time budget
+    # (RUN_TIME_BUDGET_MINUTES, default 45): it finishes the run cleanly and
+    # leaves unfinished domains due, so this hard kill should never fire.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,6 +34,9 @@ jobs:
       - name: Run due scrapes
         run: python run_scrape.py
         env:
+          # Stream prints to the Actions log as they happen instead of in
+          # buffered clumps, so a live run can actually be watched.
+          PYTHONUNBUFFERED: '1'
           # Blank for scheduled runs (due-sweep); set by the dashboard's targeted
           # "Run selected" dispatch to scrape only those rows.
           DOMAIN_IDS: ${{ github.event.inputs.domain_ids }}
