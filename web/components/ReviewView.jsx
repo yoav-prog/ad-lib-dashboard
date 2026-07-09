@@ -26,6 +26,7 @@ const REVIEW_COLS = [
   { key: 'revenue',  label: 'Revenue Prediction', w: 96 },
   { key: 'clicks',   label: 'Clicks',             w: 76 },
   { key: 'rpc',      label: 'RPC',                w: 60 },
+  { key: 'geos',     label: 'GEOS',               w: 126 },
   { key: 'keywords', label: 'Top Keywords',       w: 186 },
   { key: 'ad_id',    label: 'Ad Archive ID',      w: 146 },
   { key: 'added',    label: 'Added',              w: 80 },
@@ -217,6 +218,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
           {cols.has('revenue') && <div title="Revenue prediction from the campaign metrics sheet" style={s('width:96px;flex-shrink:0;text-align:right')}>Rev. Predict</div>}
           {cols.has('clicks') && <div style={s('width:76px;flex-shrink:0;text-align:right')}>Clicks</div>}
           {cols.has('rpc') && <div title="Revenue per click" style={s('width:60px;flex-shrink:0;text-align:right')}>RPC</div>}
+          {cols.has('geos') && <div title="Revenue share by country from the campaign sheet, e.g. ES-90,MX-10" style={s('width:110px;flex-shrink:0;padding-left:16px')}>GEOS</div>}
           {cols.has('keywords') && <div style={s('width:170px;flex-shrink:0;padding-left:16px')}>Top Keywords</div>}
           {cols.has('ad_id') && <div style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
           {cols.has('added') && <div style={s('width:80px;flex-shrink:0;text-align:right')}>Added</div>}
@@ -273,6 +275,13 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
                   <span title={a.sheet_rpc != null ? String(a.sheet_rpc) : ''}
                     style={s(`font-family:${MONO};font-size:11px;color:${a.sheet_rpc != null ? '#B6B9BE' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_rpc != null ? fmtDec(a.sheet_rpc) : '-'}</span>
                 </div>
+              )}
+              {cols.has('geos') && (
+                <CopyCell value={a.sheet_geos || ''} style={s('width:110px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                  {a.sheet_geos
+                    ? <span title={a.sheet_geos} style={s(`font-family:${MONO};font-size:10.5px;color:#B6B9BE;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.sheet_geos}</span>
+                    : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
+                </CopyCell>
               )}
               {cols.has('keywords') && (
                 <CopyCell value={a.sheet_keywords || ''} style={s('width:170px;flex-shrink:0;padding-left:16px;min-width:0')}>

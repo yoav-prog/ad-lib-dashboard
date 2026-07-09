@@ -137,17 +137,17 @@ test('parseSheetId accepts a bare id or a full URL', () => {
 });
 
 // Campaign metrics joined from the team's sheet ride along in both exports.
-const metricAd = { ...imageAd, sheet_revenue: 11947.19693, sheet_clicks: 4883, sheet_rpc: 2.446839428, sheet_keywords: 'online diploma, adults' };
+const metricAd = { ...imageAd, sheet_revenue: 11947.19693, sheet_clicks: 4883, sheet_rpc: 2.446839428, sheet_geos: 'ES-90,MX-10', sheet_keywords: 'online diploma, adults' };
 
-test('buildSheetData carries the four sheet-metric columns', () => {
-  const { columns, rows } = buildSheetData([metricAd], NOW, ['revenue', 'clicks', 'rpc', 'keywords']);
-  assert.deepEqual(columns.map((c) => c.header), ['Revenue Prediction', 'Clicks', 'RPC', 'Top Keywords']);
-  assert.deepEqual(rows[0].cells.map((c) => c.value), ['11947.20', '4883', '2.45', 'online diploma, adults']);
+test('buildSheetData carries the five sheet-metric columns', () => {
+  const { columns, rows } = buildSheetData([metricAd], NOW, ['revenue', 'clicks', 'rpc', 'geos', 'keywords']);
+  assert.deepEqual(columns.map((c) => c.header), ['Revenue Prediction', 'Clicks', 'RPC', 'GEOS', 'Top Keywords']);
+  assert.deepEqual(rows[0].cells.map((c) => c.value), ['11947.20', '4883', '2.45', 'ES-90,MX-10', 'online diploma, adults']);
 });
 
 test('buildSheetData exports empty metric cells (not zeros) for unmatched ads', () => {
-  const { rows } = buildSheetData([imageAd], NOW, ['revenue', 'clicks', 'rpc', 'keywords']);
-  assert.deepEqual(rows[0].cells.map((c) => c.value), ['', '', '', '']);
+  const { rows } = buildSheetData([imageAd], NOW, ['revenue', 'clicks', 'rpc', 'geos', 'keywords']);
+  assert.deepEqual(rows[0].cells.map((c) => c.value), ['', '', '', '', '']);
 });
 
 test('buildCsv includes the metric columns', () => {

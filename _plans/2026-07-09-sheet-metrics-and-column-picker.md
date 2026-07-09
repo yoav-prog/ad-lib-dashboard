@@ -34,7 +34,12 @@ top keywords). Bring four of those numbers into AdIntel next to each ad:
 - Matching is by URL only, not URL + country. The sheet has several rows per
   URL (one per country); those are aggregated: revenue and clicks are summed,
   RPC is recomputed as summed revenue / summed clicks (the weighted average),
-  and keywords come from the highest-revenue row.
+  and keywords come from the highest-revenue row. Confirmed with Amit (Slack,
+  2026-07-09): totals are what he wants, plus a GEOS column showing the
+  revenue split per sheet country as "CC-percent" pairs, biggest first
+  (e.g. ES-90,MX-10). GEOS is revenue-only by design and deliberately
+  independent of AdIntel's own Country column - it tells the reader where an
+  article actually earns even when the scraped country guess was wrong.
 - The sheet is read live with a short server cache, not synced into Postgres.
   The metrics change in the sheet, ads keep no history, and a DB copy would
   need a migration plus a sync job for no read-path benefit at 500 rows.

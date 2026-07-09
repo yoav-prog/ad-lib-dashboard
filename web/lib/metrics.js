@@ -68,6 +68,7 @@ function headerIndexes(headerRow) {
   const idx = {
     network: find('network_normalized'),
     url: find('campaign_target_url'),
+    country: find('country'),
     revenue: find('revenue_prediction_finalized'),
     clicks: find('click_count'),
     rpc: find('rpc'),
@@ -79,13 +80,29 @@ function headerIndexes(headerRow) {
 
 const addNullable = (a, b) => (a == null && b == null ? null : (a || 0) + (b || 0));
 
+// The GEOS breakdown: how a URL's revenue splits across the sheet's countries,
+// as "CC-<percent>" pairs sorted biggest-first, e.g. "ES-90,MX-10". The sheet
+// team picks a country per campaign without knowing AdIntel's country, so this
+// column is what tells a reader WHERE an article actually earns - regardless of
+// what AdIntel's own Country column guessed. null when no row carried revenue.
+function geosOf(perCountry) {
+  const entries = [...perCountry.entries()].filter(([, v]) => v > 0);
+  const total = entries.reduce((n, [, v]) => n + v, 0);
+  if (!total) return null;
+  return entries
+    .sort((x, y) => y[1] - x[1])
+    .map(([c, v]) => `${c}-${Math.round((v / total) * 100)}`)
+    .join(',');
+}
+
 // Raw tab values (header row first) -> Map of urlKey -> { revenue, clicks,
-// rpc, keywords, rows }. Only facebook-rsoc rows enter. The sheet holds one
-// row per campaign and several campaigns can target the same URL (one per
-// country), so duplicates aggregate: revenue and clicks are summed, RPC is
-// recomputed as summed revenue / summed clicks (the click-weighted average),
-// and the keywords come from the highest-revenue row. An unusable tab (no
-// network/url headers) yields an empty map, never a throw.
+// rpc, keywords, geos, rows }. Only facebook-rsoc rows enter. The sheet holds
+// one row per campaign and several campaigns can target the same URL (usually
+// one per country, sometimes several), so duplicates aggregate: revenue and
+// clicks are summed, RPC is recomputed as summed revenue / summed clicks (the
+// click-weighted average), the keywords come from the highest-revenue row, and
+// the per-country split is kept as GEOS. An unusable tab (no network/url
+// headers) yields an empty map, never a throw.
 export function buildMetricsIndex(values) {
   const index = new Map();
   if (!Array.isArray(values) || values.length < 2) return index;
@@ -97,28 +114,33 @@ export function buildMetricsIndex(values) {
     if (norm(row[idx.network]) !== NETWORK) continue;
     const key = normalizeUrlKey(row[idx.url]);
     if (!key) continue;
+    const country = idx.country >= 0 ? String(row[idx.country] ?? '').trim().toUpperCase() : '';
     const revenue = idx.revenue >= 0 ? toNum(row[idx.revenue]) : null;
     const clicks = idx.clicks >= 0 ? toNum(row[idx.clicks]) : null;
     const rpc = idx.rpc >= 0 ? toNum(row[idx.rpc]) : null;
     const keywords = idx.keywords >= 0 ? String(row[idx.keywords] ?? '').trim() : '';
 
-    const cur = index.get(key);
+    let cur = index.get(key);
     if (!cur) {
-      index.set(key, { revenue, clicks, rpc, keywords, rows: 1, _topRev: revenue ?? -Infinity });
-      continue;
+      cur = { revenue, clicks, rpc, keywords, geos: null, rows: 1, _topRev: revenue ?? -Infinity, _geo: new Map() };
+      index.set(key, cur);
+    } else {
+      cur.revenue = addNullable(cur.revenue, revenue);
+      cur.clicks = addNullable(cur.clicks, clicks);
+      cur.rows += 1;
+      if ((revenue ?? -Infinity) > cur._topRev) {
+        cur._topRev = revenue ?? -Infinity;
+        cur.rpc = rpc;                            // fallback if the weighted RPC can't be computed
+        if (keywords) cur.keywords = keywords;
+      }
     }
-    cur.revenue = addNullable(cur.revenue, revenue);
-    cur.clicks = addNullable(cur.clicks, clicks);
-    cur.rows += 1;
-    if ((revenue ?? -Infinity) > cur._topRev) {
-      cur._topRev = revenue ?? -Infinity;
-      cur.rpc = rpc;                              // fallback if the weighted RPC can't be computed
-      if (keywords) cur.keywords = keywords;
-    }
+    if (country && revenue != null) cur._geo.set(country, (cur._geo.get(country) || 0) + revenue);
   }
   for (const e of index.values()) {
     if (e.rows > 1 && e.revenue != null && e.clicks > 0) e.rpc = e.revenue / e.clicks;
+    e.geos = geosOf(e._geo);
     delete e._topRev;
+    delete e._geo;
   }
   return index;
 }
@@ -146,6 +168,7 @@ export function attachSheetMetrics(ads, index) {
       sheet_revenue: m ? m.revenue : null,
       sheet_clicks: m ? m.clicks : null,
       sheet_rpc: m ? m.rpc : null,
+      sheet_geos: m ? m.geos : null,
       sheet_keywords: m && m.keywords ? m.keywords : null,
     };
   });

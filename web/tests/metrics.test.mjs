@@ -41,7 +41,7 @@ test('adUrlKeys splits pipe-joined DCO destinations and dedupes', () => {
 // ── buildMetricsIndex ─────────────────────────────────────────────────────────
 
 const HEADER = ['network_normalized', 'offer', 'country', 'adtitle', 'campaign_target_url', 'revenue_prediction_finalized', 'click_count', 'RPC', 'top_10_keywords'];
-const row = (network, url, revenue, clicks, rpc, kw) => [network, 'Offer', 'US', 'title', url, revenue, clicks, rpc, kw];
+const row = (network, url, revenue, clicks, rpc, kw, country = 'US') => [network, 'Offer', country, 'title', url, revenue, clicks, rpc, kw];
 
 test('buildMetricsIndex keeps only facebook-rsoc rows', () => {
   const idx = buildMetricsIndex([
@@ -71,8 +71,8 @@ test('buildMetricsIndex keys rows by normalized URL and parses formatted numbers
 test('buildMetricsIndex aggregates duplicate URLs: sums + weighted RPC + top row keywords', () => {
   const idx = buildMetricsIndex([
     HEADER,
-    row('facebook-rsoc', 'https://a.com/x', '100', '50', '2', 'small row kws'),
-    row('facebook-rsoc', 'https://a.com/x?src=2', '300', '50', '6', 'big row kws'),
+    row('facebook-rsoc', 'https://a.com/x', '100', '50', '2', 'small row kws', 'MX'),
+    row('facebook-rsoc', 'https://a.com/x?src=2', '300', '50', '6', 'big row kws', 'ES'),
   ]);
   const m = idx.get('a.com/x');
   assert.equal(m.rows, 2);
@@ -80,6 +80,28 @@ test('buildMetricsIndex aggregates duplicate URLs: sums + weighted RPC + top row
   assert.equal(m.clicks, 100);
   assert.equal(m.rpc, 4);                    // 400 / 100, not an average of 2 and 6
   assert.equal(m.keywords, 'big row kws');   // from the higher-revenue row
+  assert.equal(m.geos, 'ES-75,MX-25');       // revenue share per country, biggest first
+});
+
+test('buildMetricsIndex GEOS matches the spec example (ES 90 / MX 10)', () => {
+  const idx = buildMetricsIndex([
+    HEADER,
+    row('facebook-rsoc', 'https://cueripple.com/es/articles/curso', '90', '10', '9', '', 'ES'),
+    row('facebook-rsoc', 'https://cueripple.com/es/articles/curso', '10', '5', '2', '', 'MX'),
+  ]);
+  assert.equal(idx.get('cueripple.com/es/articles/curso').geos, 'ES-90,MX-10');
+});
+
+test('buildMetricsIndex GEOS sums repeated countries and covers single-country URLs', () => {
+  const idx = buildMetricsIndex([
+    HEADER,
+    row('facebook-rsoc', 'https://a.com/x', '60', '1', '1', '', 'US'),
+    row('facebook-rsoc', 'https://a.com/x', '20', '1', '1', '', 'us'),   // same country, case-insensitive
+    row('facebook-rsoc', 'https://a.com/x', '20', '1', '1', '', 'GB'),
+    row('facebook-rsoc', 'https://b.com/y', '5', '1', '1', '', 'DE'),
+  ]);
+  assert.equal(idx.get('a.com/x').geos, 'US-80,GB-20');
+  assert.equal(idx.get('b.com/y').geos, 'DE-100');
 });
 
 test('buildMetricsIndex finds the revenue column by prefix when the exact header moved', () => {
@@ -95,6 +117,7 @@ test('buildMetricsIndex treats blanks as null, never zero', () => {
   assert.equal(m.revenue, null);
   assert.equal(m.clicks, null);
   assert.equal(m.rpc, null);
+  assert.equal(m.geos, null);   // no revenue anywhere -> no split to show
 });
 
 test('buildMetricsIndex yields an empty map for unusable input', () => {
@@ -118,6 +141,7 @@ test('attachSheetMetrics matches a TONIC RSOC ad whose link carries tracking par
   assert.equal(ads[0].sheet_revenue, 1500.5);
   assert.equal(ads[0].sheet_clicks, 300);
   assert.equal(ads[0].sheet_rpc, 5.0016);
+  assert.equal(ads[0].sheet_geos, 'US-100');
   assert.equal(ads[0].sheet_keywords, 'surplus, equipment');
 });
 

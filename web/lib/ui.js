@@ -148,6 +148,7 @@ export const SHEET_COLUMNS = [
   { key: 'revenue',   header: 'Revenue Prediction', kind: 'text', get: (a) => fmtDec(a.sheet_revenue),                              width: 110, align: 'RIGHT',  wrap: false },
   { key: 'clicks',    header: 'Clicks',           kind: 'text',  get: (a) => (a.sheet_clicks != null ? a.sheet_clicks : ''),        width: 70,  align: 'RIGHT',  wrap: false },
   { key: 'rpc',       header: 'RPC',              kind: 'text',  get: (a) => fmtDec(a.sheet_rpc),                                   width: 65,  align: 'RIGHT',  wrap: false },
+  { key: 'geos',      header: 'GEOS',             kind: 'text',  get: (a) => a.sheet_geos,                                          width: 130, align: 'LEFT',   wrap: false },
   { key: 'keywords',  header: 'Top Keywords',     kind: 'text',  get: (a) => a.sheet_keywords,                                      width: 260, align: 'LEFT',   wrap: true  },
   { key: 'format',    header: 'Format',           kind: 'text',  get: (a) => a.display_format,                                      width: 70,  align: 'CENTER', wrap: false },
   { key: 'rank',      header: 'Rank',             kind: 'text',  get: (a) => (a.rank != null ? a.rank : ''),                        width: 55,  align: 'CENTER', wrap: false },
