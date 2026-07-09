@@ -83,11 +83,12 @@ async function apiFail(res, action) {
   throw err;
 }
 
-// Quote a tab title for A1 notation. Bare word-titles pass through; anything with a
-// space or punctuation is single-quoted with internal quotes doubled.
-function a1Tab(title) {
-  const t = String(title);
-  return /^[A-Za-z0-9_]+$/.test(t) ? t : `'${t.replace(/'/g, "''")}'`;
+// Quote a tab title for A1 notation. Always quoted (with internal quotes
+// doubled): quoting is always legal, and an unquoted title that happens to look
+// like a cell reference (e.g. "DB2" = column DB, row 2) would be read as a cell
+// on the spreadsheet's first sheet instead of as a tab name.
+export function a1Tab(title) {
+  return `'${String(title).replace(/'/g, "''")}'`;
 }
 
 async function authed(token, url, init = {}) {
