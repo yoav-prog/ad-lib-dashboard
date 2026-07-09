@@ -3,7 +3,7 @@
 // exports must carry the watchable video link, not the poster image.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -50,6 +50,14 @@ test('isVideo detects by display_format or by the presence of a video url', () =
   assert.equal(isVideo(videoAd), true);
   assert.equal(isVideo({ video_hd_url: 'https://x.example/v.mp4' }), true);
   assert.equal(isVideo(imageAd), false);
+});
+
+test('hostOf extracts the bare lowercase host for the Review tab', () => {
+  assert.equal(hostOf('https://www.temu.com/motorcycle.com-box.html'), 'temu.com');
+  assert.equal(hostOf('HTTPS://Go.CastOfNotes.COM/x?y=1'), 'go.castofnotes.com');
+  assert.equal(hostOf('castofnotes.com/path'), 'castofnotes.com');
+  assert.equal(hostOf(''), '');
+  assert.equal(hostOf(null), '');
 });
 
 test('buildSheetData: the Media URL cell of a video row holds the video link', () => {
