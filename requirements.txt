@@ -5,7 +5,9 @@ Pillow
 google-auth
 google-api-python-client
 google-cloud-storage
-apify-client==3.0.4
+# 3.0.5 caps the actor-log stream's read timeout, fixing the crash that killed
+# live log forwarding mid-run (impit.TimeoutException in the _stream_log thread).
+apify-client==3.0.5
 scrapingbee
 
 # Supabase / Postgres access (transaction pooler). psycopg 3.x.

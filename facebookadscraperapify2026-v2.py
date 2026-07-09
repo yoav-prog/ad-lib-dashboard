@@ -1,6 +1,8 @@
 import os
+import sys
 import requests
 import json
+import logging
 import random
 import asyncio
 import aiohttp
@@ -835,6 +837,48 @@ def build_facebook_ads_library_url(query, country='ALL', active_status='active')
         f"&sort_data[mode]=total_impressions&sort_data[direction]=desc"
     )
 
+class _ActorLogHandler(logging.Handler):
+    """Write redirected actor-run log lines to the CURRENT sys.stdout/stderr,
+    resolved per record - so the lines flow into run_scrape's tees when those
+    are installed, and into the real console when running standalone. Warnings
+    and errors go to stderr; routine progress goes to stdout, which is what
+    keeps the dashboard from painting the whole actor log alarm-red."""
+
+    def emit(self, record):
+        try:
+            stream = sys.stderr if record.levelno >= logging.WARNING else sys.stdout
+            stream.write(self.format(record) + '\n')
+        except Exception:
+            pass  # a log line is never worth a crash
+
+
+def _get_actor_logger():
+    """Logger handed to ApifyClient.call() for the actor's redirected run log.
+
+    Replaces apify-client's default redirect logger, which writes everything to
+    stderr with ANSI colors - the dashboard log console would render that as a
+    wall of red error lines full of escape-code garbage. apify-client guesses
+    each line's level from its content, so genuine actor errors still arrive
+    at ERROR and show red; everything else arrives at INFO and shows gray.
+
+    Idempotent by construction: getLogger() returns a process-global object
+    that outlives this module (which run_scrape loads via spec/exec and could
+    re-exec), so any existing handlers are cleared before ours is attached -
+    the same reset pattern apify-client's own create_redirect_logger uses.
+    Guarantees exactly one output line per record no matter how many times
+    this runs. Cheap enough to rebuild per call.
+    """
+    logger = logging.getLogger('apify_actor_run')
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+    handler = _ActorLogHandler()
+    handler.setFormatter(logging.Formatter('[apify] %(message)s'))
+    logger.addHandler(handler)
+    return logger
+
+
 def fetch_facebook_ads_apify(params, resume_cursor=None):
     start_url = build_facebook_ads_library_url(
         query=params['query'], country=params['country'],
@@ -865,7 +909,8 @@ def fetch_facebook_ads_apify(params, resume_cursor=None):
     print(f"  🚀 Apify actor starting (maxItems={params['max_target_results']}"
           + (f", cursor=...{resume_cursor[-20:]}" if resume_cursor else "") + ")...")
     try:
-        run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input)
+        run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input,
+                                                logger=_get_actor_logger())
         if not run:
             return [], None
         # apify-client 3.x returns a Run model; convert to a camelCase dict so the

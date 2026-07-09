@@ -159,3 +159,29 @@ by the existing live-run observability instead).
   (connect/upsert). Deliberately not done: they are subsecond against the
   pooler and the 90s threshold leaves ample margin; threading them adds
   failure modes for no observed symptom.
+
+## Follow-up (same day): actor-log noise (branch clean-actor-log-noise)
+
+First live run after the merge surfaced a UX problem: the dashboard rendered
+the whole Apify actor log as red error lines full of ANSI escape garbage, and
+the user read a healthy run as "keep getting errors". Root cause (verified in
+apify-client source): call()'s default redirect logger writes everything to
+stderr through a color formatter, and our pipeline correctly levels stderr as
+'error'. Fixes:
+
+- Custom logger passed to call(): INFO -> stdout (gray), WARNING+ -> stderr
+  (red), short '[apify]' prefix, streams resolved per record so lines flow
+  into the tees. apify-client still infers each line's level from content, so
+  genuine actor errors stay red.
+- strip_ansi() at the run_logs write boundary alongside redact().
+- threading.excepthook wrapper: a dead _stream_log forwarding thread (seen
+  live: impit.TimeoutException) prints one calm line instead of a traceback;
+  all other threads keep default behavior. apify-client bumped 3.0.4 -> 3.0.5,
+  which caps that stream's read timeout.
+- 8 new tests (23 total): ANSI stripping, boundary cleaning, level routing,
+  per-record stream binding, excepthook scoping.
+
+Known cosmetic leftover, deliberately unfixed: the live panel's naive
+"Remaining" ETA does not know about the time budget, so on a big backlog it
+overestimates; the budget ends the run at 45m regardless. Revisit only if it
+keeps confusing people after the backlog drains.

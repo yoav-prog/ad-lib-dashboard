@@ -191,6 +191,29 @@ async def _run_heartbeat(run_id, logger, progress, stop_event, interval=2.0):
     await asyncio.to_thread(_flush_once, run_id, logger, progress)
 
 
+def _install_thread_excepthook():
+    """Replace a crashed apify log-forwarding thread's traceback with one calm line.
+
+    apify-client streams the actor's log in a helper thread that can die on a
+    stream timeout (seen live: impit.TimeoutException). That only stops live
+    actor-log forwarding for the current attempt - the scrape itself is
+    unaffected and forwarding resumes on the next actor call - so a 10-line
+    traceback in the run log is pure alarm noise. Every other thread keeps
+    Python's default excepthook behavior untouched.
+    """
+    default_hook = threading.excepthook
+
+    def hook(args):
+        if '_stream_log' in (getattr(args.thread, 'name', '') or ''):
+            name = getattr(args.exc_type, '__name__', 'error')
+            print(f'[apify] live actor-log stream dropped ({name}); '
+                  f'the scrape continues, forwarding resumes on the next actor call')
+            return
+        default_hook(args)
+
+    threading.excepthook = hook
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # GCS storage client (built from individual env vars, not a JSON file)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -469,6 +492,7 @@ async def run(args):
     tee_out = _Tee(sys.stdout, logger, 'info')
     tee_err = _Tee(sys.stderr, logger, 'error')
     sys.stdout, sys.stderr = tee_out, tee_err
+    _install_thread_excepthook()
     stop_event = asyncio.Event()
     hb_task = asyncio.create_task(_run_heartbeat(run_id, logger, progress, stop_event))
     try:
