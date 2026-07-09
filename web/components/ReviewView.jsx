@@ -6,6 +6,7 @@ import { A, MONO, firstUrl, hostOf, pad, relTime, fmtInt, fmtDec, filterReviewAd
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
+import GeoSplitCell from '@/components/GeoSplitCell';
 
 // The review queue: ads the scraper fetched for a tracked domain whose
 // destination does NOT point at that domain (the Ad Library keyword search
@@ -277,11 +278,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
                 </div>
               )}
               {cols.has('geos') && (
-                <CopyCell value={a.sheet_geos || ''} style={s('width:110px;flex-shrink:0;padding-left:16px;min-width:0')}>
-                  {a.sheet_geos
-                    ? <span title={a.sheet_geos} style={s(`font-family:${MONO};font-size:10.5px;color:#B6B9BE;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.sheet_geos}</span>
-                    : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
-                </CopyCell>
+                <GeoSplitCell ad={a} style={s('width:110px;flex-shrink:0;padding-left:16px;min-width:0')} />
               )}
               {cols.has('keywords') && (
                 <CopyCell value={a.sheet_keywords || ''} style={s('width:170px;flex-shrink:0;padding-left:16px;min-width:0')}>

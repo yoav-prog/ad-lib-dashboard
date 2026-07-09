@@ -81,6 +81,10 @@ test('buildMetricsIndex aggregates duplicate URLs: sums + weighted RPC + top row
   assert.equal(m.rpc, 4);                    // 400 / 100, not an average of 2 and 6
   assert.equal(m.keywords, 'big row kws');   // from the higher-revenue row
   assert.equal(m.geos, 'ES-75,MX-25');       // revenue share per country, biggest first
+  assert.deepEqual(m.geoSplit, [             // exact values behind the popup, same order
+    { country: 'ES', revenue: 300, share: 0.75 },
+    { country: 'MX', revenue: 100, share: 0.25 },
+  ]);
 });
 
 test('buildMetricsIndex GEOS matches the spec example (ES 90 / MX 10)', () => {
@@ -117,7 +121,8 @@ test('buildMetricsIndex treats blanks as null, never zero', () => {
   assert.equal(m.revenue, null);
   assert.equal(m.clicks, null);
   assert.equal(m.rpc, null);
-  assert.equal(m.geos, null);   // no revenue anywhere -> no split to show
+  assert.equal(m.geos, null);        // no revenue anywhere -> no split to show
+  assert.equal(m.geoSplit, null);
 });
 
 test('buildMetricsIndex yields an empty map for unusable input', () => {
@@ -142,6 +147,7 @@ test('attachSheetMetrics matches a TONIC RSOC ad whose link carries tracking par
   assert.equal(ads[0].sheet_clicks, 300);
   assert.equal(ads[0].sheet_rpc, 5.0016);
   assert.equal(ads[0].sheet_geos, 'US-100');
+  assert.deepEqual(ads[0].sheet_geo_split, [{ country: 'US', revenue: 1500.5, share: 1 }]);
   assert.equal(ads[0].sheet_keywords, 'surplus, equipment');
 });
 
@@ -173,6 +179,7 @@ test('attachSheetMetrics leaves unmatched and linkless ads with nulls', () => {
     assert.equal(a.sheet_revenue, null);
     assert.equal(a.sheet_clicks, null);
     assert.equal(a.sheet_rpc, null);
+    assert.equal(a.sheet_geo_split, null);
     assert.equal(a.sheet_keywords, null);
   }
 });

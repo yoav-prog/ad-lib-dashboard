@@ -40,6 +40,11 @@ top keywords). Bring four of those numbers into AdIntel next to each ad:
   (e.g. ES-90,MX-10). GEOS is revenue-only by design and deliberately
   independent of AdIntel's own Country column - it tells the reader where an
   article actually earns even when the scraped country guess was wrong.
+  Follow-ups the same day: a "GEOS (Earns In)" facet filter on Fresh Finds
+  (any-share match), and the GEOS cell is clickable - a popup shows the exact
+  revenue per country (bars scaled to the top earner, share percentages, and
+  the total), fed by sheet_geo_split so the numbers are exact rather than
+  back-computed from rounded percents.
 - The sheet is read live with a short server cache, not synced into Postgres.
   The metrics change in the sheet, ads keep no history, and a DB copy would
   need a migration plus a sync job for no read-path benefit at 500 rows.
