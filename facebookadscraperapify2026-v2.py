@@ -582,6 +582,24 @@ async def process_ad_media(ad, bucket, media_cache):
                         media_map[len(upload_tasks) - 1] = ('video', 'preview', video_counter)
                 video_counter += 1
 
+        # Facebook eventually stops serving the source URLs of older videos, so a
+        # re-scrape can see a VIDEO ad with only a preview image (or no video item
+        # at all). The loops above only consult storage when Apify hands them a
+        # URL, which would store the ad without the video we already own. Fall
+        # back to whatever slot 1 already holds before giving up.
+        planned = set(storage_checks) | set(media_map.values())
+        has_video = any(k[:2] == ('video', 'hd') for k in planned)
+        has_preview = any(k[:2] == ('video', 'preview') for k in planned)
+        if not has_video and (display_format == 'VIDEO' or has_preview):
+            ex = await check_media_exists_async(bucket, ad_archive_id, 'vid', 1)
+            if ex:
+                print(f"  ♻️  Recovered stored video for ad {ad_archive_id}")
+                storage_checks[('video', 'hd', 1)] = ex
+        if not has_preview and display_format == 'VIDEO':
+            ex = await check_media_exists_async(bucket, ad_archive_id, 'vidpreview', 1)
+            if ex:
+                storage_checks[('video', 'preview', 1)] = ex
+
         extra_img_counter = 1
         for img in snapshot.get('extra_images', []):
             url = img.get('original_image_url', '')
