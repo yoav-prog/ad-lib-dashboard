@@ -31,6 +31,30 @@ export function hostOf(url) {
   }
 }
 
+// Review-queue facets. The destination host doubles as a filter value, so ads
+// with no destination need a stable non-empty label to group and filter by.
+export const reviewDestOf = (ad) => hostOf(firstUrl(ad.link_url)) || '(no link)';
+export const reviewPageOf = (ad) => ad.page_name || '(unknown)';
+
+// The Review tab's combined filter: facet selections (searched domain,
+// destination host, page) AND every search token must match. Pure so the
+// "select all -> bulk reject" flow can be tested without a browser.
+export function filterReviewAds(ads, query, filters = {}) {
+  const tokens = String(query || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const { domain = [], dest = [], page = [] } = filters;
+  return ads.filter((a) => {
+    if (domain.length && !domain.includes(a.domain)) return false;
+    if (dest.length && !dest.includes(reviewDestOf(a))) return false;
+    if (page.length && !page.includes(reviewPageOf(a))) return false;
+    if (tokens.length) {
+      const hay = [a.page_name, a.domain, a.title, a.caption, a.body_text, a.link_url]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!tokens.every((t) => hay.includes(t))) return false;
+    }
+    return true;
+  });
+}
+
 // The Tarzo feed only. Their landing pages look like
 // https://<domain>/dcg/<id>/<slug>?<params>; pull just the readable <slug>,
 // keyed off the /dcg/<id>/ path so it works for any Tarzo domain. Returns ''

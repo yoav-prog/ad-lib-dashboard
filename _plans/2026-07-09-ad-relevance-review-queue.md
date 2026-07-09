@@ -123,6 +123,15 @@ domains table later.
 - db invariants: review_status in AD_COLUMNS, not in _UPDATE_COLUMNS.
 - Full pytest suite + web `npm test` green before done.
 
+## Addendum (2026-07-09, after first production triage)
+
+Shipped and backfilled: 6,081 rows checked, 592 moved to pending. The team
+asked for bulk-triage tooling in the Review tab, so it gained a facet rail
+(Searched Domain / Leads To / Page, with per-facet search above 6 options),
+sort (newest, page, domain, leads-to), and select-all scoped to the filtered
+slice - so "every ad leading to alibaba.com -> reject" is three clicks. The
+filter logic lives in lib/ui.js (filterReviewAds) as a pure tested function.
+
 ## Deploy / rollout
 
 1. Merge via PR into main (normal flow; no direct pushes).

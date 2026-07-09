@@ -3,7 +3,7 @@
 // exports must carry the watchable video link, not the poster image.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -58,6 +58,38 @@ test('hostOf extracts the bare lowercase host for the Review tab', () => {
   assert.equal(hostOf('castofnotes.com/path'), 'castofnotes.com');
   assert.equal(hostOf(''), '');
   assert.equal(hostOf(null), '');
+});
+
+// Review-queue triage: the facet filter must slice exactly the rows the bulk
+// buttons will decide on (e.g. every ad that leads to alibaba.com -> reject).
+const reviewAds = [
+  { ad_archive_id: 'r1', domain: 'brim-b.com', page_name: 'Alibaba.com', title: 'Custom caps', link_url: 'https://www.alibaba.com/x | https://www.alibaba.com/y' },
+  { ad_archive_id: 'r2', domain: 'tractor.com', page_name: 'Flipkart', title: 'Hydraulic jack', link_url: 'https://www.flipkart.com/z' },
+  { ad_archive_id: 'r3', domain: 'motorcycle.com', page_name: 'Devine Studio', title: 'Chat with us', link_url: '' },
+];
+
+test('reviewDestOf yields the first destination host, with a label for linkless ads', () => {
+  assert.equal(reviewDestOf(reviewAds[0]), 'alibaba.com');
+  assert.equal(reviewDestOf(reviewAds[2]), '(no link)');
+});
+
+test('filterReviewAds slices by destination host facet', () => {
+  const out = filterReviewAds(reviewAds, '', { dest: ['alibaba.com'] });
+  assert.deepEqual(out.map((a) => a.ad_archive_id), ['r1']);
+});
+
+test('filterReviewAds combines facets and search tokens (all must match)', () => {
+  assert.deepEqual(filterReviewAds(reviewAds, 'jack', { domain: ['tractor.com'] }).map((a) => a.ad_archive_id), ['r2']);
+  assert.deepEqual(filterReviewAds(reviewAds, 'jack', { domain: ['brim-b.com'] }), []);
+});
+
+test('filterReviewAds with no query and no facets returns everything', () => {
+  assert.equal(filterReviewAds(reviewAds, '', {}).length, 3);
+  assert.equal(filterReviewAds(reviewAds, '  ', undefined).length, 3);
+});
+
+test('filterReviewAds matches the (no link) facet for linkless ads', () => {
+  assert.deepEqual(filterReviewAds(reviewAds, '', { dest: ['(no link)'] }).map((a) => a.ad_archive_id), ['r3']);
 });
 
 test('buildSheetData: the Media URL cell of a video row holds the video link', () => {
