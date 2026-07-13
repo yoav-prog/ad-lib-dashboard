@@ -203,9 +203,37 @@ export async function readSheetTab({ spreadsheetId, tabName }, nowMs) {
   return readRows(token, spreadsheetId, tabName);
 }
 
+// Google recommends keeping a single Sheets request near 2 MB and times a request out
+// after 180 s of processing, so a very large export is written as a sequence of
+// requests rather than one. This many data rows per write keeps a normal-size export a
+// single (atomic) request exactly as before, and splits only genuinely large ones.
+const ROWS_PER_WRITE = 5000;
+
+// Write `rowData` (header + data rows, already built) to the sheet in chunks, then run
+// the `trailing` requests (formatting, leftover-row clears) once the data has landed.
+// `makeReq(part, startRow)` builds the write request for one chunk. When everything
+// fits a single chunk, the data and trailing requests ride in one batchUpdate, so a
+// typical export stays one atomic write; only oversized exports split (trading that
+// all-or-nothing guarantee for the ability to write an unbounded number of rows).
+async function writeInChunks(token, spreadsheetId, rowData, makeReq, trailing) {
+  const parts = [];
+  for (let i = 0; i < rowData.length; i += ROWS_PER_WRITE) parts.push(rowData.slice(i, i + ROWS_PER_WRITE));
+  if (parts.length <= 1) {
+    await batchUpdate(token, spreadsheetId, [makeReq(parts[0] || [], 0), ...trailing]);
+    return;
+  }
+  let start = 0;
+  for (const part of parts) {
+    await batchUpdate(token, spreadsheetId, [makeReq(part, start)]);
+    start += part.length;
+  }
+  await batchUpdate(token, spreadsheetId, trailing);
+}
+
 // Write the selected columns for `rows` to the named sheet/tab and re-apply the full
 // formatting; the tab is created if missing. `columns` and `rows` come from
-// ui.buildSheetData. Two modes:
+// ui.buildSheetData. A large export is split into multiple Sheets requests (see
+// writeInChunks). Two modes:
 //   append  (default) - add rows, skipping any already present (matched by the Ad ID
 //                       column when it is included); the header is written only when
 //                       the tab is empty.
@@ -233,22 +261,29 @@ export async function writeToSheet({ spreadsheetId, tabName, columns, rows, mode
 
   if (mode === 'replace') {
     // Overwrite from the top with header + every row and clear any leftover cells
-    // (rows/columns the previous, larger export left behind) in one write.
+    // (rows/columns the previous, larger export left behind).
     const allRows = [headerData(columns), ...rows.map(dataRowData)];
     const totalRows = allRows.length;
     const oldColMax = existing.reduce((m, r) => Math.max(m, r.length), 0);
     const clearRows = Math.max(oldRows, totalRows);
     const clearCols = Math.max(columns.length, oldColMax);
-    const requests = [
-      { updateCells: { range: rng(sheet.sheetId, 0, clearRows, 0, clearCols), rows: allRows, fields: 'userEnteredValue' } },
-      ...formatRequests(sheet.sheetId, columns, totalRows, oldBandingIds),
-    ];
-    // Rows that used to hold data but now do not keep their tall preview height; reset.
+    // Size the grid once to fit both the new data and anything being cleared, since
+    // updateCells (unlike appendCells) never auto-grows the sheet.
+    const gridReqs = [];
+    ensureGrid(clearCols, clearRows, gridReqs);
+    if (gridReqs.length) await batchUpdate(token, spreadsheetId, gridReqs);
+    // After the data lands: re-apply the look, then clear any trailing rows the old,
+    // larger export left behind and reset their tall preview height.
+    const trailing = [...formatRequests(sheet.sheetId, columns, totalRows, oldBandingIds)];
     if (oldRows > totalRows) {
-      requests.push({ updateDimensionProperties: { range: { sheetId: sheet.sheetId, dimension: 'ROWS', startIndex: totalRows, endIndex: oldRows }, properties: { pixelSize: 21 }, fields: 'pixelSize' } });
+      trailing.push(
+        { updateCells: { range: rng(sheet.sheetId, totalRows, oldRows, 0, clearCols), fields: 'userEnteredValue' } },
+        { updateDimensionProperties: { range: { sheetId: sheet.sheetId, dimension: 'ROWS', startIndex: totalRows, endIndex: oldRows }, properties: { pixelSize: 21 }, fields: 'pixelSize' } },
+      );
     }
-    ensureGrid(clearCols, clearRows, requests);
-    await batchUpdate(token, spreadsheetId, requests);
+    await writeInChunks(token, spreadsheetId, allRows, (part, start) => (
+      { updateCells: { range: rng(sheet.sheetId, start, start + part.length, 0, clearCols), rows: part, fields: 'userEnteredValue' } }
+    ), trailing);
     return { mode: 'replace', appended: rows.length, cleared: oldRows > 0 ? oldRows - 1 : 0, created };
   }
 
@@ -268,11 +303,12 @@ export async function writeToSheet({ spreadsheetId, tabName, columns, rows, mode
   const dataRows = fresh.map(dataRowData);
   const toAppend = hasHeader ? dataRows : [headerData(columns), ...dataRows];
   const totalRows = oldRows + toAppend.length;
-  const requests = [
-    { appendCells: { sheetId: sheet.sheetId, rows: toAppend, fields: 'userEnteredValue' } },
-    ...formatRequests(sheet.sheetId, columns, totalRows, oldBandingIds),
-  ];
-  ensureGrid(columns.length, 0, requests);
-  await batchUpdate(token, spreadsheetId, requests);
+  // Grow columns once up front; appendCells auto-grows rows as it writes.
+  const gridReqs = [];
+  ensureGrid(columns.length, 0, gridReqs);
+  if (gridReqs.length) await batchUpdate(token, spreadsheetId, gridReqs);
+  await writeInChunks(token, spreadsheetId, toAppend, (part) => (
+    { appendCells: { sheetId: sheet.sheetId, rows: part, fields: 'userEnteredValue' } }
+  ), formatRequests(sheet.sheetId, columns, totalRows, oldBandingIds));
   return { mode: 'append', appended: fresh.length, skipped: rows.length - fresh.length, created, wroteHeader: !hasHeader };
 }

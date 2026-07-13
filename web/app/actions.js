@@ -399,13 +399,15 @@ export async function refreshMetrics() {
 }
 
 // Push the current Fresh Finds view to a Google Sheet the caller names by id + tab,
-// exporting only the columns they picked. The client sends only the on-screen ad ids
-// and the chosen column keys; the rows are re-read from the DB here so the payload is
-// small and the exported data is server-authoritative. New rows are appended and ones
-// already in the tab (matched by Ad ID, when that column is included) are skipped.
-// Auth is the project's existing service account (see lib/sheets). Returns a summary,
-// or an { ok:false } with a reason the modal turns into a clear message. Capped at
-// 1000 ids so one call can never smuggle in an unbounded list.
+// exporting only the columns they picked. The client sends the ad ids for the whole
+// filtered view and the chosen column keys; the rows are re-read from the DB here so
+// the payload is small and the exported data is server-authoritative. New rows are
+// appended and ones already in the tab (matched by Ad ID, when that column is included)
+// are skipped. Auth is the project's existing service account (see lib/sheets). Returns
+// a summary, or an { ok:false } with a reason the modal turns into a clear message.
+// No row cap: the entire filtered view exports (deduped by id). The request-body limit
+// in next.config bounds the raw id payload, and lib/sheets chunks the write so a large
+// export never rides in one oversized Sheets request.
 const SHEET_ID_RE = /^[a-zA-Z0-9-_]{20,}$/;
 
 export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys, mode } = {}) {
@@ -424,7 +426,7 @@ export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys,
   if (Array.isArray(columnKeys) && !keys.length) return { ok: false, reason: 'no-columns', saEmail };
   const writeMode = mode === 'replace' ? 'replace' : 'append';
 
-  const ids = [...new Set(adIds.map(String))].slice(0, 1000);
+  const ids = [...new Set(adIds.map(String))];
   const rows0 = await getAdsByIds(ids);
   if (!rows0.length) return { ok: false, reason: 'no-rows', saEmail };
   // The DB rows carry no campaign metrics; re-attach them here so the exported
