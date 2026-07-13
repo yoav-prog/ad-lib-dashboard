@@ -27,6 +27,7 @@ function mapAd(r) {
     start_date: iso(r.start_date),
     total_active_time: r.total_active_time,
     article_title: r.article_title,
+    resolved_url: r.resolved_url,
     article_content: r.article_content ?? null,
     has_article: r.has_article ?? (r.article_content != null && r.article_content !== ''),
     rank: r.rank,
@@ -54,7 +55,7 @@ const FEED_COLUMNS = [
   'body_text', 'cta_type', 'title', 'link_description', 'link_url', 'display_format',
   'extra_texts', 'original_image_urls', 'video_hd_url', 'video_preview_url',
   'extra_image_urls', 'extra_video_urls', 'publisher_platform', 'start_date',
-  'total_active_time', 'article_title', 'rank', 'language', 'country', 'vertical',
+  'total_active_time', 'article_title', 'resolved_url', 'rank', 'language', 'country', 'vertical',
   'first_seen_at', 'last_seen_at', 'status', 'owner', 'linked_article_url',
   'is_saved', 'tags', 'notes', 'review_status',
 ];

@@ -319,9 +319,16 @@ async def gpt_detect_vertical(session, article_title, body_text, article_content
 # SCRAPINGBEE ARTICLE SCRAPING  (async wrapper with semaphore)
 # ═════════════════════════════════════════════════════════════════════════════
 def _scrape_article_sync(url):
-    """Sync ScrapingBee call — run in thread executor."""
+    """Sync ScrapingBee call — run in thread executor.
+
+    Returns (title, body, resolved_url). resolved_url is the final URL after any
+    redirects (ScrapingBee's Spb-Resolved-Url header): the raw link_url may be a
+    tracker that 302s to the real landing page, and the post-redirect URL carries
+    signal the tracker hides (e.g. the Predicto feed's ?search= phrase). Empty
+    string on any path that yields no page.
+    """
     if not url or not url.startswith('http'):
-        return '', ''
+        return '', '', ''
     try:
         client = ScrapingBeeClient(api_key=SCRAPINGBEE_API_KEY)
         response = client.get(url, params={
@@ -330,12 +337,15 @@ def _scrape_article_sync(url):
             'block_resources': True,
             'timeout': 30000,
         })
+        # response.headers is case-insensitive; falls back to the requested URL
+        # when no redirect occurred (or the header is absent).
+        resolved_url = response.headers.get('Spb-Resolved-Url') or url
         if not response.ok:
             print(f"  ⚠️  ScrapingBee {response.status_code} for {url}")
-            return '', ''
+            return '', '', resolved_url
         markdown_content = response.text.strip()
         if not markdown_content:
-            return '', ''
+            return '', '', resolved_url
         title = ''
         body_lines = []
         title_found = False
@@ -348,14 +358,16 @@ def _scrape_article_sync(url):
                 body_lines.append(line)
         return (
             truncate_cell_content(title, max_length=500),
-            truncate_cell_content('\n'.join(body_lines).strip())
+            truncate_cell_content('\n'.join(body_lines).strip()),
+            resolved_url,
         )
     except Exception as e:
         print(f"  ⚠️  ScrapingBee error for {url}: {e}")
-        return '', ''
+        return '', '', ''
 
 async def scrape_article_async(url):
-    """Non-blocking ScrapingBee scrape with concurrency limit."""
+    """Non-blocking ScrapingBee scrape with concurrency limit.
+    Returns (title, body, resolved_url) — see _scrape_article_sync."""
     async with SCRAPING_SEMAPHORE:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _scrape_article_sync, url)
@@ -1125,7 +1137,7 @@ async def process_single_ad(ad, rank, bucket, media_cache, reference_data,
     article_title, article_content = '', ''
     if link_url:
         print(f"  [{ad_id}] 🌐 Scraping: {link_url[:70]}...")
-        article_title, article_content = await scrape_article_async(link_url)
+        article_title, article_content, _ = await scrape_article_async(link_url)
         if article_title:
             print(f"  [{ad_id}] 📰 '{article_title[:50]}' ({len(article_content)} chars)")
 

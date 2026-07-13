@@ -3,7 +3,7 @@
 // exports must carry the watchable video link, not the poster image.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -187,4 +187,63 @@ test('sanitizeColumnKeys returns null for unusable stored values', () => {
   assert.equal(sanitizeColumnKeys(null, pickerDefs), null);
   assert.equal(sanitizeColumnKeys('a,b', pickerDefs), null);
   assert.equal(sanitizeColumnKeys(undefined, pickerDefs), null);
+});
+
+// Predicto feed: the searched phrase is pulled from the landing link. Format A
+// (direct) has ?search= in link_url; Format B (a 302 tracker) only exposes it in
+// the post-redirect resolved_url the scraper stores. Real examples from the wild.
+const predictoDirect = {
+  ad_archive_id: 'p-a', feed: 'Predicto',
+  link_url: 'https://tunefulsoul.com/asrsearch?search=understanding-bladder-cancer-surgery-a-comprehensive-guide-to-the-procedure-and-recovery-process-c29903&trackingId=38523',
+  resolved_url: null,
+};
+const predictoRedirect = {
+  ad_archive_id: 'p-b', feed: 'Predicto',
+  link_url: 'https://wildflares.com/teleport?dspAdId=%7B%7Bad.id%7D%7D&dspName=facebook',
+  resolved_url: 'https://searchpredictor.com/asrsearch/?search=Startup+Grants+Guide+2026+en&source=facebook&lang=en',
+};
+
+test('predictoQuery: direct format keeps the hyphen slug and strips the -cNNNNN id', () => {
+  assert.equal(predictoQuery(predictoDirect),
+    'understanding-bladder-cancer-surgery-a-comprehensive-guide-to-the-procedure-and-recovery-process');
+});
+
+test('predictoQuery: redirect format reads the phrase from resolved_url, + as spaces', () => {
+  assert.equal(predictoQuery(predictoRedirect), 'Startup Grants Guide 2026 en');
+});
+
+test('predictoQuery: resolved_url wins over link_url when both carry a search param', () => {
+  const ad = { feed: 'predicto', link_url: 'https://x.com/asrsearch?search=old-slug', resolved_url: 'https://searchpredictor.com/asrsearch/?search=New+Phrase' };
+  assert.equal(predictoQuery(ad), 'New Phrase');
+});
+
+test('predictoQuery: uses the first destination of a DCO pipe-joined link_url', () => {
+  const ad = { feed: 'Predicto', link_url: 'https://tunefulsoul.com/asrsearch?search=first-one-c11 | https://tunefulsoul.com/asrsearch?search=second-two-c22' };
+  assert.equal(predictoQuery(ad), 'first-one');
+});
+
+test('predictoQuery: blank (never a guess) when a Predicto link exposes no phrase', () => {
+  // Format B not yet backfilled: the tracker link has no ?search= and resolved_url is empty.
+  assert.equal(predictoQuery({ feed: 'Predicto', link_url: 'https://wildflares.com/teleport?dspName=facebook', resolved_url: '' }), '');
+  assert.equal(predictoQuery({ feed: 'Predicto', link_url: 'not a url', resolved_url: null }), '');
+  assert.equal(predictoQuery({ feed: 'Predicto', link_url: '', resolved_url: '' }), '');
+});
+
+test('predictoQuery: only the Predicto feed gets a query (gated by feed, case-insensitive)', () => {
+  assert.equal(isPredicto({ feed: 'Predicto' }), true);
+  assert.equal(isPredicto({ feed: 'Tarzo' }), false);
+  // A non-Predicto ad with a coincidental search param stays blank.
+  assert.equal(predictoQuery({ feed: 'Tarzo', link_url: 'https://x.com/y?search=nope' }), '');
+});
+
+test('the Search Query column flows through buildSheetData and buildCsv', () => {
+  const { columns, rows } = buildSheetData([predictoDirect, imageAd], NOW, ['query']);
+  assert.deepEqual(columns.map((c) => c.header), ['Search Query']);
+  assert.equal(rows[0].cells[0].value,
+    'understanding-bladder-cancer-surgery-a-comprehensive-guide-to-the-procedure-and-recovery-process');
+  assert.equal(rows[1].cells[0].value, ''); // non-Predicto ad -> empty cell
+
+  const [header, row] = buildCsv([predictoRedirect], NOW).split('\r\n');
+  assert.ok(header.includes('"Search Query"'));
+  assert.ok(row.includes('"Startup Grants Guide 2026 en"'));
 });

@@ -35,7 +35,7 @@ AD_COLUMNS = [
     'original_image_urls', 'video_hd_url', 'video_preview_url',
     'extra_image_urls', 'extra_video_urls',
     'publisher_platform', 'start_date', 'total_active_time',
-    'article_title', 'article_content', 'rank',
+    'article_title', 'article_content', 'resolved_url', 'rank',
     'language', 'country', 'vertical', 'review_status',
 ]
 

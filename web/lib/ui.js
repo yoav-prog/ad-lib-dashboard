@@ -65,6 +65,37 @@ export function tarzoSlug(ad) {
   return m ? m[1] : '';
 }
 
+// The Predicto feed only. Their landing links carry the searched phrase in a
+// `search` query param — either directly (…/asrsearch?search=<slug>-c29903&…) or
+// behind a server 302 to searchpredictor.com (…/teleport -> …/asrsearch/?search=
+// Some+Words). The scraper stores the post-redirect URL in resolved_url; we read
+// `search` from there and fall back to the raw link_url for the direct format.
+export const isPredicto = (ad) => (ad.feed || '').toLowerCase() === 'predicto';
+
+// The decoded `search` query param of a URL ('' when absent or unparseable).
+// URLSearchParams turns '+' into a space and undoes %xx, so Format B's
+// "Startup+Grants+Guide+2026+en" reads clean while Format A's hyphen slug stays
+// hyphenated.
+function searchParam(url) {
+  const t = String(url || '').trim();
+  if (!t) return '';
+  try {
+    return new URL(t.includes('://') ? t : `https://${t}`).searchParams.get('search') || '';
+  } catch {
+    return '';
+  }
+}
+
+// The clean searched phrase for a Predicto ad ('' for any other feed, or when
+// nothing resolves — never a guess). Drops a trailing content id like "-c29903"
+// and collapses whitespace; casing and interior hyphens are left as the user
+// asked (A stays a slug, B reads as words).
+export function predictoQuery(ad) {
+  if (!isPredicto(ad)) return '';
+  const raw = searchParam(ad.resolved_url) || searchParam(firstUrl(ad.link_url));
+  return raw.replace(/-c\d+$/i, '').replace(/\s+/g, ' ').trim();
+}
+
 export const titleCase = (v) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v);
 export const pad = (n, w = 2) => String(n).padStart(w, '0');
 
@@ -145,6 +176,7 @@ export const SHEET_COLUMNS = [
   { key: 'cta',       header: 'CTA',              kind: 'text',  get: (a) => a.cta_text,                                            width: 90,  align: 'LEFT',   wrap: false },
   { key: 'link',      header: 'Link',             kind: 'text',  get: (a) => a.link_url,                                            width: 170, align: 'LEFT',   wrap: false },
   { key: 'slug',      header: 'Slug',             kind: 'text',  get: (a) => tarzoSlug(a),                                          width: 150, align: 'LEFT',   wrap: false },
+  { key: 'query',     header: 'Search Query',     kind: 'text',  get: (a) => predictoQuery(a),                                      width: 260, align: 'LEFT',   wrap: true  },
   { key: 'revenue',   header: 'Revenue Prediction', kind: 'text', get: (a) => fmtDec(a.sheet_revenue),                              width: 110, align: 'RIGHT',  wrap: false },
   { key: 'clicks',    header: 'Clicks',           kind: 'text',  get: (a) => (a.sheet_clicks != null ? a.sheet_clicks : ''),        width: 70,  align: 'RIGHT',  wrap: false },
   { key: 'rpc',       header: 'RPC',              kind: 'text',  get: (a) => fmtDec(a.sheet_rpc),                                   width: 65,  align: 'RIGHT',  wrap: false },

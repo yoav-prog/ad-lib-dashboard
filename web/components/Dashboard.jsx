@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, isPredicto, predictoQuery, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
@@ -550,13 +550,15 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
   const pages = pageCount(filtered.length, pageSize);
   const range = pageRange(filtered.length, page, pageSize);
 
-  // The Slug column is Tarzo-only, so it rides along only while the current view
-  // actually contains a Tarzo row; the table widens to make room when it does.
-  // Enlarging the thumbnail widens the table by the same delta so nothing crushes.
-  // 294 covers the structural parts (row padding, select box, Headline's share);
-  // the rest is the sum of whichever columns are actually visible.
+  // Slug (Tarzo) and Search Query (Predicto) are feed-specific: each rides along
+  // only while the current view actually contains a row of that feed, and the
+  // table widens to make room when it does. Enlarging the thumbnail widens the
+  // table by the same delta so nothing crushes. 294 covers the structural parts
+  // (row padding, select box, Headline's share); the rest is the sum of whichever
+  // columns are actually visible.
   const showSlug = filtered.some(isTarzo);
-  const tableMinW = 294 + thumbColW + (showSlug ? 150 : 0)
+  const showQuery = filtered.some(isPredicto);
+  const tableMinW = 294 + thumbColW + (showSlug ? 150 : 0) + (showQuery ? 240 : 0)
     + FRESH_COLS.reduce((n, c) => n + (cols.has(c.key) ? c.w : 0), 0);
   const [gsearch, setGsearch] = useState({});
   const uniq = (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
@@ -791,6 +793,7 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
             <div style={s('flex:1;min-width:0')}>Headline</div>
             {cols.has('url') && <div style={s('width:168px;flex-shrink:0')}>URL</div>}
             {showSlug && <div style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
+            {showQuery && <div title="The searched phrase from the Predicto landing link" style={s('width:240px;flex-shrink:0;padding-left:16px')}>Search Query</div>}
             {cols.has('revenue') && <div title="Revenue prediction from the campaign metrics sheet" style={s('width:96px;flex-shrink:0;text-align:right')}>Rev. Predict</div>}
             {cols.has('clicks') && <div style={s('width:76px;flex-shrink:0;text-align:right')}>Clicks</div>}
             {cols.has('rpc') && <div title="Revenue per click" style={s('width:60px;flex-shrink:0;text-align:right')}>RPC</div>}
@@ -815,6 +818,7 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
             const vid = isVideo(a);
             const url = firstUrl(a.link_url);
             const slug = showSlug ? tarzoSlug(a) : '';
+            const query = showQuery ? predictoQuery(a) : '';
             return (
               <div key={a.ad_archive_id} onClick={() => openDetail(a.ad_archive_id)} onMouseEnter={() => setSelIndex(i)}
                 style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:${tableMinW}px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : (sel ? 'rgba(232,163,61,.05)' : 'transparent')};cursor:pointer`)}>
@@ -854,6 +858,13 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                   <CopyCell value={slug} style={s('width:150px;flex-shrink:0;padding-left:16px;min-width:0')}>
                     {slug
                       ? <span title={slug} style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{slug}</span>
+                      : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
+                  </CopyCell>
+                )}
+                {showQuery && (
+                  <CopyCell value={query} style={s('width:240px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                    {query
+                      ? <span title={query} style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{query}</span>
                       : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
                   </CopyCell>
                 )}
@@ -1189,6 +1200,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
   const src = thumbOf(ad);
   const fresh = lastRunStart ? new Date(ad.last_seen_at || ad.first_seen_at).getTime() >= lastRunStart : hoursSince(ad.last_seen_at || ad.first_seen_at, NOW) <= 24;
   const slug = tarzoSlug(ad);
+  const query = predictoQuery(ad);
   const statuses = ['idea', 'drafting', 'published'];
   const owners = ['Mara K.', 'Devin R.', 'Priya S.', 'Ari L.'];
 
@@ -1302,6 +1314,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
               <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>CTA_TYPE &middot; {ad.cta_type || '-'}</span>
               {ad.link_url && <a href={ad.link_url.split(' | ')[0]} target="_blank" rel="noreferrer" style={s(`font-family:${MONO};font-size:11px;color:#E8A33D;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px`)}>{ad.link_url} &#8599;</a>}
               {isTarzo(ad) && slug && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>SLUG &middot; <span style={s('color:#C6C9CE')}>{slug}</span></span>}
+              {isPredicto(ad) && query && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>SEARCH &middot; <span style={s('color:#C6C9CE')}>{query}</span></span>}
             </div>
           </div>
 

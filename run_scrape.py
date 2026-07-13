@@ -237,8 +237,8 @@ def get_bucket():
 # ═════════════════════════════════════════════════════════════════════════════
 # Ad -> database row
 # ═════════════════════════════════════════════════════════════════════════════
-def build_ad_dict(ad, media, article_title, article_content, rank, feed, domain,
-                  language, country, vertical, review_status='approved'):
+def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
+                  feed, domain, language, country, vertical, review_status='approved'):
     """Map a raw Apify ad + enrichment + media to a db.AD_COLUMNS dict."""
     snapshot = ad.get('snapshot', {})
     body = snapshot.get('body', {})
@@ -299,6 +299,7 @@ def build_ad_dict(ad, media, article_title, article_content, rank, feed, domain,
         'total_active_time': str(ad.get('total_active_time', '')),
         'article_title': article_title,
         'article_content': article_content,
+        'resolved_url': resolved_url,
         'rank': rank,
         'language': language,
         'country': country,
@@ -324,9 +325,9 @@ async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session,
     # Pending ads (destination does not match the domain) skip the paid article
     # scrape - a junk landing page is not worth a ScrapingBee call. Media still
     # uploads so the Review tab has thumbnails after the FB CDN links expire.
-    article_title, article_content = '', ''
+    article_title, article_content, resolved_url = '', '', ''
     if link_url and review_status == 'approved':
-        article_title, article_content = await fb.scrape_article_async(link_url)
+        article_title, article_content, resolved_url = await fb.scrape_article_async(link_url)
 
     language, country, vertical = await asyncio.gather(
         # Language from the ad's OWN copy, never the (often English) landing page.
@@ -337,7 +338,7 @@ async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session,
 
     media = await fb.process_ad_media(ad, bucket, {}) if bucket is not None else dict(_EMPTY_MEDIA)
 
-    return build_ad_dict(ad, media, article_title, article_content, rank,
+    return build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
                          feed, domain, language, country, vertical, review_status)
 
 
