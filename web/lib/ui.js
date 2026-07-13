@@ -87,13 +87,17 @@ function searchParam(url) {
 }
 
 // The clean searched phrase for a Predicto ad ('' for any other feed, or when
-// nothing resolves — never a guess). Drops a trailing content id like "-c29903"
-// and collapses whitespace; casing and interior hyphens are left as the user
-// asked (A stays a slug, B reads as words).
+// nothing resolves — never a guess). Drops the trailing 6-hex tracking id these
+// links carry (-7a075c, -c29903, -e4dc10, -04a1b6); casing and interior hyphens
+// are left as the user asked (A stays a slug, B reads as words). The digit guard
+// leaves real all-letter words alone (…-decade, …-facade); every real id in the
+// data carries at least one digit, and the fixed 6-char length spares years
+// like …-2026. A shorter/longer id (rare) simply stays visible rather than risk
+// eating a real word.
 export function predictoQuery(ad) {
   if (!isPredicto(ad)) return '';
   const raw = searchParam(ad.resolved_url) || searchParam(firstUrl(ad.link_url));
-  return raw.replace(/-c\d+$/i, '').replace(/\s+/g, ' ').trim();
+  return raw.replace(/-[0-9a-f]{6}$/i, (m) => (/\d/.test(m) ? '' : m)).replace(/\s+/g, ' ').trim();
 }
 
 export const titleCase = (v) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v);

@@ -203,9 +203,31 @@ const predictoRedirect = {
   resolved_url: 'https://searchpredictor.com/asrsearch/?search=Startup+Grants+Guide+2026+en&source=facebook&lang=en',
 };
 
-test('predictoQuery: direct format keeps the hyphen slug and strips the -cNNNNN id', () => {
+test('predictoQuery: direct format keeps the hyphen slug and strips the 6-hex id', () => {
   assert.equal(predictoQuery(predictoDirect),
     'understanding-bladder-cancer-surgery-a-comprehensive-guide-to-the-procedure-and-recovery-process');
+});
+
+// The trailing tracking id is a 6-char hex string with at least one digit (real
+// values from the data). Strip those; leave everything else, including short
+// ids, years, and real all-letter words that happen to be hex.
+test('predictoQuery: strips assorted real 6-hex ids, keeps meaningful hyphen parts', () => {
+  const q = (search) => predictoQuery({ feed: 'Predicto', link_url: `https://tunefulsoul.com/asrsearch?search=${search}` });
+  assert.equal(q('wear-perfume-7a075c'), 'wear-perfume');
+  assert.equal(q('family-meals-cf4572'), 'family-meals');
+  assert.equal(q('hairstyles-e4dc10'), 'hairstyles');
+  assert.equal(q('broadband-internet-d87a56'), 'broadband-internet');
+  assert.equal(q('plastic-solutions-494e69'), 'plastic-solutions');
+  // Keeps a meaningful hex-looking segment that is not the trailing id (chevy c10).
+  assert.equal(q('the-ultimate-buyers-guide-to-the-classic-chevy-c10-e672e2'),
+    'the-ultimate-buyers-guide-to-the-classic-chevy-c10');
+});
+
+test('predictoQuery: does NOT strip all-letter hex words, years, or non-6-char ids', () => {
+  const q = (search) => predictoQuery({ feed: 'Predicto', link_url: `https://tunefulsoul.com/asrsearch?search=${search}` });
+  assert.equal(q('the-lost-decade'), 'the-lost-decade');      // 'decade' is 6 hex but all letters, no digit
+  assert.equal(q('best-cars-of-2026'), 'best-cars-of-2026');  // '2026' is only 4 chars
+  assert.equal(q('debt-lawyer-no-en-69ff'), 'debt-lawyer-no-en-69ff'); // '69ff' is only 4 chars
 });
 
 test('predictoQuery: redirect format reads the phrase from resolved_url, + as spaces', () => {
@@ -218,7 +240,7 @@ test('predictoQuery: resolved_url wins over link_url when both carry a search pa
 });
 
 test('predictoQuery: uses the first destination of a DCO pipe-joined link_url', () => {
-  const ad = { feed: 'Predicto', link_url: 'https://tunefulsoul.com/asrsearch?search=first-one-c11 | https://tunefulsoul.com/asrsearch?search=second-two-c22' };
+  const ad = { feed: 'Predicto', link_url: 'https://tunefulsoul.com/asrsearch?search=first-one-a1b2c3 | https://tunefulsoul.com/asrsearch?search=second-two-d4e5f6' };
   assert.equal(predictoQuery(ad), 'first-one');
 });
 
