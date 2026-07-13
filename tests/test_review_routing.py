@@ -95,7 +95,7 @@ async def test_article_scrape_only_for_approved(fb, monkeypatch, review_status, 
 
     async def fake_scrape_article(url):
         calls.append(url)
-        return ('title', 'content')
+        return ('title', 'content', url)
 
     async def fake_gpt(*args, **kwargs):
         return ''
