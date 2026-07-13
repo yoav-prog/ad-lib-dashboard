@@ -7,17 +7,21 @@ Why this exists
     URL. New scrapes capture it (ScrapingBee's Spb-Resolved-Url header, stored in
     ads.resolved_url); this one-off job fills it in for rows already in the table.
 
-    A direct link already carries the phrase in ?search=, so it needs no network:
-    resolved_url is set to the link itself. A tracker link (e.g. wildflares.com/
-    teleport, aglisburn.com/cf/r/...) hides it behind a 302, so we follow the
-    redirect and store where it lands. The follow goes through ScrapingBee, not a
-    plain request: many of these hosts (funniesnow, analogaudiohub, therockets-
-    science, ...) tarpit or block datacenter IPs and time out on a direct fetch,
-    but resolve fine through ScrapingBee's proxy - the same path the scraper uses
-    for them every run. Cost: 1 ScrapingBee credit per redirect row, render_js off.
+    Each link falls into one of three kinds:
+      direct   - the phrase is already in ?search= (e.g. .../asrsearch?search=x).
+                 No network: resolved_url is set to the link itself.
+      redirect - a tracker (wildflares.com/teleport?..., aglisburn.com/cf/r/...?...)
+                 that 302s to the search page. Followed through ScrapingBee - many
+                 of these hosts tarpit/block datacenter IPs and time out on a plain
+                 request, but resolve through ScrapingBee's proxy, the same path
+                 the scraper uses. 1 credit each, render_js off.
+      dead     - a bare .../asrsearch with no query string at all. The search term
+                 was injected client-side and never captured, so there is nothing
+                 to recover; these are skipped (left null, reported).
 
-    Only rows with an empty resolved_url are touched, so the job is safe to re-run:
-    a redirect that failed to resolve stays null and is retried next time.
+    Writes are per row and committed immediately (autocommit), so the job is
+    interruptible: stop it any time and re-run to finish - only rows still missing
+    resolved_url are retried, and a resolved row is never re-fetched.
 
 Usage
     python backfill_resolved_url.py                 # Predicto ads, live
@@ -34,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -52,6 +57,10 @@ from scrapingbee import ScrapingBeeClient
 
 import db
 
+# A bare search endpoint (no query) can never yield a phrase - it is the search
+# page itself, waiting on a term that was never captured.
+_BARE_SEARCH = re.compile(r'/asrsearch/?$', re.I)
+
 
 def first_url(link_url: str) -> str:
     """The canonical destination of a (possibly ' | '-joined DCO) link_url - the
@@ -60,22 +69,40 @@ def first_url(link_url: str) -> str:
 
 
 def search_param(url: str) -> str:
-    """The `search` query param of a URL ('' when absent/unparseable). A URL that
-    already has one is a direct link and needs no redirect follow."""
+    """The `search` query param of a URL ('' when absent/unparseable)."""
     try:
         return (parse_qs(urlparse(url).query).get('search') or [''])[0]
     except Exception:
         return ''
 
 
+def link_kind(url: str) -> str:
+    """Classify a link: 'direct' (phrase already in ?search=), 'dead' (bare
+    /asrsearch with no query to recover), 'redirect' (a tracker to follow), or
+    'skip' (not an http url)."""
+    if not url.startswith('http'):
+        return 'skip'
+    if search_param(url):
+        return 'direct'
+    parts = urlparse(url)
+    if not parts.query and _BARE_SEARCH.search(parts.path or ''):
+        return 'dead'
+    return 'redirect'
+
+
 def resolve_via_scrapingbee(client: ScrapingBeeClient, url: str) -> str:
     """Follow redirects through ScrapingBee and return the final URL (its
     Spb-Resolved-Url header), or '' on failure. render_js off + block_resources
-    keeps it at 1 credit; we only need the header, not the page body."""
+    keeps it at 1 credit; we only need the header, not the page body.
+
+    params['timeout'] (20s) bounds ScrapingBee's wait on the target host; the
+    top-level timeout (90s) is the client-side socket cap so a tarpit host that
+    ScrapingBee keeps retrying can never hang the worker forever - the row just
+    fails and is retried on the next run."""
     if not url.startswith('http'):
         return ''
     try:
-        resp = client.get(url, params={'render_js': False, 'block_resources': True, 'timeout': 20000})
+        resp = client.get(url, params={'render_js': False, 'block_resources': True, 'timeout': 20000}, timeout=90)
         if not resp.ok:
             return ''
         return resp.headers.get('Spb-Resolved-Url') or url
@@ -106,49 +133,52 @@ def main():
                 f"order by last_seen_at desc nulls last {limit_sql}")
             rows = cur.fetchall()
 
+        buckets = {'direct': [], 'redirect': [], 'dead': [], 'skip': []}
+        for r in rows:
+            buckets[link_kind(first_url(r['link_url']))].append((r['ad_archive_id'], first_url(r['link_url'])))
+        direct, redirects, dead, skipped = (buckets['direct'], buckets['redirect'],
+                                            buckets['dead'], buckets['skip'])
+
         scope = 'all feeds' if args.all_feeds else 'Predicto'
-        # Direct links carry the phrase already (free); only trackers need a fetch.
-        direct = [(r['ad_archive_id'], first_url(r['link_url'])) for r in rows
-                  if search_param(first_url(r['link_url']))]
-        redirects = [(r['ad_archive_id'], first_url(r['link_url'])) for r in rows
-                     if not search_param(first_url(r['link_url'])) and first_url(r['link_url']).startswith('http')]
-        skipped = len(rows) - len(direct) - len(redirects)
         print(f'{len(rows)} {scope} row(s) with no resolved_url: '
               f'{len(direct)} direct (free), {len(redirects)} redirects '
-              f'(~{len(redirects)} ScrapingBee credits), {skipped} unresolvable link(s)')
+              f'(~{len(redirects)} ScrapingBee credits), '
+              f'{len(dead)} bare /asrsearch with no query (skipped), '
+              f'{len(skipped)} non-http (skipped)')
 
-        # Resolve the trackers concurrently - many are slow, but each is independent.
+        def write(ad_id, url):
+            if args.dry_run:
+                return
+            with conn.cursor() as cur:  # autocommit: persists immediately, so the job is resumable
+                cur.execute('update ads set resolved_url = %s where ad_archive_id = %s', (url, ad_id))
+
+        # Direct links carry the phrase already - store the link as its own resolved
+        # URL (free) so re-runs skip them.
+        for ad_id, url in direct:
+            write(ad_id, url)
+        print(f'  direct: set {len(direct)} row(s)')
+
+        # Trackers, resolved concurrently and written the moment each returns.
         client = ScrapingBeeClient(api_key=os.environ['SCRAPINGBEE_API_KEY'])
-        resolved_redirects = []
-        done = 0
+        resolved = failed = 0
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
             futures = {pool.submit(resolve_via_scrapingbee, client, url): (ad_id, url)
                        for ad_id, url in redirects}
             for fut in as_completed(futures):
                 ad_id, src = futures[fut]
                 final = fut.result()
-                done += 1
                 if final:
-                    resolved_redirects.append((ad_id, final))
-                    tag = 'REDIRECT' if final != src else 'no-redirect'
-                    print(f'  [{done}/{len(redirects)}] {tag} {ad_id}  search={search_param(final)!r}')
+                    write(ad_id, final)
+                    resolved += 1
+                    print(f'  [{resolved + failed}/{len(redirects)}] ok    {ad_id}  search={search_param(final)!r}')
                 else:
-                    print(f'  [{done}/{len(redirects)}] FAILED   {ad_id}  {src[:70]}')
+                    failed += 1
+                    print(f'  [{resolved + failed}/{len(redirects)}] FAIL  {ad_id}  {src[:60]}')
 
-        updates = [(ad_id, url) for ad_id, url in direct] + resolved_redirects
-        failed = len(redirects) - len(resolved_redirects)
-
-        if args.dry_run:
-            print(f'\ndry run: would set resolved_url on {len(updates)} row(s); '
-                  f'{failed} redirect(s) could not be resolved')
-            return
-
-        with conn.cursor() as cur:
-            for ad_id, url in updates:
-                cur.execute("update ads set resolved_url = %s where ad_archive_id = %s", (url, ad_id))
-        print(f'\nupdated {len(updates)} row(s) '
-              f'({len(direct)} direct + {len(resolved_redirects)} resolved redirects); '
-              f'{failed} redirect(s) could not be resolved')
+        verb = 'would set' if args.dry_run else 'set'
+        print(f'\n{verb} resolved_url on {len(direct) + resolved} row(s) '
+              f'({len(direct)} direct + {resolved} resolved redirects); '
+              f'{failed} redirect(s) unresolved, {len(dead)} dead link(s) left blank')
 
 
 if __name__ == '__main__':
