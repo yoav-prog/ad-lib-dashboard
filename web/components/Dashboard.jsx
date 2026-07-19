@@ -27,7 +27,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
   const [sort, setSort] = useState('fresh');
   const [sortDir, setSortDir] = useState('desc');
   const [filters, setFilters] = useState({
-    domain: [], feed: [], vertical: [], country: [], geos: [], language: [], brand: [], format: [], status: [],
+    domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], format: [], status: [],
     daysMin: '', daysMax: '', rankMin: '', rankMax: '',
   });
   const [dateRange, setDateRange] = useState('all');
@@ -185,6 +185,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     for (const a of ads) {
       m.set(a.ad_archive_id, [
         a.title, a.page_name, a.domain, a.vertical, a.country, a.language,
+        a.creative_language,
         brandLabel(a.brand),
         a.body_text, a.caption, a.cta_text, a.cta_type, a.link_url,
         a.link_description, a.article_title, a.notes,
@@ -205,6 +206,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
       if (f.country.length && !f.country.includes(a.country)) return false;
       if (f.geos.length && !geoCountries(a.sheet_geos).some((c) => f.geos.includes(c))) return false;
       if (f.language.length && !f.language.includes(a.language)) return false;
+      if (f.creative_language.length && !f.creative_language.includes(a.creative_language)) return false;
       if (f.brand.length && !f.brand.includes(a.brand)) return false;
       if (f.format.length && !f.format.includes(a.display_format)) return false;
       if (f.feed.length && !f.feed.includes(a.feed)) return false;
@@ -360,7 +362,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
           page={page} pageSize={pageSize} setPageSize={setPageSize} goPage={goPage}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
-          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], brand: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
+          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
@@ -502,6 +504,7 @@ const FRESH_COLS = [
   { key: 'page',     label: 'Page',               w: 148 },
   { key: 'domain',   label: 'Domain',             w: 132 },
   { key: 'brand',    label: 'Brand',              w: 96 },
+  { key: 'creative_language', label: 'Creative Lang', w: 100 },
   { key: 'url',      label: 'URL',                w: 168 },
   { key: 'revenue',  label: 'Revenue Prediction', w: 96 },
   { key: 'clicks',   label: 'Clicks',             w: 76 },
@@ -609,13 +612,15 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
     // Hidden entirely while no ad carries sheet data (fresh install, sheet unreachable).
     ...(geoCounts.size ? [{ title: 'GEOS (Earns In)', group: 'geos', vals: [...geoCounts.keys()].sort((x, y) => geoCounts.get(y) - geoCounts.get(x)), count: (v) => geoCounts.get(v) || 0 }] : []),
     { title: 'Language', group: 'language', vals: uniq('language'), count: (v) => countBy('language', v) },
+    // Language of the text ON the creative; hidden until some ad is classified.
+    ...(ads.some((a) => a.creative_language) ? [{ title: 'Creative Language', group: 'creative_language', vals: uniq('creative_language'), count: (v) => countBy('creative_language', v) }] : []),
     // Brand keys ('none'/'brand'/'car_brand') get a readable label; ordered by
     // BRAND_OPTIONS. Hidden entirely until some ad is classified (before the backfill).
     ...(ads.some((a) => a.brand) ? [{ title: 'Brand', group: 'brand', vals: BRAND_OPTIONS.map((o) => o.key).filter((k) => countBy('brand', k)), count: (v) => countBy('brand', v), label: (v) => brandLabel(v) }] : []),
     { title: 'Format', group: 'format', vals: uniq('display_format'), count: (v) => countBy('display_format', v) },
     { title: 'Status', group: 'status', vals: uniq('status'), count: (v) => countBy('status', v) },
   ];
-  const checkboxGroups = ['domain', 'feed', 'vertical', 'country', 'geos', 'language', 'brand', 'format', 'status'];
+  const checkboxGroups = ['domain', 'feed', 'vertical', 'country', 'geos', 'language', 'creative_language', 'brand', 'format', 'status'];
   const activeFilterCount =
     checkboxGroups.reduce((n, k) => n + (filters[k]?.length || 0), 0)
     + (dateRange !== 'all' ? 1 : 0)
@@ -808,6 +813,7 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
             {cols.has('page') && <div style={s('width:148px;flex-shrink:0')}>Page</div>}
             {cols.has('domain') && <div style={s('width:132px;flex-shrink:0')}>Domain</div>}
             {cols.has('brand') && <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>Brand</div>}
+            {cols.has('creative_language') && <div title="Language of the text ON the creative (image / video), not the ad copy" style={s('width:100px;flex-shrink:0;padding-left:16px')}>Creative Lang</div>}
             <div style={s('flex:1;min-width:0')}>Headline</div>
             {cols.has('url') && <div style={s('width:168px;flex-shrink:0')}>URL</div>}
             {showSlug && <div style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
@@ -864,6 +870,11 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                     {a.brand
                       ? <span style={s(`display:inline-block;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:${brandColor(a.brand)};border:1px solid ${brandColor(a.brand)}55;padding:2px 6px;white-space:nowrap`)}>{brandLabel(a.brand)}</span>
                       : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
+                  </div>
+                )}
+                {cols.has('creative_language') && (
+                  <div style={s('width:100px;flex-shrink:0;padding-left:16px')} title={a.creative_language || (a.creative_language === '' ? 'No text on the creative' : '')}>
+                    <span style={s(`font-family:${MONO};font-size:11px;color:${a.creative_language ? '#B6B9BE' : '#45484D'}`)}>{langCode(a.creative_language) || '-'}</span>
                   </div>
                 )}
                 <CopyCell value={a.title || a.caption || a.body_text || ''} style={s('flex:1;min-width:0;padding-right:16px')}>
@@ -1282,6 +1293,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
     ['total_active_time', ad.total_active_time, '#C6C9CE'],
     ['publisher_platform', (ad.publisher_platform || []).join(', '), '#C6C9CE'],
     ['language', ad.language, '#C6C9CE'],
+    ['creative_language', ad.creative_language, '#C6C9CE'],
     ['country', ad.country, '#C6C9CE'],
     ['vertical', ad.vertical, '#C6C9CE'],
     ['brand', brandLabel(ad.brand), ad.brand ? brandColor(ad.brand) : '#C6C9CE'],

@@ -206,6 +206,7 @@ export const SHEET_COLUMNS = [
   { key: 'vertical',  header: 'Vertical',         kind: 'text',  get: (a) => a.vertical,                                            width: 130, align: 'LEFT',   wrap: false },
   { key: 'country',   header: 'Country',          kind: 'text',  get: (a) => a.country,                                             width: 70,  align: 'CENTER', wrap: false },
   { key: 'language',  header: 'Language',         kind: 'text',  get: (a) => langCode(a.language),                                  width: 80,  align: 'CENTER', wrap: false },
+  { key: 'creative_language', header: 'Creative Language', kind: 'text', get: (a) => langCode(a.creative_language),                    width: 110, align: 'CENTER', wrap: false },
   { key: 'brand',     header: 'Brand',            kind: 'text',  get: (a) => brandLabel(a.brand),                                   width: 90,  align: 'LEFT',   wrap: false },
   { key: 'feed',      header: 'Feed',             kind: 'text',  get: (a) => a.feed,                                                width: 90,  align: 'LEFT',   wrap: false },
   { key: 'status',    header: 'Status',           kind: 'text',  get: (a) => a.status,                                              width: 80,  align: 'CENTER', wrap: false },
