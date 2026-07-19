@@ -23,7 +23,15 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
   const [ads, setAds] = useState(adsProp);
   const [reviewAds, setReviewAds] = useState(reviewAdsProp);
   const [view, setView] = useState('fresh');
+  // The search box updates `searchInput` instantly; `query` (what actually drives the
+  // whole-feed filter) trails it by a short debounce. At this row count, re-scanning
+  // every ad on each keystroke is the main reason typing felt stuck.
+  const [searchInput, setSearchInput] = useState('');
   const [query, setQuery] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setQuery(searchInput), 220);
+    return () => clearTimeout(t);
+  }, [searchInput]);
   const [sort, setSort] = useState('fresh');
   const [sortDir, setSortDir] = useState('desc');
   const [filters, setFilters] = useState({
@@ -177,9 +185,10 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     return r;
   }, [router]);
 
-  // Precomputed lowercase haystack per ad -> fast multi-field smart search.
-  // Article BODIES are not indexed: the server no longer ships them with the
-  // feed (they dwarf every other field combined), only the titles.
+  // Precomputed lowercase haystack per ad -> fast multi-field smart search. The
+  // landing-article title and link description are deliberately left out: they are
+  // among the heaviest fields and almost never what someone types, so indexing them
+  // just bloated every haystack and slowed the scan. Article bodies are never shipped.
   const searchIndex = useMemo(() => {
     const m = new Map();
     for (const a of ads) {
@@ -188,8 +197,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
         a.creative_language,
         brandLabel(a.brand),
         a.body_text, a.caption, a.cta_text, a.cta_type, a.link_url,
-        a.link_description, a.article_title, a.notes,
-        a.sheet_keywords,
+        a.notes, a.sheet_keywords,
         ...(a.tags || []),
       ].filter(Boolean).join(' ').toLowerCase());
     }
@@ -348,7 +356,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
   return (
     <div style={s('min-height:100vh')}>
       <TopChrome
-        view={view} setView={setView} query={query} setQuery={setQuery}
+        view={view} setView={setView} query={searchInput} setQuery={setSearchInput}
         placeholder={searchPlaceholder} showSearch={view !== 'detail'}
         lastScrape={lastScrape} reviewCount={reviewAds.length}
         openPalette={() => { setPaletteOpen(true); setPaletteQuery(''); setTimeout(() => document.getElementById('ai-palette')?.focus(), 30); }}
