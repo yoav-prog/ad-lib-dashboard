@@ -42,7 +42,16 @@ import brand
 import db
 
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
-CONCURRENCY = 8
+# Vision calls run several seconds each, so throughput is concurrency-bound; keep it
+# high but within a normal account's rate limits (a 429 just leaves that ad for the
+# next run, so overshooting self-heals but wastes calls).
+CONCURRENCY = 64
+# Rows are written to the DB after each batch, not once at the very end, so a long
+# run is crash-safe: if the process dies (or a runner times out) mid-way, every
+# completed batch is already saved and a re-run resumes from the first row still
+# unclassified. A wide batch keeps the per-batch barrier from dominating; at most
+# one in-flight batch is re-done after a kill.
+BATCH_SIZE = 512
 
 # The ad's own creative text (mirrors ad_copy_text in the scraper, reading the
 # already-stored columns instead of the raw Apify snapshot).
@@ -125,38 +134,48 @@ async def main(args):
 
     rows = fetch_rows(args.all, args.limit)
     print(f'{len(rows)} ad(s) to classify'
-          + ('' if args.all else ' (not yet classified)'))
+          + ('' if args.all else ' (not yet classified)'), flush=True)
     if not rows:
         return
 
     sem = asyncio.Semaphore(CONCURRENCY)
-    updates: list[tuple[str, str]] = []
-    skipped = 0
+    tally = {'none': 0, 'brand': 0, 'car_brand': 0}
+    written = skipped = unchanged = 0
+
+    async def classify(session, row):
+        copy = copy_from_row(row)
+        image = image_from_row(row)
+        if not copy and not image:
+            return ('skip', None)
+        new = await detect_brand(session, sem, copy, image)
+        old = row.get('brand') or ''
+        if new and new != old:
+            return ('update', (row['ad_archive_id'], new))
+        return ('nochange', None)
 
     async with aiohttp.ClientSession() as session:
-        async def work(row):
-            nonlocal skipped
-            copy = copy_from_row(row)
-            image = image_from_row(row)
-            if not copy and not image:
-                skipped += 1
-                return
-            new = await detect_brand(session, sem, copy, image)
-            old = row.get('brand') or ''
-            if new and new != old:
-                updates.append((row['ad_archive_id'], new))
-                print(f"  {row['ad_archive_id']}: {old or '(none)'} -> {new}")
+        # One batch at a time, flushing each to the DB before the next, so progress
+        # is durable and a re-run resumes from wherever this one stopped.
+        for start in range(0, len(rows), BATCH_SIZE):
+            chunk = rows[start:start + BATCH_SIZE]
+            results = await asyncio.gather(*(classify(session, r) for r in chunk))
+            updates = [u for (kind, u) in results if kind == 'update']
+            skipped += sum(1 for (kind, _) in results if kind == 'skip')
+            unchanged += sum(1 for (kind, _) in results if kind == 'nochange')
+            for (_aid, new) in updates:
+                tally[new] = tally.get(new, 0) + 1
+            if updates and not args.dry_run:
+                write_updates(updates)
+                written += len(updates)
+            done = min(start + BATCH_SIZE, len(rows))
+            print(f'  [{done}/{len(rows)}] +{len(updates)} classified'
+                  + (' (dry run, nothing saved)' if args.dry_run else '')
+                  + f'  | none={tally["none"]} brand={tally["brand"]} car_brand={tally["car_brand"]}',
+                  flush=True)
 
-        await asyncio.gather(*(work(r) for r in rows))
-
-    unchanged = len(rows) - len(updates) - skipped
-    print(f'\n{len(updates)} change(s), {skipped} skipped (no copy or image), {unchanged} unchanged')
-    if args.dry_run:
-        print('dry run - nothing written.')
-        return
-    if updates:
-        write_updates(updates)
-        print(f'updated {len(updates)} row(s).')
+    print(f'\ndone: {written} written, {skipped} skipped (no copy or image), '
+          f'{unchanged} unchanged'
+          + (' [dry run - nothing saved]' if args.dry_run else ''), flush=True)
 
 
 if __name__ == '__main__':
