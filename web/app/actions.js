@@ -8,7 +8,7 @@ import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/m
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
 
-const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url'];
+const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url', 'brand'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
 
 function pick(patch, allowed) {

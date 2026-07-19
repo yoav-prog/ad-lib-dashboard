@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, brandLabel, brandColor, BRAND_OPTIONS, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
@@ -27,7 +27,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
   const [sort, setSort] = useState('fresh');
   const [sortDir, setSortDir] = useState('desc');
   const [filters, setFilters] = useState({
-    domain: [], feed: [], vertical: [], country: [], geos: [], language: [], format: [], status: [],
+    domain: [], feed: [], vertical: [], country: [], geos: [], language: [], brand: [], format: [], status: [],
     daysMin: '', daysMax: '', rankMin: '', rankMax: '',
   });
   const [dateRange, setDateRange] = useState('all');
@@ -185,6 +185,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     for (const a of ads) {
       m.set(a.ad_archive_id, [
         a.title, a.page_name, a.domain, a.vertical, a.country, a.language,
+        brandLabel(a.brand),
         a.body_text, a.caption, a.cta_text, a.cta_type, a.link_url,
         a.link_description, a.article_title, a.notes,
         a.sheet_keywords,
@@ -204,6 +205,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
       if (f.country.length && !f.country.includes(a.country)) return false;
       if (f.geos.length && !geoCountries(a.sheet_geos).some((c) => f.geos.includes(c))) return false;
       if (f.language.length && !f.language.includes(a.language)) return false;
+      if (f.brand.length && !f.brand.includes(a.brand)) return false;
       if (f.format.length && !f.format.includes(a.display_format)) return false;
       if (f.feed.length && !f.feed.includes(a.feed)) return false;
       if (f.status.length && !f.status.includes(a.status)) return false;
@@ -358,7 +360,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
           page={page} pageSize={pageSize} setPageSize={setPageSize} goPage={goPage}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
-          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
+          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], brand: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
@@ -512,6 +514,8 @@ const FRESH_COLS = [
   { key: 'days',     label: 'Days Run',           w: 70 },
   { key: 'vertical', label: 'Vertical',           w: 108 },
   { key: 'country',  label: 'Country',            w: 58 },
+  { key: 'language', label: 'Language',           w: 74 },
+  { key: 'brand',    label: 'Brand',              w: 96 },
   { key: 'feed',     label: 'Feed',               w: 108 },
   { key: 'ad_id',    label: 'Ad Archive ID',      w: 146 },
 ];
@@ -562,6 +566,16 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
   const uniq = (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
   const countBy = (key, val) => ads.filter((a) => a[key] === val).length;
 
+  // Feed-scoped Domain facet: once a feed is chosen, the Domain list shows only
+  // that feed's domains (and their counts), so the picker never offers a domain
+  // the current feed can't contain. Any already-picked domain stays in the list
+  // even if it falls outside the feed, so a stale choice is never stranded
+  // unselectable (its count then reads 0, a hint that it matches nothing here).
+  const feedScoped = filters.feed.length ? ads.filter((a) => filters.feed.includes(a.feed)) : ads;
+  const uniqIn = (rows, key) => [...new Set(rows.map((a) => a[key]).filter(Boolean))];
+  const countIn = (rows, key, val) => rows.filter((a) => a[key] === val).length;
+  const withSelected = (list, sel) => [...list, ...sel.filter((v) => v && !list.includes(v))];
+
   const fresh24 = ads.filter(isFresh).length;
   const new7 = ads.filter((a) => hoursSince(a.first_seen_at, NOW) <= 168).length;
   const winners = ads.filter((a) => daysRunning(a, NOW) >= 60).length;
@@ -586,17 +600,20 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
   for (const a of ads) for (const c of geoCountries(a.sheet_geos)) geoCounts.set(c, (geoCounts.get(c) || 0) + 1);
 
   const groups = [
-    { title: 'Domain', group: 'domain', vals: uniq('domain'), count: (v) => countBy('domain', v) },
+    { title: 'Domain', group: 'domain', vals: withSelected(uniqIn(feedScoped, 'domain'), filters.domain), count: (v) => countIn(feedScoped, 'domain', v) },
     { title: 'Feed', group: 'feed', vals: uniq('feed'), count: (v) => countBy('feed', v) },
     { title: 'Vertical', group: 'vertical', vals: uniq('vertical'), count: (v) => countBy('vertical', v) },
     { title: 'Country', group: 'country', vals: uniq('country'), count: (v) => countBy('country', v) },
     // Hidden entirely while no ad carries sheet data (fresh install, sheet unreachable).
     ...(geoCounts.size ? [{ title: 'GEOS (Earns In)', group: 'geos', vals: [...geoCounts.keys()].sort((x, y) => geoCounts.get(y) - geoCounts.get(x)), count: (v) => geoCounts.get(v) || 0 }] : []),
     { title: 'Language', group: 'language', vals: uniq('language'), count: (v) => countBy('language', v) },
+    // Brand keys ('none'/'brand'/'car_brand') get a readable label; ordered by
+    // BRAND_OPTIONS. Hidden entirely until some ad is classified (before the backfill).
+    ...(ads.some((a) => a.brand) ? [{ title: 'Brand', group: 'brand', vals: BRAND_OPTIONS.map((o) => o.key).filter((k) => countBy('brand', k)), count: (v) => countBy('brand', v), label: (v) => brandLabel(v) }] : []),
     { title: 'Format', group: 'format', vals: uniq('display_format'), count: (v) => countBy('display_format', v) },
     { title: 'Status', group: 'status', vals: uniq('status'), count: (v) => countBy('status', v) },
   ];
-  const checkboxGroups = ['domain', 'feed', 'vertical', 'country', 'geos', 'language', 'format', 'status'];
+  const checkboxGroups = ['domain', 'feed', 'vertical', 'country', 'geos', 'language', 'brand', 'format', 'status'];
   const activeFilterCount =
     checkboxGroups.reduce((n, k) => n + (filters[k]?.length || 0), 0)
     + (dateRange !== 'all' ? 1 : 0)
@@ -686,7 +703,7 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                       <button key={v} onClick={() => toggleFilter(g.group, v)}
                         style={s(`display:flex;align-items:center;gap:9px;width:100%;padding:4px 14px;background:${sel ? 'rgba(232,163,61,.06)' : 'transparent'};border:none;cursor:pointer;text-align:left`)}>
                         <span style={s(`width:11px;height:11px;flex-shrink:0;border:1px solid ${sel ? A : 'rgba(255,255,255,.2)'};background:${sel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:8px;color:#0B0C0E;line-height:1`)}>{sel ? '✓' : ''}</span>
-                        <span style={s(`flex:1;font-size:11.5px;color:${sel ? '#E7E8EA' : '#9CA0A6'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{titleCase(v)}</span>
+                        <span style={s(`flex:1;font-size:11.5px;color:${sel ? '#E7E8EA' : '#9CA0A6'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{g.label ? g.label(v) : titleCase(v)}</span>
                         <span style={s(`font-family:${MONO};font-size:10px;color:#5A5E64;font-variant-numeric:tabular-nums`)}>{pad(g.count(v))}</span>
                       </button>
                     );
@@ -760,12 +777,12 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                   {canEdit && <MetricsRefreshButton onRefresh={onRefreshMetrics} />}
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <button onClick={exportCsv} disabled={!filtered.length}
-                    title="Download the current view (filters applied) as a CSV"
-                    style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>↓ EXPORT CSV</button>
+                    title={`Download these ${fmtInt(filtered.length)} ad(s) as a CSV — exactly the rows your filters and search leave showing`}
+                    style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>↓ EXPORT CSV ({fmtInt(filtered.length)})</button>
                   {canEdit && (
                     <button onClick={() => setSheetOpen(true)} disabled={!filtered.length}
-                      title="Send the current view (filters applied) to a Google Sheet"
-                      style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>&#8599; EXPORT TO SHEET</button>
+                      title={`Send these ${fmtInt(filtered.length)} ad(s) to a Google Sheet — exactly the rows your filters and search leave showing`}
+                      style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>&#8599; EXPORT TO SHEET ({fmtInt(filtered.length)})</button>
                   )}
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>J</kbd>
@@ -803,6 +820,8 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
             {cols.has('days') && <div style={s('width:70px;flex-shrink:0;text-align:right')}>Days Run</div>}
             {cols.has('vertical') && <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>}
             {cols.has('country') && <div style={s('width:58px;flex-shrink:0;text-align:center')}>Country</div>}
+            {cols.has('language') && <div style={s('width:74px;flex-shrink:0;padding-left:16px')}>Language</div>}
+            {cols.has('brand') && <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>Brand</div>}
             {cols.has('feed') && <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Feed</div>}
             {cols.has('ad_id') && <div style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
           </div>
@@ -920,6 +939,18 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                   <div style={s('width:58px;flex-shrink:0;text-align:center')}>
                     <div style={s(`font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{a.country || '-'}</div>
                     <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)} title={a.language || ''}>{langCode(a.language)}</div>
+                  </div>
+                )}
+                {cols.has('language') && (
+                  <div style={s('width:74px;flex-shrink:0;padding-left:16px')} title={a.language || ''}>
+                    <span style={s(`font-family:${MONO};font-size:11px;color:${a.language ? '#B6B9BE' : '#45484D'}`)}>{langCode(a.language) || '-'}</span>
+                  </div>
+                )}
+                {cols.has('brand') && (
+                  <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>
+                    {a.brand
+                      ? <span style={s(`display:inline-block;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:${brandColor(a.brand)};border:1px solid ${brandColor(a.brand)}55;padding:2px 6px;white-space:nowrap`)}>{brandLabel(a.brand)}</span>
+                      : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
                   </div>
                 )}
                 {cols.has('feed') && (
@@ -1097,7 +1128,7 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
         <div style={s('padding:18px;display:flex;flex-direction:column;gap:14px;overflow-y:auto')}>
           <div style={s('font-size:11.5px;color:#9CA0A6;line-height:1.5')}>
             {mode === 'replace' ? 'Clears the tab and writes ' : 'Appends '}
-            <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{count}</span> row{count === 1 ? '' : 's'} &times; <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{cols.length}</span> column{cols.length === 1 ? '' : 's'} from the current view, with an image preview and image URL per row. {mode === 'replace' ? 'Whatever is in the tab now is replaced' : (adIdOn ? 'Rows already in the tab (matched by Ad ID) are skipped' : 'Include the Ad ID column to skip rows already in the tab')}, and the tab is created if it does not exist.
+            <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{count}</span> row{count === 1 ? '' : 's'} &times; <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{cols.length}</span> column{cols.length === 1 ? '' : 's'} from the current view (exactly the rows your filters and search leave showing — narrow them first to export a subset), with an image preview and image URL per row. {mode === 'replace' ? 'Whatever is in the tab now is replaced' : (adIdOn ? 'Rows already in the tab (matched by Ad ID) are skipped' : 'Include the Ad ID column to skip rows already in the tab')}, and the tab is created if it does not exist.
           </div>
           <div>
             <div style={label}>Sheet ID or URL</div>
@@ -1241,6 +1272,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
     ['language', ad.language, '#C6C9CE'],
     ['country', ad.country, '#C6C9CE'],
     ['vertical', ad.vertical, '#C6C9CE'],
+    ['brand', brandLabel(ad.brand), ad.brand ? brandColor(ad.brand) : '#C6C9CE'],
     ['rank', ad.rank != null ? `#${ad.rank}` : '', '#C6C9CE'],
     ['domain', ad.domain, '#C6C9CE'],
   ];
@@ -1366,6 +1398,23 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
                   );
                 })}
               </div>
+            </div>
+            <div>
+              <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:8px')}>Brand</div>
+              <div style={s('display:flex;flex-direction:column;gap:1px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.06)')}>
+                {BRAND_OPTIONS.map((o) => {
+                  const on = ad.brand === o.key;
+                  return (
+                    <button key={o.key} onClick={() => update(ad.ad_archive_id, { brand: on ? null : o.key })}
+                      style={s(`display:flex;align-items:center;gap:10px;padding:9px 12px;background:${on ? 'rgba(232,163,61,.06)' : '#0B0C0E'};border:none;cursor:pointer;text-align:left`)}>
+                      <span style={s(`width:9px;height:9px;border-radius:50%;border:1.5px solid ${on ? o.color : 'rgba(255,255,255,.25)'};background:${on ? o.color : 'transparent'};flex-shrink:0`)} />
+                      <span style={s(`flex:1;font-size:12px;color:${on ? '#E7E8EA' : '#9CA0A6'}`)}>{o.label}</span>
+                      {on && <span style={s(`font-family:${MONO};font-size:9px;color:${o.color}`)}>SET</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={s('font-size:9.5px;color:#5A5E64;margin-top:6px;line-height:1.4')}>Auto-detected from the creative; click to correct, or click again to clear.</div>
             </div>
             <div>
               <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:8px')}>Owner</div>

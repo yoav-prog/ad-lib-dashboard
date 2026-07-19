@@ -3,7 +3,7 @@
 // exports must carry the watchable video link, not the poster image.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries, brandLabel, brandColor, BRAND_OPTIONS } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -154,6 +154,31 @@ test('buildCsv includes the metric columns', () => {
   const [header, row] = buildCsv([metricAd], NOW).split('\r\n');
   assert.ok(header.includes('"Revenue Prediction"') && header.includes('"RPC"') && header.includes('"Top Keywords"'));
   assert.ok(row.includes('"11947.20"') && row.includes('"4883"') && row.includes('"2.45"'));
+});
+
+// Brand classification: the DB stores a compact key; the UI + exports show the
+// human label, and an unknown/absent key must never render a stray word.
+test('brandLabel maps the three keys to readable labels and blanks the rest', () => {
+  assert.equal(brandLabel('none'), 'No brand');
+  assert.equal(brandLabel('brand'), 'Brand');
+  assert.equal(brandLabel('car_brand'), 'Car brand');
+  assert.equal(brandLabel(null), '');
+  assert.equal(brandLabel('bogus'), '');
+});
+
+test('brandColor gives every option a color and a safe default', () => {
+  for (const o of BRAND_OPTIONS) assert.match(brandColor(o.key), /^#[0-9A-Fa-f]{6}$/);
+  assert.match(brandColor(undefined), /^#[0-9A-Fa-f]{6}$/);
+});
+
+test('exports carry a Brand column with the readable label', () => {
+  const { columns, rows } = buildSheetData([{ ...imageAd, brand: 'car_brand' }], NOW, ['ad_id', 'brand']);
+  const brandCol = columns.findIndex((c) => c.header === 'Brand');
+  assert.notEqual(brandCol, -1);
+  assert.equal(rows[0].cells[brandCol].value, 'Car brand');
+  const [header, row] = buildCsv([{ ...imageAd, brand: 'brand' }], NOW).split('\r\n');
+  assert.ok(header.includes('"Brand"'));
+  assert.ok(row.includes('"Brand"'));
 });
 
 test('geoCountries lists the countries in a GEOS split, in order', () => {
