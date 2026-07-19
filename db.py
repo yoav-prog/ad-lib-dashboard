@@ -36,7 +36,7 @@ AD_COLUMNS = [
     'extra_image_urls', 'extra_video_urls',
     'publisher_platform', 'start_date', 'total_active_time',
     'article_title', 'article_content', 'resolved_url', 'rank',
-    'language', 'country', 'vertical', 'review_status',
+    'language', 'country', 'vertical', 'brand', 'review_status',
 ]
 
 # Refreshed every time an ad is re-seen (everything except its identity), with

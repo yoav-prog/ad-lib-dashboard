@@ -124,6 +124,18 @@ export function langCode(name) {
   return w.slice(0, 2).toUpperCase();
 }
 
+// Brand classification (see brand.py). The DB stores a compact key; the UI shows a
+// readable label and picks a color, and exports carry the same words so a sheet reads
+// on its own. Car brands are their own bucket (a lighter compliance category).
+export const BRAND_OPTIONS = [
+  { key: 'none',      label: 'No brand',  color: '#6C7076' },
+  { key: 'brand',     label: 'Brand',     color: '#E8A33D' },
+  { key: 'car_brand', label: 'Car brand', color: '#6FA8DC' },
+];
+const BRAND_BY_KEY = Object.fromEntries(BRAND_OPTIONS.map((o) => [o.key, o]));
+export const brandLabel = (key) => BRAND_BY_KEY[key]?.label || '';
+export const brandColor = (key) => BRAND_BY_KEY[key]?.color || '#45484D';
+
 export function tint(seed) {
   let h = 0;
   const str = String(seed || '');
@@ -194,6 +206,7 @@ export const SHEET_COLUMNS = [
   { key: 'vertical',  header: 'Vertical',         kind: 'text',  get: (a) => a.vertical,                                            width: 130, align: 'LEFT',   wrap: false },
   { key: 'country',   header: 'Country',          kind: 'text',  get: (a) => a.country,                                             width: 70,  align: 'CENTER', wrap: false },
   { key: 'language',  header: 'Language',         kind: 'text',  get: (a) => langCode(a.language),                                  width: 80,  align: 'CENTER', wrap: false },
+  { key: 'brand',     header: 'Brand',            kind: 'text',  get: (a) => brandLabel(a.brand),                                   width: 90,  align: 'LEFT',   wrap: false },
   { key: 'feed',      header: 'Feed',             kind: 'text',  get: (a) => a.feed,                                                width: 90,  align: 'LEFT',   wrap: false },
   { key: 'status',    header: 'Status',           kind: 'text',  get: (a) => a.status,                                              width: 80,  align: 'CENTER', wrap: false },
   { key: 'ad_id',     header: 'Ad ID',            kind: 'text',  get: (a) => a.ad_archive_id,                                       width: 150, align: 'LEFT',   wrap: false },
