@@ -501,6 +501,7 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
 const FRESH_COLS = [
   { key: 'page',     label: 'Page',               w: 148 },
   { key: 'domain',   label: 'Domain',             w: 132 },
+  { key: 'brand',    label: 'Brand',              w: 96 },
   { key: 'url',      label: 'URL',                w: 168 },
   { key: 'revenue',  label: 'Revenue Prediction', w: 96 },
   { key: 'clicks',   label: 'Clicks',             w: 76 },
@@ -515,7 +516,6 @@ const FRESH_COLS = [
   { key: 'vertical', label: 'Vertical',           w: 108 },
   { key: 'country',  label: 'Country',            w: 58 },
   { key: 'language', label: 'Language',           w: 74 },
-  { key: 'brand',    label: 'Brand',              w: 96 },
   { key: 'feed',     label: 'Feed',               w: 108 },
   { key: 'ad_id',    label: 'Ad Archive ID',      w: 146 },
 ];
@@ -807,6 +807,7 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
             <div style={s(`width:${thumbColW}px;flex-shrink:0`)} />
             {cols.has('page') && <div style={s('width:148px;flex-shrink:0')}>Page</div>}
             {cols.has('domain') && <div style={s('width:132px;flex-shrink:0')}>Domain</div>}
+            {cols.has('brand') && <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>Brand</div>}
             <div style={s('flex:1;min-width:0')}>Headline</div>
             {cols.has('url') && <div style={s('width:168px;flex-shrink:0')}>URL</div>}
             {showSlug && <div style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
@@ -824,7 +825,6 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
             {cols.has('vertical') && <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>}
             {cols.has('country') && <div style={s('width:58px;flex-shrink:0;text-align:center')}>Country</div>}
             {cols.has('language') && <div style={s('width:74px;flex-shrink:0;padding-left:16px')}>Language</div>}
-            {cols.has('brand') && <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>Brand</div>}
             {cols.has('feed') && <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Feed</div>}
             {cols.has('ad_id') && <div style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
           </div>
@@ -858,6 +858,13 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                   <CopyCell value={a.domain} style={s('width:132px;flex-shrink:0;padding-right:12px;min-width:0')}>
                     <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.domain || '-'}</span>
                   </CopyCell>
+                )}
+                {cols.has('brand') && (
+                  <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>
+                    {a.brand
+                      ? <span style={s(`display:inline-block;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:${brandColor(a.brand)};border:1px solid ${brandColor(a.brand)}55;padding:2px 6px;white-space:nowrap`)}>{brandLabel(a.brand)}</span>
+                      : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
+                  </div>
                 )}
                 <CopyCell value={a.title || a.caption || a.body_text || ''} style={s('flex:1;min-width:0;padding-right:16px')}>
                   <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
@@ -955,13 +962,6 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                 {cols.has('language') && (
                   <div style={s('width:74px;flex-shrink:0;padding-left:16px')} title={a.language || ''}>
                     <span style={s(`font-family:${MONO};font-size:11px;color:${a.language ? '#B6B9BE' : '#45484D'}`)}>{langCode(a.language) || '-'}</span>
-                  </div>
-                )}
-                {cols.has('brand') && (
-                  <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>
-                    {a.brand
-                      ? <span style={s(`display:inline-block;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:${brandColor(a.brand)};border:1px solid ${brandColor(a.brand)}55;padding:2px 6px;white-space:nowrap`)}>{brandLabel(a.brand)}</span>
-                      : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
                   </div>
                 )}
                 {cols.has('feed') && (
