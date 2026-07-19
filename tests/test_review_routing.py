@@ -104,6 +104,7 @@ async def test_article_scrape_only_for_approved(fb, monkeypatch, review_status, 
     monkeypatch.setattr(run_scrape.fb, 'gpt_detect_language', fake_gpt)
     monkeypatch.setattr(run_scrape.fb, 'gpt_detect_country', fake_gpt)
     monkeypatch.setattr(run_scrape.fb, 'gpt_detect_vertical', fake_gpt)
+    monkeypatch.setattr(run_scrape.fb, 'gpt_detect_brand', fake_gpt)
 
     row = await run_scrape.process_ad(
         _ad('x', 'https://example.com/page'), 1, None, [], '', 'example.com',

@@ -20,6 +20,8 @@ from scrapingbee import ScrapingBeeClient
 import re
 import time
 
+import brand   # shared brand prompt + answer parsing (SSOT with backfill_brand.py)
+
 # ── Secrets & configuration (loaded from the environment) ─────────────────────
 # Nothing sensitive is hardcoded. Copy .env.example to .env and fill it in, or
 # set these as GitHub Actions / Vercel secrets. See SETUP.md.
@@ -313,6 +315,39 @@ async def gpt_detect_vertical(session, article_title, body_text, article_content
                 return ''
         except Exception as e:
             print(f"  ⚠️  GPT vertical error: {e}")
+            return ''
+
+
+async def gpt_detect_brand(session, ad_copy, image_url):
+    """Classify the creative as one of brand.BRAND_VALUES from BOTH the image and the
+    copy. A brand can show up as a logo in the image, a brand name in the text, or
+    both, so the model gets whichever of the two are available. The prompt + parsing
+    live in brand.py so the live path and backfill_brand.py never drift. Returns ''
+    on failure, exactly like the sibling detectors, so a hiccup never writes a wrong
+    label."""
+    messages = brand.build_brand_messages(ad_copy, image_url)
+    if messages is None:
+        return ''
+    async with GPT_SEMAPHORE:
+        try:
+            payload = {
+                "model": brand.BRAND_MODEL,
+                "messages": messages,
+                "max_tokens": 3,
+                "temperature": 0,
+            }
+            async with session.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return brand.normalize_brand(result['choices'][0]['message']['content'])
+                return ''
+        except Exception as e:
+            print(f"  ⚠️  GPT brand error: {e}")
             return ''
 
 # ═════════════════════════════════════════════════════════════════════════════
