@@ -21,6 +21,7 @@ import re
 import time
 
 import brand   # shared brand prompt + answer parsing (SSOT with backfill_brand.py)
+import creative_language   # shared creative-language prompt + parsing (SSOT with backfill_creative_language.py)
 
 # ── Secrets & configuration (loaded from the environment) ─────────────────────
 # Nothing sensitive is hardcoded. Copy .env.example to .env and fill it in, or
@@ -349,6 +350,42 @@ async def gpt_detect_brand(session, ad_copy, image_url):
         except Exception as e:
             print(f"  ⚠️  GPT brand error: {e}")
             return ''
+
+
+async def gpt_detect_creative_language(session, image_url):
+    """Detect the language of the TEXT shown on the creative itself (the image, or a
+    video's poster frame) - distinct from gpt_detect_language, which reads the ad's
+    copy fields. The prompt + parsing live in creative_language.py so the live path
+    and backfill_creative_language.py never drift.
+
+    Returns a language name when the creative has text, '' when the model reports no
+    readable text (a real, terminal answer), or None when there is no image to look
+    at or the call fails - so a failure stays unclassified (NULL) and is retried
+    later rather than being mislabelled as 'no text'."""
+    messages = creative_language.build_creative_language_messages(image_url)
+    if messages is None:
+        return None
+    async with GPT_SEMAPHORE:
+        try:
+            payload = {
+                "model": creative_language.CREATIVE_LANGUAGE_MODEL,
+                "messages": messages,
+                "max_tokens": 10,
+                "temperature": 0,
+            }
+            async with session.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return creative_language.normalize_language(result['choices'][0]['message']['content'])
+                return None
+        except Exception as e:
+            print(f"  ⚠️  GPT creative-language error: {e}")
+            return None
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SCRAPINGBEE ARTICLE SCRAPING  (async wrapper with semaphore)

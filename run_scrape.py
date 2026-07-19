@@ -238,7 +238,8 @@ def get_bucket():
 # Ad -> database row
 # ═════════════════════════════════════════════════════════════════════════════
 def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
-                  feed, domain, language, country, vertical, brand, review_status='approved'):
+                  feed, domain, language, country, vertical, brand, creative_language,
+                  review_status='approved'):
     """Map a raw Apify ad + enrichment + media to a db.AD_COLUMNS dict."""
     snapshot = ad.get('snapshot', {})
     body = snapshot.get('body', {})
@@ -305,6 +306,7 @@ def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
         'country': country,
         'vertical': vertical,
         'brand': brand,
+        'creative_language': creative_language,
         'review_status': review_status,
     }
 
@@ -348,13 +350,17 @@ async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session,
 
     media = await fb.process_ad_media(ad, bucket, {}) if bucket is not None else dict(_EMPTY_MEDIA)
 
-    # Brand needs the creative image, so it runs after upload and reads the permanent
-    # GCS URL - the same source backfill_brand.py uses, so live and backfill agree.
+    # Brand and creative-language both read the creative image, so they run after
+    # upload against the permanent GCS URL - the same source the backfills use, so
+    # live and backfill agree. Run concurrently so the second call adds no latency.
     brand_image = _primary_image_url(media)
-    brand = await fb.gpt_detect_brand(gpt_session, fb.ad_copy_text(snapshot), brand_image)
+    brand, creative_lang = await asyncio.gather(
+        fb.gpt_detect_brand(gpt_session, fb.ad_copy_text(snapshot), brand_image),
+        fb.gpt_detect_creative_language(gpt_session, brand_image),
+    )
 
     return build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
-                         feed, domain, language, country, vertical, brand, review_status)
+                         feed, domain, language, country, vertical, brand, creative_lang, review_status)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

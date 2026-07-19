@@ -181,6 +181,16 @@ test('exports carry a Brand column with the readable label', () => {
   assert.ok(row.includes('"Brand"'));
 });
 
+test('exports carry a Creative Language column as an ISO code', () => {
+  const { columns, rows } = buildSheetData([{ ...imageAd, creative_language: 'Portuguese' }], NOW, ['ad_id', 'creative_language']);
+  const col = columns.findIndex((c) => c.header === 'Creative Language');
+  assert.notEqual(col, -1);
+  assert.equal(rows[0].cells[col].value, 'PT');
+  // Empty (no readable text on the creative) exports as an empty cell, not a guess.
+  const { rows: r2 } = buildSheetData([{ ...imageAd, creative_language: '' }], NOW, ['creative_language']);
+  assert.equal(r2[0].cells[0].value, '');
+});
+
 test('geoCountries lists the countries in a GEOS split, in order', () => {
   assert.deepEqual(geoCountries('ES-90,MX-10'), ['ES', 'MX']);
   assert.deepEqual(geoCountries('US-100'), ['US']);
