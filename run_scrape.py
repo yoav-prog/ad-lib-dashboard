@@ -239,7 +239,7 @@ def get_bucket():
 # ═════════════════════════════════════════════════════════════════════════════
 def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
                   feed, domain, language, country, vertical, brand, creative_language,
-                  review_status='approved'):
+                  content_flag='', review_status='approved'):
     """Map a raw Apify ad + enrichment + media to a db.AD_COLUMNS dict."""
     snapshot = ad.get('snapshot', {})
     body = snapshot.get('body', {})
@@ -308,6 +308,7 @@ def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
         'brand': brand,
         'creative_language': creative_language,
         'review_status': review_status,
+        'content_flag': content_flag,
     }
 
 
@@ -350,17 +351,25 @@ async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session,
 
     media = await fb.process_ad_media(ad, bucket, {}) if bucket is not None else dict(_EMPTY_MEDIA)
 
-    # Brand and creative-language both read the creative image, so they run after
-    # upload against the permanent GCS URL - the same source the backfills use, so
-    # live and backfill agree. Run concurrently so the second call adds no latency.
+    # Brand, creative-language, and the prohibited-content screen all read the creative
+    # image, so they run after upload against the permanent GCS URL - the same source
+    # the backfills use, so live and backfill agree. Run concurrently so the extra
+    # calls add no wall-clock latency.
     brand_image = _primary_image_url(media)
-    brand, creative_lang = await asyncio.gather(
-        fb.gpt_detect_brand(gpt_session, fb.ad_copy_text(snapshot), brand_image),
+    ad_copy = fb.ad_copy_text(snapshot)
+    brand, creative_lang, content_flag = await asyncio.gather(
+        fb.gpt_detect_brand(gpt_session, ad_copy, brand_image),
         fb.gpt_detect_creative_language(gpt_session, brand_image),
+        fb.gpt_detect_prohibited(gpt_session, ad_copy, brand_image),
     )
+    if content_flag and content_flag != 'none':
+        # Only log real hits, so a scrape that suddenly starts hiding a competitor's
+        # whole feed is visible (a sign the prompt or model regressed). Grep [prohibited].
+        print(f"  [{ad.get('ad_archive_id', '')}] 🚫 [prohibited] hidden: {content_flag}")
 
     return build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
-                         feed, domain, language, country, vertical, brand, creative_lang, review_status)
+                         feed, domain, language, country, vertical, brand, creative_lang,
+                         content_flag, review_status)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

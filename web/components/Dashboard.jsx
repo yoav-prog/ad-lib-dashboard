@@ -15,13 +15,17 @@ import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
 import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
-import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds } from '@/app/actions';
+import FilteredView from '@/components/FilteredView';
+import RejectedView from '@/components/RejectedView';
+import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds } from '@/app/actions';
 
-export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [], domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true, exportSaEmail = null }) {
+export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [], filteredAds: filteredAdsProp = [], rejectedAds: rejectedAdsProp = [], domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true, exportSaEmail = null }) {
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
   const lastRunStart = lastRunStartIso ? new Date(lastRunStartIso).getTime() : null;
   const [ads, setAds] = useState(adsProp);
   const [reviewAds, setReviewAds] = useState(reviewAdsProp);
+  const [filteredAds, setFilteredAds] = useState(filteredAdsProp);
+  const [rejectedAds, setRejectedAds] = useState(rejectedAdsProp);
   const [view, setView] = useState('fresh');
   // The search box updates `searchInput` instantly; `query` (what actually drives the
   // whole-feed filter) trails it by a short debounce. At this row count, re-scanning
@@ -92,6 +96,8 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
   // Keep the local feed in sync when the server sends fresh props (after router.refresh).
   useEffect(() => { setAds(adsProp); }, [adsProp]);
   useEffect(() => { setReviewAds(reviewAdsProp); }, [reviewAdsProp]);
+  useEffect(() => { setFilteredAds(filteredAdsProp); }, [filteredAdsProp]);
+  useEffect(() => { setRejectedAds(rejectedAdsProp); }, [rejectedAdsProp]);
 
   // Decide review-queue ads. Optimistic: the rows leave the queue immediately;
   // router.refresh() then pulls fresh server props so approvals land in the feed.
@@ -99,6 +105,26 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     const idSet = new Set(ids);
     setReviewAds((prev) => prev.filter((a) => !idSet.has(a.ad_archive_id)));
     try { await decideReviewAds(ids, decision); } catch (e) { console.error('[review decide] failed', e); }
+    router.refresh();
+  }, [router]);
+
+  // Clear a prohibited-content flag from the Filtered view. Optimistic: the rows leave
+  // the hidden list immediately; router.refresh() then pulls fresh server props so the
+  // reinstated ad reappears in the feed.
+  const onClearFlag = useCallback(async (ids) => {
+    const idSet = new Set(ids);
+    setFilteredAds((prev) => prev.filter((a) => !idSet.has(a.ad_archive_id)));
+    try { await clearContentFlag(ids); } catch (e) { console.error('[content-flag clear] failed', e); }
+    router.refresh();
+  }, [router]);
+
+  // Restore rejected ads to the feed. Optimistic: the rows leave the Rejected list
+  // immediately; router.refresh() then pulls fresh server props so the ad reappears
+  // in Fresh Finds.
+  const onRestoreRejected = useCallback(async (ids) => {
+    const idSet = new Set(ids);
+    setRejectedAds((prev) => prev.filter((a) => !idSet.has(a.ad_archive_id)));
+    try { await restoreRejectedAds(ids); } catch (e) { console.error('[rejected restore] failed', e); }
     router.refresh();
   }, [router]);
 
@@ -296,6 +322,8 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     trends: 'Search trends...',
     pipeline: 'Search pipeline...',
     review: 'Search review queue...',
+    filtered: 'Search hidden ads...',
+    rejected: 'Search rejected ads...',
     settings: 'Search domains...',
   }[view] || 'Search...';
 
@@ -358,7 +386,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
       <TopChrome
         view={view} setView={setView} query={searchInput} setQuery={setSearchInput}
         placeholder={searchPlaceholder} showSearch={view !== 'detail'}
-        lastScrape={lastScrape} reviewCount={reviewAds.length}
+        lastScrape={lastScrape} reviewCount={reviewAds.length} filteredCount={filteredAds.length} rejectedCount={rejectedAds.length}
         openPalette={() => { setPaletteOpen(true); setPaletteQuery(''); setTimeout(() => document.getElementById('ai-palette')?.focus(), 30); }}
       />
 
@@ -394,6 +422,8 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
       {view === 'trends' && <TrendsView ads={ads} NOW={NOW} matchesQuery={matchesQuery} openDetail={openDetail} />}
       {view === 'pipeline' && <PipelineView ads={ads} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />}
       {view === 'review' && <ReviewView ads={reviewAds} NOW={NOW} canEdit={canEdit} query={query} onDecide={onReviewDecide} />}
+      {view === 'filtered' && <FilteredView ads={filteredAds} NOW={NOW} canEdit={canEdit} query={query} onClear={onClearFlag} />}
+      {view === 'rejected' && <RejectedView ads={rejectedAds} NOW={NOW} canEdit={canEdit} query={query} onRestore={onRestoreRejected} />}
       {view === 'settings' && (
         <ControlRoom
           ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds} canEdit={canEdit}
@@ -445,13 +475,15 @@ function RunBanner({ status, pending, onClick }) {
 // ═════════════════════════════════════════════════════════════════════════════
 // TOP CHROME
 // ═════════════════════════════════════════════════════════════════════════════
-function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, lastScrape, reviewCount = 0, openPalette }) {
+function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, lastScrape, reviewCount = 0, filteredCount = 0, rejectedCount = 0, openPalette }) {
   const tabs = [
     { id: 'fresh', label: 'Fresh Finds' },
     { id: 'competitor', label: 'Competitors' },
     { id: 'trends', label: 'Trends' },
     { id: 'pipeline', label: 'Pipeline' },
     { id: 'review', label: 'Review', badge: reviewCount },
+    { id: 'filtered', label: 'Filtered', badge: filteredCount },
+    { id: 'rejected', label: 'Rejected', badge: rejectedCount },
     { id: 'settings', label: 'Control Room' },
   ];
   const logout = () => fetch('/api/logout', { method: 'POST' }).then(() => { window.location.href = '/login'; });

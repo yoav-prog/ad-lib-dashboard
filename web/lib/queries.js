@@ -36,6 +36,7 @@ function mapAd(r) {
     vertical: r.vertical,
     brand: r.brand,
     creative_language: r.creative_language,
+    content_flag: r.content_flag,
     first_seen_at: iso(r.first_seen_at),
     last_seen_at: iso(r.last_seen_at),
     status: r.status,
@@ -58,9 +59,17 @@ const FEED_COLUMNS = [
   'extra_texts', 'original_image_urls', 'video_hd_url', 'video_preview_url',
   'extra_image_urls', 'extra_video_urls', 'publisher_platform', 'start_date',
   'total_active_time', 'article_title', 'resolved_url', 'rank', 'language', 'country', 'vertical',
-  'brand', 'creative_language', 'first_seen_at', 'last_seen_at', 'status', 'owner', 'linked_article_url',
+  'brand', 'creative_language', 'content_flag', 'first_seen_at', 'last_seen_at', 'status', 'owner', 'linked_article_url',
   'is_saved', 'tags', 'notes', 'review_status',
 ];
+
+// A row is prohibited-content when its content_flag is a real category (anything but
+// 'none'). NULL (not classified yet) and 'none' (classified clean) stay visible, so
+// the feed is never blanked before the backfill runs. These two fragments are the one
+// place the rule lives: the feed and the review queue exclude prohibited rows, the
+// Filtered view selects exactly them, and all three read the same definition (alias a).
+const notProhibited = (sql) => sql`(a.content_flag is null or a.content_flag = 'none')`;
+const isProhibited = (sql) => sql`(a.content_flag is not null and a.content_flag <> 'none')`;
 
 // Only surface ads confirmed by a completed run, so a failed / mid-flight scrape
 // never leaks half-enriched rows into the feed. Rows with no run association
@@ -76,6 +85,7 @@ export async function getAds() {
            (article_content is not null and article_content <> '') as has_article
     from ads a
     where a.review_status = 'approved'
+      and ${notProhibited(sql)}
       and ((a.first_run_id is null and a.last_run_id is null)
        or a.first_run_id in (select id from runs where status = 'completed')
        or a.last_run_id in (select id from runs where status = 'completed'))
@@ -86,7 +96,9 @@ export async function getAds() {
 
 // The review queue: ads whose destination did not match their tracked domain,
 // awaiting a human approve/reject. Same completed-run guard (and same no-cap,
-// no-article-body rule) as the feed.
+// no-article-body rule) as the feed. Prohibited-content wins over the relevance
+// review: a flagged ad is hidden here too and shows only in the Filtered view, so a
+// policy-violating ad can never sit in someone's approve/reject queue.
 export async function getReviewAds() {
   const sql = getSql();
   const rows = await sql`
@@ -94,6 +106,48 @@ export async function getReviewAds() {
            (article_content is not null and article_content <> '') as has_article
     from ads a
     where a.review_status = 'pending'
+      and ${notProhibited(sql)}
+      and ((a.first_run_id is null and a.last_run_id is null)
+       or a.first_run_id in (select id from runs where status = 'completed')
+       or a.last_run_id in (select id from runs where status = 'completed'))
+    order by a.last_seen_at desc nulls last
+  `;
+  return rows.map(mapAd);
+}
+
+// The Filtered view: ads hidden from the feed because the prohibited-content screen
+// flagged them (any content_flag but 'none'), regardless of review_status - this is a
+// hard compliance filter that outranks the relevance review. Kept, not deleted, so a
+// human can spot-check the model and clear a false positive (clearContentFlag), which
+// returns the ad to the feed. Same completed-run guard as the feed.
+export async function getFilteredAds() {
+  const sql = getSql();
+  const rows = await sql`
+    select ${sql(FEED_COLUMNS)},
+           (article_content is not null and article_content <> '') as has_article
+    from ads a
+    where ${isProhibited(sql)}
+      and ((a.first_run_id is null and a.last_run_id is null)
+       or a.first_run_id in (select id from runs where status = 'completed')
+       or a.last_run_id in (select id from runs where status = 'completed'))
+    order by a.last_seen_at desc nulls last
+  `;
+  return rows.map(mapAd);
+}
+
+// The Rejected list: ads a human rejected in the review queue. The row is KEPT (never
+// deleted) so the scraper's dedup never re-imports the ad - which also means we can
+// restore one to the feed on demand (restoreRejectedAds). Prohibited-content still
+// wins (a flagged ad shows only in Filtered), so this applies the same notProhibited
+// exclusion as the feed and review queue. Same completed-run guard.
+export async function getRejectedAds() {
+  const sql = getSql();
+  const rows = await sql`
+    select ${sql(FEED_COLUMNS)},
+           (article_content is not null and article_content <> '') as has_article
+    from ads a
+    where a.review_status = 'rejected'
+      and ${notProhibited(sql)}
       and ((a.first_run_id is null and a.last_run_id is null)
        or a.first_run_id in (select id from runs where status = 'completed')
        or a.last_run_id in (select id from runs where status = 'completed'))

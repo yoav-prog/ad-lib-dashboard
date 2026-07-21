@@ -21,6 +21,7 @@ import re
 import time
 
 import brand   # shared brand prompt + answer parsing (SSOT with backfill_brand.py)
+import content_flag   # shared prohibited-content prompt + parsing (SSOT with backfill_content_flag.py)
 import creative_language   # shared creative-language prompt + parsing (SSOT with backfill_creative_language.py)
 
 # ── Secrets & configuration (loaded from the environment) ─────────────────────
@@ -386,6 +387,39 @@ async def gpt_detect_creative_language(session, image_url):
         except Exception as e:
             print(f"  ⚠️  GPT creative-language error: {e}")
             return None
+
+
+async def gpt_detect_prohibited(session, ad_copy, image_url):
+    """Screen the creative against Google Publisher Policies' Prohibited Content Topics,
+    from BOTH the image and the copy - a violation can live in either (a weapons photo,
+    or gambling text). Returns one content_flag.CONTENT_FLAG_VALUES slug, or ''. The
+    prompt + parsing live in content_flag.py so the live path and backfill_content_flag.py
+    never drift. Returns '' on failure, like the sibling detectors, so a hiccup leaves
+    the ad unclassified (NULL) and still visible - never wrongly hidden."""
+    messages = content_flag.build_content_flag_messages(ad_copy, image_url)
+    if messages is None:
+        return ''
+    async with GPT_SEMAPHORE:
+        try:
+            payload = {
+                "model": content_flag.CONTENT_FLAG_MODEL,
+                "messages": messages,
+                "max_tokens": 4,
+                "temperature": 0,
+            }
+            async with session.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return content_flag.normalize_content_flag(result['choices'][0]['message']['content'])
+                return ''
+        except Exception as e:
+            print(f"  ⚠️  GPT prohibited-content error: {e}")
+            return ''
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SCRAPINGBEE ARTICLE SCRAPING  (async wrapper with semaphore)

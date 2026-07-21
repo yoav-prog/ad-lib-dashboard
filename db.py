@@ -37,12 +37,18 @@ AD_COLUMNS = [
     'publisher_platform', 'start_date', 'total_active_time',
     'article_title', 'article_content', 'resolved_url', 'rank',
     'language', 'country', 'vertical', 'brand', 'creative_language', 'review_status',
+    'content_flag',
 ]
 
 # Refreshed every time an ad is re-seen (everything except its identity), with
-# one deliberate exception: review_status is set on insert only, so a later
-# scrape can never overwrite a human's approve/reject decision.
-_UPDATE_COLUMNS = [c for c in AD_COLUMNS if c not in ('ad_archive_id', 'review_status')]
+# two deliberate exceptions, both human-decision fields set on insert only so a
+# later scrape can never overwrite a person's call:
+#   review_status  a human's approve/reject
+#   content_flag   a human's "not prohibited" override from the Filtered view
+# content_flag is still filled on insert by the classifier; it just is not
+# re-stamped on re-sighting (a cleared false positive must stay cleared).
+_UPDATE_COLUMNS = [c for c in AD_COLUMNS
+                   if c not in ('ad_archive_id', 'review_status', 'content_flag')]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
