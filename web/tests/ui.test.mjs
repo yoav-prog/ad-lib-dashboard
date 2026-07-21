@@ -3,7 +3,9 @@
 // exports must carry the watchable video link, not the poster image.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, brandLabel, brandColor, BRAND_OPTIONS } from '../lib/ui.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -303,4 +305,51 @@ test('the Search Query column flows through buildSheetData and buildCsv', () => 
   const [header, row] = buildCsv([predictoRedirect], NOW).split('\r\n');
   assert.ok(header.includes('"Search Query"'));
   assert.ok(row.includes('"Startup Grants Guide 2026 en"'));
+});
+
+// ── prohibited-content: the Filtered view's queue filter + label map ───────────
+const flaggedAds = [
+  { ad_archive_id: 'f1', content_flag: 'gambling', domain: 'bet.com', page_name: 'Bet', body_text: 'win big' },
+  { ad_archive_id: 'f2', content_flag: 'adult', domain: 'x.com', page_name: 'X', body_text: 'nsfw' },
+  { ad_archive_id: 'f3', content_flag: 'gambling', domain: 'casino.com', page_name: 'Casino', body_text: 'jackpot' },
+];
+
+test('filterFlaggedAds narrows by category facet', () => {
+  const only = filterFlaggedAds(flaggedAds, '', { category: ['gambling'] });
+  assert.deepEqual(only.map((a) => a.ad_archive_id), ['f1', 'f3']);
+});
+
+test('filterFlaggedAds narrows by domain facet', () => {
+  const only = filterFlaggedAds(flaggedAds, '', { domain: ['x.com'] });
+  assert.deepEqual(only.map((a) => a.ad_archive_id), ['f2']);
+});
+
+test('filterFlaggedAds honors the text query across page/copy/domain', () => {
+  assert.deepEqual(filterFlaggedAds(flaggedAds, 'jackpot', {}).map((a) => a.ad_archive_id), ['f3']);
+  assert.deepEqual(filterFlaggedAds(flaggedAds, 'casino', {}).map((a) => a.ad_archive_id), ['f3']);
+  assert.equal(filterFlaggedAds(flaggedAds, 'nothingmatches', {}).length, 0);
+});
+
+test('contentFlagLabel reads every category and falls back to the raw key', () => {
+  for (const o of CONTENT_FLAG_OPTIONS) assert.equal(contentFlagLabel(o.key), o.label);
+  // A value the UI does not know yet (server added a category first) still renders.
+  assert.equal(contentFlagLabel('brand_new_category'), 'brand_new_category');
+  assert.equal(contentFlagLabel(''), '');
+});
+
+// ── rule-20 guard: the queries must keep hiding prohibited ads ─────────────────
+// A source-level check, so removing the filter from the feed (or the review queue,
+// or the Filtered view) fails the build instead of silently leaking hidden ads back.
+test('the feed and review queries exclude prohibited ads; the Filtered query selects them', () => {
+  const src = readFileSync(fileURLToPath(new URL('../lib/queries.js', import.meta.url)), 'utf8');
+  // The shared fragments still exist and encode the exact rule.
+  assert.ok(src.includes("a.content_flag is null or a.content_flag = 'none'"), 'notProhibited fragment');
+  assert.ok(src.includes("a.content_flag is not null and a.content_flag <> 'none'"), 'isProhibited fragment');
+  // The feed and the review queue both apply the exclusion.
+  const getAds = src.slice(src.indexOf('export async function getAds'), src.indexOf('export async function getReviewAds'));
+  const getReview = src.slice(src.indexOf('export async function getReviewAds'), src.indexOf('export async function getFilteredAds'));
+  const getFiltered = src.slice(src.indexOf('export async function getFilteredAds'), src.indexOf('export async function getAdsByIds'));
+  assert.ok(getAds.includes('notProhibited(sql)'), 'feed must exclude prohibited');
+  assert.ok(getReview.includes('notProhibited(sql)'), 'review queue must exclude prohibited');
+  assert.ok(getFiltered.includes('isProhibited(sql)'), 'Filtered view must select prohibited');
 });

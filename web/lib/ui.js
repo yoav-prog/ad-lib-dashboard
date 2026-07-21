@@ -136,6 +136,45 @@ const BRAND_BY_KEY = Object.fromEntries(BRAND_OPTIONS.map((o) => [o.key, o]));
 export const brandLabel = (key) => BRAND_BY_KEY[key]?.label || '';
 export const brandColor = (key) => BRAND_BY_KEY[key]?.color || '#45484D';
 
+// Prohibited-content classification (see content_flag.py). The DB stores a compact
+// category key; the Filtered view shows a readable label. Every key but 'none' is a
+// hidden category. 'none' means classified-clean (and NULL, not-yet-classified, never
+// reaches the Filtered view). Kept in sync with content_flag.CONTENT_FLAG_VALUES.
+export const CONTENT_FLAG_OPTIONS = [
+  { key: 'adult',        label: 'Adult / sexual' },
+  { key: 'weapons',      label: 'Weapons / violence' },
+  { key: 'gambling',     label: 'Gambling' },
+  { key: 'political',    label: 'Political' },
+  { key: 'hate',         label: 'Hate / discrimination' },
+  { key: 'dangerous',    label: 'Dangerous products' },
+  { key: 'before_after', label: 'Before / after' },
+  { key: 'drugs',        label: 'Drugs' },
+  { key: 'egg_donation', label: 'Egg donation' },
+  { key: 'policy_other', label: 'Other policy' },
+];
+const CONTENT_FLAG_BY_KEY = Object.fromEntries(CONTENT_FLAG_OPTIONS.map((o) => [o.key, o]));
+// A hidden ad always carries a real category; fall back to the raw key so an
+// unexpected value (e.g. a new category added server-side first) still reads.
+export const contentFlagLabel = (key) => CONTENT_FLAG_BY_KEY[key]?.label || key || '';
+
+// The Filtered view's queue filter: text search plus category / domain / page facets.
+// Mirrors filterReviewAds but keys the primary facet on the content_flag category.
+export function filterFlaggedAds(ads, query, filters = {}) {
+  const tokens = String(query || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const { category = [], domain = [], page = [] } = filters;
+  return ads.filter((a) => {
+    if (category.length && !category.includes(a.content_flag)) return false;
+    if (domain.length && !domain.includes(a.domain)) return false;
+    if (page.length && !page.includes(reviewPageOf(a))) return false;
+    if (tokens.length) {
+      const hay = [a.page_name, a.domain, a.title, a.caption, a.body_text, a.link_url]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!tokens.every((t) => hay.includes(t))) return false;
+    }
+    return true;
+  });
+}
+
 export function tint(seed) {
   let h = 0;
   const str = String(seed || '');

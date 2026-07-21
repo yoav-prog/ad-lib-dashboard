@@ -72,6 +72,28 @@ export async function reviewAds(ids, decision) {
   return { ok: true, updated: rows.length };
 }
 
+// Clear a prohibited-content flag: a human in the Filtered view says an ad the model
+// hid is actually fine, so we set content_flag = 'none', which returns it to the feed.
+// Scoped to currently-flagged rows so a stale tab can't re-open something already
+// cleared, and a re-scrape never re-hides it (content_flag is insert-only in the
+// scraper's upsert - see db._UPDATE_COLUMNS). We only ever clear TO 'none' here; the
+// model is the only thing that sets a category, so this cannot mislabel an ad.
+export async function clearContentFlag(ids) {
+  await requireAdmin();
+  if (!Array.isArray(ids) || !ids.length) return { ok: false, reason: 'no-ids' };
+  const clean = [...new Set(ids.map(String))].slice(0, 1000);
+  const sql = getSql();
+  const rows = await sql`
+    update ads set content_flag = 'none'
+    where ad_archive_id = any(${clean})
+      and content_flag is not null and content_flag <> 'none'
+    returning ad_archive_id
+  `;
+  console.info('[content-flag clear]', { requested: clean.length, updated: rows.length });
+  revalidatePath('/');
+  return { ok: true, updated: rows.length };
+}
+
 export async function deleteAds(ids) {
   await requireAdmin();
   if (!Array.isArray(ids) || !ids.length) return;
