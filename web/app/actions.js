@@ -94,6 +94,26 @@ export async function clearContentFlag(ids) {
   return { ok: true, updated: rows.length };
 }
 
+// Restore rejected ads to the feed: a human in the Rejected list wants one back, so we
+// flip review_status 'rejected' -> 'approved'. Scoped to currently-rejected rows so a
+// stale tab can't re-decide an ad someone else already handled. Restoring to 'approved'
+// sticks - the scraper's resurface path only reopens 'rejected' rows, never 'approved'
+// ones - so a later sighting won't quietly undo the restore.
+export async function restoreRejectedAds(ids) {
+  await requireAdmin();
+  if (!Array.isArray(ids) || !ids.length) return { ok: false, reason: 'no-ids' };
+  const clean = [...new Set(ids.map(String))].slice(0, 1000);
+  const sql = getSql();
+  const rows = await sql`
+    update ads set review_status = 'approved'
+    where ad_archive_id = any(${clean}) and review_status = 'rejected'
+    returning ad_archive_id
+  `;
+  console.info('[rejected restore]', { requested: clean.length, updated: rows.length });
+  revalidatePath('/');
+  return { ok: true, updated: rows.length };
+}
+
 export async function deleteAds(ids) {
   await requireAdmin();
   if (!Array.isArray(ids) || !ids.length) return;

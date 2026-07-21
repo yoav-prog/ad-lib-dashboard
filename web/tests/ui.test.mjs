@@ -348,8 +348,12 @@ test('the feed and review queries exclude prohibited ads; the Filtered query sel
   // The feed and the review queue both apply the exclusion.
   const getAds = src.slice(src.indexOf('export async function getAds'), src.indexOf('export async function getReviewAds'));
   const getReview = src.slice(src.indexOf('export async function getReviewAds'), src.indexOf('export async function getFilteredAds'));
-  const getFiltered = src.slice(src.indexOf('export async function getFilteredAds'), src.indexOf('export async function getAdsByIds'));
+  const getFiltered = src.slice(src.indexOf('export async function getFilteredAds'), src.indexOf('export async function getRejectedAds'));
+  const getRejected = src.slice(src.indexOf('export async function getRejectedAds'), src.indexOf('export async function getAdsByIds'));
   assert.ok(getAds.includes('notProhibited(sql)'), 'feed must exclude prohibited');
   assert.ok(getReview.includes('notProhibited(sql)'), 'review queue must exclude prohibited');
   assert.ok(getFiltered.includes('isProhibited(sql)'), 'Filtered view must select prohibited');
+  // The Rejected view lists rejected ads but still lets prohibited win (excluded here).
+  assert.ok(getRejected.includes("a.review_status = 'rejected'"), 'Rejected view must target rejected ads');
+  assert.ok(getRejected.includes('notProhibited(sql)'), 'Rejected view must exclude prohibited');
 });

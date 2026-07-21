@@ -135,6 +135,27 @@ export async function getFilteredAds() {
   return rows.map(mapAd);
 }
 
+// The Rejected list: ads a human rejected in the review queue. The row is KEPT (never
+// deleted) so the scraper's dedup never re-imports the ad - which also means we can
+// restore one to the feed on demand (restoreRejectedAds). Prohibited-content still
+// wins (a flagged ad shows only in Filtered), so this applies the same notProhibited
+// exclusion as the feed and review queue. Same completed-run guard.
+export async function getRejectedAds() {
+  const sql = getSql();
+  const rows = await sql`
+    select ${sql(FEED_COLUMNS)},
+           (article_content is not null and article_content <> '') as has_article
+    from ads a
+    where a.review_status = 'rejected'
+      and ${notProhibited(sql)}
+      and ((a.first_run_id is null and a.last_run_id is null)
+       or a.first_run_id in (select id from runs where status = 'completed')
+       or a.last_run_id in (select id from runs where status = 'completed'))
+    order by a.last_seen_at desc nulls last
+  `;
+  return rows.map(mapAd);
+}
+
 // Ads for an explicit id list, returned in the given id order (so an export matches
 // the on-screen ordering). Reuses the same row shape as getAds - article bodies
 // excluded here too, since no export column carries them and an id list can span
