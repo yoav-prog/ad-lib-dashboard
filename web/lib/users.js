@@ -296,11 +296,17 @@ export async function createSession(userId, { userAgent, ip } = {}) {
 // The per-request identity lookup. One indexed query returning the joined user,
 // so a disabled or deleted account stops working immediately. Columns are listed
 // explicitly rather than with u.*, which would drag password_hash along.
+//
+// session_last_seen_at comes back so the caller can decide whether the sliding
+// expiry needs writing at all. Sending that UPDATE unconditionally cost a second
+// database round trip on every single request to refresh a timestamp that only
+// matters once a day.
 export async function findSessionUser(token) {
   if (!token) return null;
   const sql = getSql();
   const rows = await sql`
     select s.id as session_id, s.expires_at as session_expires_at,
+           s.last_seen_at as session_last_seen_at,
            u.id, u.email, u.name, u.role, u.capabilities, u.status,
            u.failed_login_count, u.locked_until, u.created_at, u.updated_at,
            u.last_login_at, u.disabled_at, u.created_by
@@ -313,11 +319,19 @@ export async function findSessionUser(token) {
     ...mapUser(rows[0]),
     session_id: rows[0].session_id,
     session_expires_at: new Date(rows[0].session_expires_at).toISOString(),
+    session_last_seen_at: new Date(rows[0].session_last_seen_at).toISOString(),
   };
 }
 
-// Sliding expiry: push the window out, but only once a day, so a busy tab does
-// not write on every single request.
+// Whether the sliding expiry is actually due. Checked in memory from the row we
+// already fetched, so the common case costs nothing.
+export function sessionNeedsTouch(user) {
+  if (!user?.session_last_seen_at) return false;
+  return Date.now() - new Date(user.session_last_seen_at).getTime() > 24 * 60 * 60 * 1000;
+}
+
+// Sliding expiry: push the window out. The predicate stays in SQL as well as in
+// sessionNeedsTouch so two concurrent requests cannot both write.
 export async function touchSession(sessionId) {
   const sql = getSql();
   await sql`

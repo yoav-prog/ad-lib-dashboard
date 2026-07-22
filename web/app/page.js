@@ -1,4 +1,5 @@
-import { requireAuth, getCapabilities } from '@/lib/auth';
+import { redirect } from 'next/navigation';
+import { requireAuth, getCapabilities, hasSessionCookie } from '@/lib/auth';
 import { getAds, getReviewAds, getFilteredAds, getRejectedAds, getLastRun, getDomains, getRuns, getFeeds } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics } from '@/lib/metrics';
 import Dashboard from '@/components/Dashboard';
@@ -7,9 +8,15 @@ import Dashboard from '@/components/Dashboard';
 export const dynamic = 'force-dynamic';
 
 export default async function Page() {
-  const user = await requireAuth();
-  const caps = await getCapabilities();
-  const [rawAds, rawReviewAds, rawFilteredAds, rawRejectedAds, lastRun, domains, runs, feeds, metricsIndex] = await Promise.all([
+  // No cookie means signed out for certain, so turn the request away before any
+  // query runs. This is a string check, not a database call.
+  if (!await hasSessionCookie()) redirect('/login');
+
+  // Start the data fetch and the session lookup together. They hit the same
+  // pooler, and awaiting auth first put a full round trip in front of every
+  // page load for no benefit: the queries below are the same either way, and
+  // nothing is rendered until requireAuth() has had its say.
+  const dataPromise = Promise.all([
     getAds(),
     getReviewAds(),
     getFilteredAds(),
@@ -20,6 +27,13 @@ export default async function Page() {
     getFeeds(),
     getSheetMetricsIndex(),
   ]);
+  // If the session turns out to be invalid we redirect and never read this, so
+  // make sure a rejection cannot surface as an unhandled one.
+  dataPromise.catch(() => {});
+
+  const user = await requireAuth();
+  const caps = await getCapabilities();
+  const [rawAds, rawReviewAds, rawFilteredAds, rawRejectedAds, lastRun, domains, runs, feeds, metricsIndex] = await dataPromise;
   // Join the campaign metrics (revenue, clicks, RPC, keywords) onto every ad by
   // normalized landing-page URL, so each view and export reads plain ad fields.
   const feed = attachSheetMetrics(rawAds, metricsIndex);
