@@ -1,14 +1,14 @@
-import { getRole } from '@/lib/auth';
+import { getCapabilities } from '@/lib/auth';
 import { getActiveRun, getLatestFinishedRun, getRunLogs } from '@/lib/queries';
 
-// Polled by the dashboard every few seconds while a run is active. Admin-only:
-// logs can contain competitor queries and landing-page URLs, so viewers and the
-// unauthenticated get nothing. Never cached.
+// Polled by the dashboard every few seconds while a run is active. Gated on
+// run_scrapes: logs can contain competitor queries and landing-page URLs, so
+// anyone without scrape access gets nothing. Never cached.
 export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
-  const role = await getRole();
-  if (role !== 'admin') {
+  const caps = await getCapabilities();
+  if (!caps.run_scrapes) {
     return Response.json({ error: 'forbidden' }, { status: 403 });
   }
 

@@ -19,7 +19,15 @@ import FilteredView from '@/components/FilteredView';
 import RejectedView from '@/components/RejectedView';
 import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds } from '@/app/actions';
 
-export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [], filteredAds: filteredAdsProp = [], rejectedAds: rejectedAdsProp = [], domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, canEdit = true, exportSaEmail = null }) {
+export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [], filteredAds: filteredAdsProp = [], rejectedAds: rejectedAdsProp = [], domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null }) {
+  // The server resolved these; the UI only decides what to render. Every action
+  // is gated again server-side, so hiding a control is a courtesy, not the lock.
+  const canEdit = caps.edit_ads === true;
+  const canRun = caps.run_scrapes === true;
+  const canManageDomains = caps.manage_domains === true;
+  const canExport = caps.export_data === true;
+
+
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
   const lastRunStart = lastRunStartIso ? new Date(lastRunStartIso).getTime() : null;
   const [ads, setAds] = useState(adsProp);
@@ -73,8 +81,10 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     setAds((prev) => prev.map((a) => (selected.has(a.ad_archive_id) ? { ...a, ...patch } : a)));
     try { await bulkUpdateAds(ids, patch); } catch (e) { console.error(e); }
   };
+  // Re-scraping is a scrape, so this one answers to run_scrapes rather than to
+  // edit_ads even though it lives in the ads toolbar.
   const bulkRefresh = async () => {
-    if (!canEdit || !selected.size) return { ok: false };
+    if (!canRun || !selected.size) return { ok: false };
     try { return await refreshAds([...selected]); } catch (e) { return { ok: false, reason: String(e) }; }
   };
 
@@ -128,7 +138,10 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     router.refresh();
   }, [router]);
 
+  // /api/run-status answers only to run_scrapes, so without it the poller would
+  // spin on 403s forever. Skip it entirely instead.
   const poll = useCallback(async () => {
+    if (!canRun) return;
     let active = null;
     try {
       const rid = watchedRef.current || '';
@@ -159,7 +172,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
     const delay = (active || recentlyDispatched) ? 2500 : 12000;  // fast while live, idle otherwise
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => pollRef.current && pollRef.current(), delay);
-  }, []);
+  }, [canRun]);
   pollRef.current = poll;
 
   useEffect(() => {
@@ -387,6 +400,7 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
         view={view} setView={setView} query={searchInput} setQuery={setSearchInput}
         placeholder={searchPlaceholder} showSearch={view !== 'detail'}
         lastScrape={lastScrape} reviewCount={reviewAds.length} filteredCount={filteredAds.length} rejectedCount={rejectedAds.length}
+        me={me} canManageUsers={caps.manage_users === true}
         openPalette={() => { setPaletteOpen(true); setPaletteQuery(''); setTimeout(() => document.getElementById('ai-palette')?.focus(), 30); }}
       />
 
@@ -403,7 +417,8 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
           selIndex={selIndex} setSelIndex={setSelIndex} openDetail={openDetail} lastRunStart={lastRunStart}
-          canEdit={canEdit} selected={selected} toggleSel={toggleSel} setSelection={setSelection} clearSel={clearSel} bulkDelete={bulkDelete} bulkSet={bulkSet} bulkRefresh={bulkRefresh}
+          canEdit={canEdit} canExport={canExport} canRefresh={canRun}
+          selected={selected} toggleSel={toggleSel} setSelection={setSelection} clearSel={clearSel} bulkDelete={bulkDelete} bulkSet={bulkSet} bulkRefresh={bulkRefresh}
           exportSaEmail={exportSaEmail} onRefreshMetrics={onRefreshMetrics}
         />
       )}
@@ -426,7 +441,8 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
       {view === 'rejected' && <RejectedView ads={rejectedAds} NOW={NOW} canEdit={canEdit} query={query} onRestore={onRestoreRejected} />}
       {view === 'settings' && (
         <ControlRoom
-          ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds} canEdit={canEdit}
+          ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds}
+          canRun={canRun} canManageDomains={canManageDomains}
           runStatus={runStatus} runLogs={runLogs} pending={pending}
           onRunNow={onRunNow} onRunDomains={onRunDomains} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} onStop={onStop}
         />
@@ -475,7 +491,7 @@ function RunBanner({ status, pending, onClick }) {
 // ═════════════════════════════════════════════════════════════════════════════
 // TOP CHROME
 // ═════════════════════════════════════════════════════════════════════════════
-function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, lastScrape, reviewCount = 0, filteredCount = 0, rejectedCount = 0, openPalette }) {
+function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, lastScrape, reviewCount = 0, filteredCount = 0, rejectedCount = 0, me = null, canManageUsers = false, openPalette }) {
   const tabs = [
     { id: 'fresh', label: 'Fresh Finds' },
     { id: 'competitor', label: 'Competitors' },
@@ -526,7 +542,11 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
         <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94`)}>LIVE</span>
         <span style={s(`font-family:${MONO};font-size:10.5px;color:#5A5E64`)}>{lastScrape}</span>
       </div>
-      <button onClick={logout} title="Log out"
+      {canManageUsers && (
+        <a href="/admin" title="Manage users"
+          style={s(`background:none;border:1px solid rgba(255,255,255,.1);color:#8A8E94;font-family:${MONO};font-size:10px;padding:4px 8px;text-decoration:none`)}>USERS</a>
+      )}
+      <button onClick={logout} title={me?.email ? `Sign out ${me.email}` : 'Sign out'}
         style={s(`background:none;border:1px solid rgba(255,255,255,.1);color:#6C7076;font-family:${MONO};font-size:10px;padding:4px 8px;cursor:pointer`)}>EXIT</button>
     </div>
   );
@@ -564,7 +584,7 @@ const FRESH_COLS = [
 ];
 const FRESH_COLS_LS = 'adintel.cols.freshfinds';
 
-function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail, onRefreshMetrics }) {
+function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail, onRefreshMetrics }) {
   const selCount = selected ? selected.size : 0;
   const [sheetOpen, setSheetOpen] = useState(false);
   const filteredIds = filtered.map((a) => a.ad_archive_id);
@@ -787,7 +807,9 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                 <button onClick={() => bulkSet({ status: 'idea' })} style={bulkBtn}>IDEA</button>
                 <button onClick={() => bulkSet({ status: 'drafting' })} style={bulkBtn}>DRAFTING</button>
                 <button onClick={() => bulkSet({ status: 'published' })} style={bulkBtn}>PUBLISHED</button>
-                <button onClick={async () => { setBulkMsg('Refreshing...'); const r = await bulkRefresh(); setBulkMsg(r?.dispatched ? ((r.added ? `Tracked ${r.added} new domain(s), then ` : '') + 'dispatched. Ranks update when the scrape finishes.') : r?.reason === 'no-domain' ? 'These ads have no domain to refresh.' : r?.matched ? ((r.added ? `Tracked ${r.added} new domain(s), ` : '') + 'marked due; the runner refreshes on its next tick.') : 'Nothing to refresh.'); }} style={bulkBtn}>&#8635; REFRESH</button>
+                {canRefresh && (
+                  <button onClick={async () => { setBulkMsg('Refreshing...'); const r = await bulkRefresh(); setBulkMsg(r?.dispatched ? ((r.added ? `Tracked ${r.added} new domain(s), then ` : '') + 'dispatched. Ranks update when the scrape finishes.') : r?.reason === 'no-domain' ? 'These ads have no domain to refresh.' : r?.matched ? ((r.added ? `Tracked ${r.added} new domain(s), ` : '') + 'marked due; the runner refreshes on its next tick.') : 'Nothing to refresh.'); }} style={bulkBtn}>&#8635; REFRESH</button>
+                )}
                 <div style={s('flex:1;padding:0 12px;min-width:0')}><span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block')}>{bulkMsg}</span></div>
                 <button onClick={() => { if (confirm(`Delete ${selCount} ad(s)? This removes them from the database.`)) bulkDelete(); }}
                   style={s(`background:none;border:1px solid rgba(255,120,120,.35);color:#ff8a80;font-family:${MONO};font-size:10px;padding:4px 10px;cursor:pointer`)}>DELETE {selCount}</button>
@@ -821,12 +843,12 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                   <PageSizePicker value={pageSize} onChange={setPageSize} />
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <ColumnPicker defs={FRESH_COLS} visible={cols} toggle={toggleCol} reset={resetCols} />
-                  {canEdit && <MetricsRefreshButton onRefresh={onRefreshMetrics} />}
+                  {canExport && <MetricsRefreshButton onRefresh={onRefreshMetrics} />}
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <button onClick={exportCsv} disabled={!filtered.length}
                     title={`Download these ${fmtInt(filtered.length)} ad(s) as a CSV — exactly the rows your filters and search leave showing`}
                     style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>↓ EXPORT CSV ({fmtInt(filtered.length)})</button>
-                  {canEdit && (
+                  {canExport && (
                     <button onClick={() => setSheetOpen(true)} disabled={!filtered.length}
                       title={`Send these ${fmtInt(filtered.length)} ad(s) to a Google Sheet — exactly the rows your filters and search leave showing`}
                       style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>&#8599; EXPORT TO SHEET ({fmtInt(filtered.length)})</button>

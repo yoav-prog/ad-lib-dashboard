@@ -1,11 +1,13 @@
-import { requireAdmin } from '@/lib/auth';
+import { requireCapability } from '@/lib/auth';
 import { getSql } from '@/lib/db';
 
 // Generate an original first-draft article from a competitor ad + its landing
 // page, so the team can turn inspiration into a publishable draft in one click.
+// Gated on edit_ads: drafting is part of working the content pipeline, and it
+// spends money on the OpenAI call.
 export async function POST(req) {
   try {
-    await requireAdmin();
+    await requireCapability('edit_ads');
   } catch {
     return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
