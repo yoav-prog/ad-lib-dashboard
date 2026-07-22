@@ -6,6 +6,7 @@ import { s } from '@/lib/style';
 import { A, MONO, relTime } from '@/lib/ui';
 import { CAPABILITIES, ROLE_META, ROLE_DEFAULTS, FIXED_ADMIN_ONLY, resolveCapabilities } from '@/lib/capabilities';
 import { inviteUser, resendInvite, updateUser, setUserDisabled, removeUser } from '@/app/admin/actions';
+import { raceTimeout, TIMED_OUT, TIMEOUT_MESSAGE } from '@/lib/timeout';
 
 const PANEL = 'background:#0D0E11;border:1px solid rgba(255,255,255,.09)';
 const LABEL = 'font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase';
@@ -56,10 +57,24 @@ export default function AdminView({ users: initialUsers, events, domain, mailPro
     if (r?.ok) setTimeout(() => window.location.reload(), 600);
   };
 
+  // Every action here has a side effect worth not repeating: inviting someone
+  // twice, or firing a second invite email. When we stop waiting we genuinely do
+  // not know whether it landed, so the banner says exactly that and offers a
+  // reload rather than leaving the button spinning or implying failure.
   const run = async (id, fn) => {
     setBusy(id);
     setMsg(null);
-    try { after(await fn()); } catch (e) { after({ ok: false, error: String(e?.message || e) }); }
+    try {
+      const r = await raceTimeout(fn());
+      if (r === TIMED_OUT) {
+        setBusy(null);
+        setMsg({ ok: false, timedOut: true, text: TIMEOUT_MESSAGE });
+        return;
+      }
+      after(r);
+    } catch (e) {
+      after({ ok: false, error: String(e?.message || e) });
+    }
   };
 
   return (
@@ -86,7 +101,19 @@ export default function AdminView({ users: initialUsers, events, domain, mailPro
           </Banner>
         )}
         {mailProblem && <Banner tone="warn">{mailProblem} Invites and reset links cannot be sent until this is fixed.</Banner>}
-        {msg && <Banner tone={msg.ok ? 'ok' : 'error'}>{msg.text}</Banner>}
+        {msg && (
+          <Banner tone={msg.ok ? 'ok' : msg.timedOut ? 'warn' : 'error'}>
+            {msg.text}
+            {msg.timedOut && (
+              <button
+                onClick={() => window.location.reload()}
+                style={s(`margin-left:10px;background:none;border:1px solid rgba(232,163,61,.45);color:${A};font-family:${MONO};font-size:10px;padding:3px 9px;cursor:pointer`)}
+              >
+                RELOAD
+              </button>
+            )}
+          </Banner>
+        )}
 
         <InviteForm domain={domain} busy={busy === 'invite'} onSubmit={(data) => run('invite', () => inviteUser(data))} />
 
