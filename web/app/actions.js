@@ -2,7 +2,7 @@
 
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
-import { getRole, requireAdmin } from '@/lib/auth';
+import { getCurrentUser, requireCapability } from '@/lib/auth';
 import { getAdsByIds } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
@@ -30,10 +30,10 @@ function cleanDomainIds(ids, cap = 500) {
 
 // The feed ships every ad WITHOUT its landing-article body (the bodies dwarf
 // everything else combined), so the Detail view fetches the one it shows here.
-// Read-only, so any valid session (viewer included) may call it.
+// Read-only, so any signed-in account may call it, whatever their permissions.
 export async function getAdArticle(adId) {
-  const role = await getRole();
-  if (!role) throw new Error('Forbidden: sign in required');
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
   const sql = getSql();
   const rows = await sql`
     select article_title, article_content from ads where ad_archive_id = ${String(adId)}
@@ -44,7 +44,7 @@ export async function getAdArticle(adId) {
 }
 
 export async function updateAdWorkflow(adId, patch) {
-  await requireAdmin();
+  await requireCapability('edit_ads');
   const set = pick(patch, AD_FIELDS);
   if (!Object.keys(set).length) return;
   const sql = getSql();
@@ -57,7 +57,7 @@ export async function updateAdWorkflow(adId, patch) {
 // Scoped to pending rows so a stale tab can never flip an ad someone else
 // already decided on.
 export async function reviewAds(ids, decision) {
-  await requireAdmin();
+  await requireCapability('edit_ads');
   if (!Array.isArray(ids) || !ids.length) return { ok: false, reason: 'no-ids' };
   if (!['approved', 'rejected'].includes(decision)) return { ok: false, reason: 'bad-decision' };
   const clean = [...new Set(ids.map(String))].slice(0, 1000);
@@ -79,7 +79,7 @@ export async function reviewAds(ids, decision) {
 // scraper's upsert - see db._UPDATE_COLUMNS). We only ever clear TO 'none' here; the
 // model is the only thing that sets a category, so this cannot mislabel an ad.
 export async function clearContentFlag(ids) {
-  await requireAdmin();
+  await requireCapability('edit_ads');
   if (!Array.isArray(ids) || !ids.length) return { ok: false, reason: 'no-ids' };
   const clean = [...new Set(ids.map(String))].slice(0, 1000);
   const sql = getSql();
@@ -100,7 +100,7 @@ export async function clearContentFlag(ids) {
 // sticks - the scraper's resurface path only reopens 'rejected' rows, never 'approved'
 // ones - so a later sighting won't quietly undo the restore.
 export async function restoreRejectedAds(ids) {
-  await requireAdmin();
+  await requireCapability('edit_ads');
   if (!Array.isArray(ids) || !ids.length) return { ok: false, reason: 'no-ids' };
   const clean = [...new Set(ids.map(String))].slice(0, 1000);
   const sql = getSql();
@@ -115,7 +115,7 @@ export async function restoreRejectedAds(ids) {
 }
 
 export async function deleteAds(ids) {
-  await requireAdmin();
+  await requireCapability('edit_ads');
   if (!Array.isArray(ids) || !ids.length) return;
   const sql = getSql();
   await sql`delete from ads where ad_archive_id = any(${ids})`;
@@ -123,7 +123,7 @@ export async function deleteAds(ids) {
 }
 
 export async function bulkUpdateAds(ids, patch) {
-  await requireAdmin();
+  await requireCapability('edit_ads');
   if (!Array.isArray(ids) || !ids.length) return;
   const set = pick(patch, AD_FIELDS);
   if (!Object.keys(set).length) return;
@@ -136,7 +136,7 @@ export async function bulkUpdateAds(ids, patch) {
 // The pipeline is per-query, so this marks the matching tracked domains due (and
 // dispatches the workflow if configured); the scrape then upserts fresh data.
 export async function refreshAds(ids) {
-  await requireAdmin();
+  await requireCapability('run_scrapes');
   if (!Array.isArray(ids) || !ids.length) return { ok: false, matched: 0 };
   const sql = getSql();
   const rows = await sql`select distinct domain from ads where ad_archive_id = any(${ids}) and domain is not null`;
@@ -182,7 +182,7 @@ export async function refreshAds(ids) {
 }
 
 export async function addDomain(data) {
-  await requireAdmin();
+  await requireCapability('manage_domains');
   const sql = getSql();
   await sql`
     insert into domains (query, country, active_status, max_ads, interval_days, feed)
@@ -210,7 +210,7 @@ function clampMaxAds(v) {
 }
 
 export async function updateDomain(id, patch) {
-  await requireAdmin();
+  await requireCapability('manage_domains');
   const set = pick(patch, DOMAIN_FIELDS);
   if (!Object.keys(set).length) return;
   const sql = getSql();
@@ -233,7 +233,7 @@ export async function updateDomain(id, patch) {
 }
 
 export async function deleteDomain(id) {
-  await requireAdmin();
+  await requireCapability('manage_domains');
   const sql = getSql();
   await sql`delete from domains where id = ${id}`;
   revalidatePath('/');
@@ -244,7 +244,7 @@ export async function deleteDomain(id) {
 // max_ads/interval_days are clamped, and an interval change re-spaces next_run_at
 // so "Next Due" reflects the new cadence immediately.
 export async function bulkUpdateDomains(ids, patch) {
-  await requireAdmin();
+  await requireCapability('manage_domains');
   const clean = cleanDomainIds(ids);
   if (!clean.length) return;
   const set = pick(patch, DOMAIN_FIELDS);
@@ -267,7 +267,7 @@ export async function bulkUpdateDomains(ids, patch) {
 }
 
 export async function deleteDomains(ids) {
-  await requireAdmin();
+  await requireCapability('manage_domains');
   const clean = cleanDomainIds(ids);
   if (!clean.length) return;
   const sql = getSql();
@@ -276,7 +276,7 @@ export async function deleteDomains(ids) {
 }
 
 export async function addFeed(name) {
-  await requireAdmin();
+  await requireCapability('manage_domains');
   const n = String(name || '').trim();
   if (!n) return;
   const sql = getSql();
@@ -285,7 +285,7 @@ export async function addFeed(name) {
 }
 
 export async function deleteFeed(id) {
-  await requireAdmin();
+  await requireCapability('manage_domains');
   const sql = getSql();
   await sql`delete from feeds where id = ${id}`;
   revalidatePath('/');
@@ -295,7 +295,7 @@ export async function deleteFeed(id) {
 // GitHub dispatch token is configured) kick the scrape workflow so it runs at
 // once. Without the token it still marks them due for the next scheduled tick.
 export async function triggerScrape() {
-  await requireAdmin();
+  await requireCapability('run_scrapes');
   const sql = getSql();
   await sql`update domains set next_run_at = now() where enabled`;
   revalidatePath('/');
@@ -330,7 +330,7 @@ export async function triggerScrape() {
 // them up on its next tick, alongside anything else already due. Returns what it
 // did so the UI can report honestly. Capped at 50 rows per targeted run.
 export async function runDomains(ids) {
-  await requireAdmin();
+  await requireCapability('run_scrapes');
   const clean = cleanDomainIds(ids, 50);
   if (!clean.length) return { ok: false, reason: 'no-ids' };
 
@@ -373,7 +373,7 @@ export async function runDomains(ids) {
 //   cancelled    - GitHub workflow runs cancelled (the background job)
 //   ghConfigured - whether we could reach GitHub to cancel at all
 export async function stopRun() {
-  await requireAdmin();
+  await requireCapability('run_scrapes');
   const sql = getSql();
   const clearedRows = await sql`
     update runs set status = 'failed', finished_at = now(),
@@ -415,7 +415,7 @@ export async function stopRun() {
 // gone silent. Scoped to status='running' so it can never clobber a run that
 // completed on its own in the meantime.
 export async function markRunFailed(runId) {
-  await requireAdmin();
+  await requireCapability('run_scrapes');
   const sql = getSql();
   await sql`
     update runs
@@ -432,7 +432,7 @@ export async function markRunFailed(runId) {
 // joins the (cached) sheet automatically - this exists for "the sheet just
 // changed, show me now".
 export async function refreshMetrics() {
-  await requireAdmin();
+  await requireCapability('export_data');
   await getSheetMetricsIndex(Date.now(), { force: true });
   const status = metricsStatus();
   console.info('[metrics] manual refresh', status);
@@ -453,7 +453,7 @@ export async function refreshMetrics() {
 const SHEET_ID_RE = /^[a-zA-Z0-9-_]{20,}$/;
 
 export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys, mode } = {}) {
-  await requireAdmin();
+  await requireCapability('export_data');
   const id = String(spreadsheetId || '').trim();
   const tab = String(tabName || '').trim();
   const saEmail = serviceAccountEmail();

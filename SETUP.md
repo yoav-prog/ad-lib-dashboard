@@ -114,7 +114,56 @@ Vercel env if the data ever moves. The join re-reads the sheet at most every
 
 ---
 
-## 6. What is built vs. what is next
+## 6. Dashboard accounts
+
+Everyone gets their own account. There is no shared passcode.
+
+**Environment variables.** Set these in the Vercel project (and in `.env.local`
+for local work). Full descriptions are in `.env.example`.
+
+| Variable | Purpose |
+|---|---|
+| `SESSION_SECRET` | 32+ random chars. Signs the emergency-access cookie; only needed alongside `BREAK_GLASS_PASSCODE`. |
+| `APP_URL` | Stable public URL. Invite emails link here, so it must be the production domain, not a preview one. |
+| `ALLOWED_EMAIL_DOMAIN` | Only this domain may sign in. Unset means nobody can, on purpose. |
+| `ADMIN_EMAIL` | Where `/setup` sends the first invite. |
+| `SMTP_*`, `EMAIL_FROM` | Google Workspace SMTP for invites and resets. `SMTP_PASS` is an App Password. |
+| `BREAK_GLASS_PASSCODE` | Optional emergency access. Leave blank to disable. |
+
+**First run.**
+
+1. Apply `supabase/migrations/0009_users_and_sessions.sql`.
+2. Deploy, then open `/setup` once. It emails a setup link to `ADMIN_EMAIL` and
+   then closes permanently. It only ever mails that one address, so leaving it
+   exposed is safe.
+3. Open the link, pick a password, and you are signed in as the first admin.
+4. Invite everyone else from `/admin`.
+
+**Roles and permissions.** A role sets the defaults and the `/admin` checkboxes
+override individual permissions per person.
+
+| | edit ads | manage domains | run scrapes | export | manage users |
+|---|---|---|---|---|---|
+| Admin | yes | yes | yes | yes | yes |
+| Editor | yes | no | no | yes | no |
+| Viewer | no | no | no | no | no |
+
+Managing users is not a checkbox: it follows the Admin role, which is what stops
+a non-admin from granting themselves everything.
+
+**Removing someone.** *Disable* keeps the account and its history and signs them
+out everywhere immediately. *Delete* removes the account for good; the audit log
+of what they did survives. The last remaining admin cannot be disabled, deleted,
+or demoted.
+
+**If you get locked out.** Set `BREAK_GLASS_PASSCODE` and go to `/admin/rescue`.
+It grants user management for 30 minutes and never reaches the ad data. Every
+attempt is logged. Without that variable set, recovery means editing the
+database by hand.
+
+---
+
+## 7. What is built vs. what is next
 
 **Built now (this foundation):**
 - `supabase/migrations/0001_initial_schema.sql` - schema, indexes, RLS, run lock.

@@ -1,4 +1,4 @@
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, getCapabilities } from '@/lib/auth';
 import { getAds, getReviewAds, getFilteredAds, getRejectedAds, getLastRun, getDomains, getRuns, getFeeds } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics } from '@/lib/metrics';
 import Dashboard from '@/components/Dashboard';
@@ -7,7 +7,8 @@ import Dashboard from '@/components/Dashboard';
 export const dynamic = 'force-dynamic';
 
 export default async function Page() {
-  const role = await requireAuth();
+  const user = await requireAuth();
+  const caps = await getCapabilities();
   const [rawAds, rawReviewAds, rawFilteredAds, rawRejectedAds, lastRun, domains, runs, feeds, metricsIndex] = await Promise.all([
     getAds(),
     getReviewAds(),
@@ -42,8 +43,9 @@ export default async function Page() {
       lastRunIso={lastRun?.finished_at ?? null}
       lastRunStartIso={lastRun?.started_at ?? null}
       nowIso={new Date().toISOString()}
-      canEdit={role === 'admin'}
-      exportSaEmail={role === 'admin' ? (process.env.GCS_CLIENT_EMAIL ?? null) : null}
+      caps={caps}
+      me={{ email: user.email, name: user.name }}
+      exportSaEmail={caps.export_data ? (process.env.GCS_CLIENT_EMAIL ?? null) : null}
     />
   );
 }

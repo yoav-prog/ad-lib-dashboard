@@ -5,11 +5,18 @@ import { s } from '@/lib/style';
 import { A, MONO, relTime, pad } from '@/lib/ui';
 import { addDomain, updateDomain, deleteDomain, bulkUpdateDomains, deleteDomains, addFeed } from '@/app/actions';
 
+// Two independent permissions land here, and they are genuinely separate jobs:
+// starting and stopping scrapes (canRun) versus editing what gets tracked
+// (canManageDomains). Someone can have either without the other, so the row
+// checkboxes and the bulk bar appear for both while the controls inside each
+// answer to their own capability.
 export default function ControlRoom({
-  ads, domains, runs, NOW, query = '', feeds = [], canEdit = true,
+  ads, domains, runs, NOW, query = '', feeds = [],
+  canRun = false, canManageDomains = false,
   runStatus = { active: null, lastRun: null }, runLogs = [], pending = false,
   onRunNow, onRunDomains, onMarkFailed, onSeeNewAds, onStop,
 }) {
+  const canSelect = canRun || canManageDomains;
   const [q, setQ] = useState('');
   const [country, setCountry] = useState('ALL');
   const [maxAds, setMaxAds] = useState(100);
@@ -236,7 +243,7 @@ export default function ControlRoom({
     <div style={s('max-width:1160px')}>
       <div style={s('display:flex;align-items:center;gap:12px;height:44px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06)')}>
         <span style={s(`font-family:${MONO};font-size:12px;letter-spacing:1px;color:#E7E8EA`)}>CONTROL ROOM</span>
-        {!canEdit && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:2px 7px`)}>VIEWER · READ-ONLY</span>}
+        {!canSelect && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:2px 7px`)}>VIEWER · READ-ONLY</span>}
       </div>
 
       {/* run summary + run now */}
@@ -251,7 +258,7 @@ export default function ControlRoom({
               <Stat label="Total Runs" value={pad(runs.length)} color="#C6C9CE" />
             </div>
           </div>
-          {canEdit && (
+          {canRun && (
             <div style={s('display:flex;flex-direction:column;align-items:flex-end;gap:7px')}>
               <div style={s('display:flex;align-items:center;gap:8px')}>
                 <button onClick={stopRunner} disabled={stopping}
@@ -274,11 +281,11 @@ export default function ControlRoom({
       {/* live run panel: exactly what the run is doing, its status, and full logs */}
       {showLivePanel && (
         <LiveRunPanel active={active} pending={pending} lastRun={lastRun} logs={runLogs}
-          canEdit={canEdit} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} onStop={onStop} />
+          canEdit={canRun} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} onStop={onStop} />
       )}
 
       {/* feeds */}
-      {canEdit && (
+      {canManageDomains && (
         <div style={s('padding:18px 24px;border-bottom:1px solid rgba(255,255,255,.06)')}>
           <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:10px')}>Feeds</div>
           <div style={s('display:flex;align-items:center;gap:8px;flex-wrap:wrap')}>
@@ -297,7 +304,7 @@ export default function ControlRoom({
       <div style={s('padding:22px 24px')}>
         <div style={s('display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px')}>
           <span style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>Tracked Domains / Queries</span>
-          {canEdit && domains.length > 0 && (
+          {canManageDomains && domains.length > 0 && (
             <div style={s('display:flex;align-items:center;gap:7px')}>
               {allMsg && <span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px')}>{allMsg}</span>}
               <span style={s('font-size:10px;color:#6C7076;white-space:nowrap')}>Set all to every</span>
@@ -330,7 +337,7 @@ export default function ControlRoom({
           </span>
         </div>
 
-        {canEdit && (
+        {canManageDomains && (
           <div style={s('display:flex;gap:8px;margin-bottom:14px')}>
             <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addDomainSubmit()}
               placeholder="competitor.com or keyword" style={s(`flex:1;${inputStyle}`)} />
@@ -350,56 +357,64 @@ export default function ControlRoom({
           </div>
         )}
 
-        {canEdit && sel.size > 0 && (
+        {canSelect && sel.size > 0 && (
           <div style={s('display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 12px;margin-bottom:12px;background:#0D0E11;border:1px solid rgba(232,163,61,.28)')}>
             <span style={s(`font-family:${MONO};font-size:11px;color:${A};font-variant-numeric:tabular-nums`)}>{sel.size} selected</span>
             <button onClick={clearSel} style={s(`background:none;border:none;color:#8A8E94;font-family:${MONO};font-size:10px;cursor:pointer`)}>CLEAR</button>
             <span style={s(bulkSep)}>|</span>
 
-            <button onClick={runSelected} disabled={isBusy}
-              title="Scrape only the selected rows, each with its own settings"
-              style={s(`font-family:${MONO};font-size:10.5px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy ? '#5A5E64' : A};border:none;padding:6px 12px;cursor:${isBusy ? 'default' : 'pointer'};white-space:nowrap`)}>
-              {isBusy ? 'RUN IN PROGRESS...' : `► RUN ${sel.size}`}
-            </button>
-            <span style={s('font-size:10px;color:#5A5E64;white-space:nowrap')}>up to {selScopeMax} ads</span>
-            <span style={s(bulkSep)}>|</span>
+            {canRun && (
+              <>
+                <button onClick={runSelected} disabled={isBusy}
+                  title="Scrape only the selected rows, each with its own settings"
+                  style={s(`font-family:${MONO};font-size:10.5px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy ? '#5A5E64' : A};border:none;padding:6px 12px;cursor:${isBusy ? 'default' : 'pointer'};white-space:nowrap`)}>
+                  {isBusy ? 'RUN IN PROGRESS...' : `► RUN ${sel.size}`}
+                </button>
+                <span style={s('font-size:10px;color:#5A5E64;white-space:nowrap')}>up to {selScopeMax} ads</span>
+                <span style={s(bulkSep)}>|</span>
+              </>
+            )}
 
-            <button onClick={() => bulkStatus(true)} title="Set selected rows to Active" style={s(bulkBtn)}>&#9679; ACTIVATE</button>
-            <button onClick={() => bulkStatus(false)} title="Pause selected rows" style={s(bulkBtn)}>&#10073;&#10073; PAUSE</button>
-            <span style={s(bulkSep)}>|</span>
+            {canManageDomains && (
+              <>
+                <button onClick={() => bulkStatus(true)} title="Set selected rows to Active" style={s(bulkBtn)}>&#9679; ACTIVATE</button>
+                <button onClick={() => bulkStatus(false)} title="Pause selected rows" style={s(bulkBtn)}>&#10073;&#10073; PAUSE</button>
+                <span style={s(bulkSep)}>|</span>
 
-            <div style={s('display:flex;align-items:center;gap:5px')}>
-              <span style={s('font-size:10px;color:#6C7076')}>Max ads</span>
-              <input type="number" min="1" value={bulkMaxAds} placeholder="100"
-                onChange={(e) => setBulkMaxAds(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && applyBulkMaxAds()}
-                style={s(`width:54px;${miniInput}`)} />
-              <button onClick={applyBulkMaxAds} style={s(bulkBtn)}>SET</button>
-            </div>
+                <div style={s('display:flex;align-items:center;gap:5px')}>
+                  <span style={s('font-size:10px;color:#6C7076')}>Max ads</span>
+                  <input type="number" min="1" value={bulkMaxAds} placeholder="100"
+                    onChange={(e) => setBulkMaxAds(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && applyBulkMaxAds()}
+                    style={s(`width:54px;${miniInput}`)} />
+                  <button onClick={applyBulkMaxAds} style={s(bulkBtn)}>SET</button>
+                </div>
 
-            <div style={s('display:flex;align-items:center;gap:5px')}>
-              <span style={s('font-size:10px;color:#6C7076')}>Every</span>
-              <input type="number" min="1" max="365" value={bulkDays} placeholder="d"
-                onChange={(e) => setBulkDays(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && applyBulkDays()}
-                style={s(`width:44px;${miniInput}`)} />
-              <span style={s('font-size:10px;color:#6C7076')}>days</span>
-              <button onClick={applyBulkDays} style={s(bulkBtn)}>SET</button>
-            </div>
+                <div style={s('display:flex;align-items:center;gap:5px')}>
+                  <span style={s('font-size:10px;color:#6C7076')}>Every</span>
+                  <input type="number" min="1" max="365" value={bulkDays} placeholder="d"
+                    onChange={(e) => setBulkDays(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && applyBulkDays()}
+                    style={s(`width:44px;${miniInput}`)} />
+                  <span style={s('font-size:10px;color:#6C7076')}>days</span>
+                  <button onClick={applyBulkDays} style={s(bulkBtn)}>SET</button>
+                </div>
 
-            <div style={s('display:flex;align-items:center;gap:5px')}>
-              <span style={s('font-size:10px;color:#6C7076')}>Feed</span>
-              <select value="" onChange={(e) => { if (e.target.value) applyBulkFeed(e.target.value); e.target.value = ''; }}
-                style={s(`${miniInput};font-family:${MONO};min-width:92px;text-align:left`)}>
-                <option value="">set...</option>
-                {feeds.map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
-                <option value="__none__">(no feed)</option>
-              </select>
-            </div>
-            <span style={s(bulkSep)}>|</span>
+                <div style={s('display:flex;align-items:center;gap:5px')}>
+                  <span style={s('font-size:10px;color:#6C7076')}>Feed</span>
+                  <select value="" onChange={(e) => { if (e.target.value) applyBulkFeed(e.target.value); e.target.value = ''; }}
+                    style={s(`${miniInput};font-family:${MONO};min-width:92px;text-align:left`)}>
+                    <option value="">set...</option>
+                    {feeds.map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
+                    <option value="__none__">(no feed)</option>
+                  </select>
+                </div>
+                <span style={s(bulkSep)}>|</span>
 
-            <button onClick={bulkDelete}
-              style={s(`background:none;border:1px solid rgba(255,120,120,.35);color:#ff8a80;font-family:${MONO};font-size:10px;padding:5px 10px;cursor:pointer;white-space:nowrap`)}>DELETE {sel.size}</button>
+                <button onClick={bulkDelete}
+                  style={s(`background:none;border:1px solid rgba(255,120,120,.35);color:#ff8a80;font-family:${MONO};font-size:10px;padding:5px 10px;cursor:pointer;white-space:nowrap`)}>DELETE {sel.size}</button>
+              </>
+            )}
 
             {selMsg && <div style={s('flex:1;min-width:120px')}><span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block')}>{selMsg}</span></div>}
           </div>
@@ -407,7 +422,7 @@ export default function ControlRoom({
 
         <div style={s('border:1px solid rgba(255,255,255,.08)')}>
           <div style={s('display:flex;align-items:center;height:28px;padding:0 14px;background:#0D0E11;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase')}>
-            {canEdit && (
+            {canSelect && (
               <div style={s('width:30px;flex-shrink:0;display:flex;align-items:center')}>
                 <span onClick={() => (allShownSelected ? clearSel() : setSel(new Set(shownIds)))} title="Select all shown"
                   style={s(`width:13px;height:13px;border:1px solid ${allShownSelected ? A : 'rgba(255,255,255,.25)'};background:${allShownSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allShownSelected ? '✓' : ''}</span>
@@ -432,7 +447,7 @@ export default function ControlRoom({
 
           {shownDomains.map((d) => (
             <div key={d.id} style={s(`display:flex;align-items:center;height:44px;padding:0 14px;border-bottom:1px solid rgba(255,255,255,.045);background:${sel.has(d.id) ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
-              {canEdit && (
+              {canSelect && (
                 <div style={s('width:30px;flex-shrink:0;display:flex;align-items:center')}>
                   <span onClick={() => toggleSel(d.id)} title="Select for a targeted run"
                     style={s(`width:13px;height:13px;border:1px solid ${sel.has(d.id) ? A : 'rgba(255,255,255,.25)'};background:${sel.has(d.id) ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{sel.has(d.id) ? '✓' : ''}</span>
@@ -447,7 +462,7 @@ export default function ControlRoom({
               <div style={s(`width:70px;text-align:center;font-family:${MONO};font-size:13px;color:#E7E8EA;font-variant-numeric:tabular-nums`)}>{adsByDomain[d.query] || 0}</div>
               <div style={s('width:118px;display:flex;align-items:center;justify-content:center;gap:6px')}>
                 <span style={s('font-size:10px;color:#6C7076')}>every</span>
-                {canEdit ? (
+                {canManageDomains ? (
                   <input key={d.interval_days} type="number" min="1" max="365" defaultValue={d.interval_days}
                     title="Days between scrapes"
                     onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
@@ -463,7 +478,7 @@ export default function ControlRoom({
                 <span style={s('font-size:10px;color:#6C7076')}>{d.interval_days === 1 ? 'day' : 'days'}</span>
               </div>
               <div style={s('width:86px;text-align:center')}>
-                {canEdit ? (
+                {canManageDomains ? (
                   <button onClick={() => updateDomain(d.id, { enabled: !d.enabled })}
                     style={s(`display:inline-flex;align-items:center;gap:5px;background:none;border:1px solid ${d.enabled ? 'rgba(232,163,61,.4)' : 'rgba(255,255,255,.12)'};padding:3px 8px;cursor:pointer`)}>
                     <span style={s(`width:6px;height:6px;border-radius:50%;background:${d.enabled ? A : '#5A5E64'}`)} />
@@ -474,7 +489,7 @@ export default function ControlRoom({
                 )}
               </div>
               <div style={s('width:32px;display:flex;justify-content:flex-end')}>
-                {canEdit && (
+                {canManageDomains && (
                   <button onClick={() => { if (confirm(`Delete "${d.query}"? This stops tracking it (existing ads stay).`)) deleteDomain(d.id); }}
                     title="Delete"
                     style={s('background:none;border:none;color:#8A8E94;font-size:15px;cursor:pointer;padding:2px 6px')}>×</button>
@@ -488,7 +503,7 @@ export default function ControlRoom({
         </div>
       </div>
 
-      <RunHistory runs={runs} canEdit={canEdit} NOW={NOW} />
+      <RunHistory runs={runs} canEdit={canRun} NOW={NOW} />
     </div>
   );
 }
