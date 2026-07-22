@@ -3,7 +3,7 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAdsByIds } from '@/lib/queries';
+import { getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
@@ -41,6 +41,39 @@ export async function getAdArticle(adId) {
   if (!rows.length) return { ok: false, reason: 'not-found' };
   console.info('[detail article] served', { adId: String(adId), chars: (rows[0].article_content || '').length });
   return { ok: true, article_title: rows[0].article_title, article_content: rows[0].article_content };
+}
+
+// The Review, Filtered and Rejected tabs, fetched when one is first opened
+// rather than shipped with every page render. Together they were about 5.5 MB
+// of a 12.9 MB payload, for views most people never open.
+//
+// Read-only, so the gate matches the feed itself: any signed-in account. The
+// rows carry the same campaign metrics the server attaches to Fresh Finds, so a
+// lazily-loaded tab is indistinguishable from an eagerly-loaded one.
+const SECONDARY_TABS = {
+  review: getReviewAds,
+  filtered: getFilteredAds,
+  rejected: getRejectedAds,
+};
+
+export async function loadSecondaryTab(tab) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  const fetchTab = SECONDARY_TABS[tab];
+  if (!fetchTab) return { ok: false, reason: 'unknown-tab' };
+
+  const [rows, metricsIndex] = await Promise.all([fetchTab(), getSheetMetricsIndex()]);
+  const { ads, matched } = attachSheetMetrics(rows, metricsIndex);
+  console.info('[tab load]', { tab, rows: ads.length, matched });
+  return { ok: true, ads };
+}
+
+// Badge counts on their own, so a decision can refresh the numbers without
+// re-fetching whole tabs.
+export async function refreshSecondaryCounts() {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  return getSecondaryCounts();
 }
 
 export async function updateAdWorkflow(adId, patch) {

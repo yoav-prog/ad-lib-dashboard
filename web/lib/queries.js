@@ -156,6 +156,29 @@ export async function getRejectedAds() {
   return rows.map(mapAd);
 }
 
+// Row counts for the three secondary tabs, in one round trip.
+//
+// Those tabs are loaded on demand rather than shipped with the page: together
+// they were about 5.5 MB of every render, for views most people never open. The
+// badges still need exact numbers though, so this counts what the tabs would
+// return without materialising a single ad row. The run-completed predicate
+// matches the tab queries above, so a badge can never promise rows the tab will
+// not show.
+export async function getSecondaryCounts() {
+  const sql = getSql();
+  const [row] = await sql`
+    select
+      count(*) filter (where a.review_status = 'pending'  and ${notProhibited(sql)})::int as review,
+      count(*) filter (where ${isProhibited(sql)})::int                                   as filtered,
+      count(*) filter (where a.review_status = 'rejected' and ${notProhibited(sql)})::int as rejected
+    from ads a
+    where ((a.first_run_id is null and a.last_run_id is null)
+       or a.first_run_id in (select id from runs where status = 'completed')
+       or a.last_run_id in (select id from runs where status = 'completed'))
+  `;
+  return { review: row.review, filtered: row.filtered, rejected: row.rejected };
+}
+
 // Ads for an explicit id list, returned in the given id order (so an export matches
 // the on-screen ordering). Reuses the same row shape as getAds - article bodies
 // excluded here too, since no export column carries them and an id list can span

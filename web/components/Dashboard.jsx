@@ -17,9 +17,9 @@ import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
 import FilteredView from '@/components/FilteredView';
 import RejectedView from '@/components/RejectedView';
-import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds } from '@/app/actions';
+import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts } from '@/app/actions';
 
-export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [], filteredAds: filteredAdsProp = [], rejectedAds: rejectedAdsProp = [], domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null }) {
+export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0, filtered: 0, rejected: 0 }, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null }) {
   // The server resolved these; the UI only decides what to render. Every action
   // is gated again server-side, so hiding a control is a courtesy, not the lock.
   const canEdit = caps.edit_ads === true;
@@ -31,9 +31,13 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
   const NOW = useMemo(() => new Date(nowIso).getTime(), [nowIso]);
   const lastRunStart = lastRunStartIso ? new Date(lastRunStartIso).getTime() : null;
   const [ads, setAds] = useState(adsProp);
-  const [reviewAds, setReviewAds] = useState(reviewAdsProp);
-  const [filteredAds, setFilteredAds] = useState(filteredAdsProp);
-  const [rejectedAds, setRejectedAds] = useState(rejectedAdsProp);
+  // Review, Filtered and Rejected are fetched on first open rather than shipped
+  // with the page; `counts` drives their badges in the meantime.
+  const [tabAds, setTabAds] = useState({ review: [], filtered: [], rejected: [] });
+  const [counts, setCounts] = useState(secondaryCounts);
+  const [loadingTab, setLoadingTab] = useState(null);
+  const [tabError, setTabError] = useState(null);
+  const loadedRef = useRef({ review: false, filtered: false, rejected: false });
   const [view, setView] = useState('fresh');
   // The search box updates `searchInput` instantly; `query` (what actually drives the
   // whole-feed filter) trails it by a short debounce. At this row count, re-scanning
@@ -105,38 +109,76 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
 
   // Keep the local feed in sync when the server sends fresh props (after router.refresh).
   useEffect(() => { setAds(adsProp); }, [adsProp]);
-  useEffect(() => { setReviewAds(reviewAdsProp); }, [reviewAdsProp]);
-  useEffect(() => { setFilteredAds(filteredAdsProp); }, [filteredAdsProp]);
-  useEffect(() => { setRejectedAds(rejectedAdsProp); }, [rejectedAdsProp]);
+  useEffect(() => { setCounts(secondaryCounts); }, [secondaryCounts]);
+
+  // Fetch a secondary tab the first time it is opened, then keep it in memory
+  // for the rest of the session. `loaded` is separate from the row arrays so an
+  // empty tab is not mistaken for one that has never been fetched.
+  const loadTab = useCallback(async (tab) => {
+    if (loadedRef.current[tab] || loadingTab) return;
+    setLoadingTab(tab);
+    try {
+      const r = await loadSecondaryTab(tab);
+      if (r?.ok) {
+        loadedRef.current[tab] = true;
+        setTabAds((prev) => ({ ...prev, [tab]: r.ads }));
+      } else {
+        setTabError(tab);
+      }
+    } catch (e) {
+      console.error('[tab load] failed', tab, e);
+      setTabError(tab);
+    }
+    setLoadingTab(null);
+  }, [loadingTab]);
+
+  // Switching view is the only entry point, so the fetch hangs off it rather
+  // than off each view's own mount.
+  const goView = useCallback((v) => {
+    setView(v);
+    if (v in loadedRef.current) loadTab(v);
+  }, [loadTab]);
+
+  // After any decision the badge numbers are stale. Re-read just the counts
+  // (one cheap query) instead of re-fetching whole tabs.
+  const syncCounts = useCallback(async () => {
+    try { setCounts(await refreshSecondaryCounts()); } catch { /* badges can lag */ }
+  }, []);
 
   // Decide review-queue ads. Optimistic: the rows leave the queue immediately;
   // router.refresh() then pulls fresh server props so approvals land in the feed.
   const onReviewDecide = useCallback(async (ids, decision) => {
     const idSet = new Set(ids);
-    setReviewAds((prev) => prev.filter((a) => !idSet.has(a.ad_archive_id)));
+    setTabAds((prev) => ({ ...prev, review: prev.review.filter((a) => !idSet.has(a.ad_archive_id)) }));
     try { await decideReviewAds(ids, decision); } catch (e) { console.error('[review decide] failed', e); }
+    // A rejected ad joins the Rejected tab, so that tab's cache is now stale.
+    loadedRef.current.rejected = false;
+    setTabAds((prev) => ({ ...prev, rejected: [] }));
     router.refresh();
-  }, [router]);
+    syncCounts();
+  }, [router, syncCounts]);
 
   // Clear a prohibited-content flag from the Filtered view. Optimistic: the rows leave
   // the hidden list immediately; router.refresh() then pulls fresh server props so the
   // reinstated ad reappears in the feed.
   const onClearFlag = useCallback(async (ids) => {
     const idSet = new Set(ids);
-    setFilteredAds((prev) => prev.filter((a) => !idSet.has(a.ad_archive_id)));
+    setTabAds((prev) => ({ ...prev, filtered: prev.filtered.filter((a) => !idSet.has(a.ad_archive_id)) }));
     try { await clearContentFlag(ids); } catch (e) { console.error('[content-flag clear] failed', e); }
     router.refresh();
-  }, [router]);
+    syncCounts();
+  }, [router, syncCounts]);
 
   // Restore rejected ads to the feed. Optimistic: the rows leave the Rejected list
   // immediately; router.refresh() then pulls fresh server props so the ad reappears
   // in Fresh Finds.
   const onRestoreRejected = useCallback(async (ids) => {
     const idSet = new Set(ids);
-    setRejectedAds((prev) => prev.filter((a) => !idSet.has(a.ad_archive_id)));
+    setTabAds((prev) => ({ ...prev, rejected: prev.rejected.filter((a) => !idSet.has(a.ad_archive_id)) }));
     try { await restoreRejectedAds(ids); } catch (e) { console.error('[rejected restore] failed', e); }
     router.refresh();
-  }, [router]);
+    syncCounts();
+  }, [router, syncCounts]);
 
   // /api/run-status answers only to run_scrapes, so without it the poller would
   // spin on 403s forever. Skip it entirely instead.
@@ -397,9 +439,9 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
   return (
     <div style={s('min-height:100vh')}>
       <TopChrome
-        view={view} setView={setView} query={searchInput} setQuery={setSearchInput}
+        view={view} setView={goView} query={searchInput} setQuery={setSearchInput}
         placeholder={searchPlaceholder} showSearch={view !== 'detail'}
-        lastScrape={lastScrape} reviewCount={reviewAds.length} filteredCount={filteredAds.length} rejectedCount={rejectedAds.length}
+        lastScrape={lastScrape} reviewCount={counts.review} filteredCount={counts.filtered} rejectedCount={counts.rejected}
         me={me} canManageUsers={caps.manage_users === true}
         openPalette={() => { setPaletteOpen(true); setPaletteQuery(''); setTimeout(() => document.getElementById('ai-palette')?.focus(), 30); }}
       />
@@ -436,9 +478,21 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
       {view === 'competitor' && <CompetitorView ads={ads} NOW={NOW} openDetail={openDetail} matchesQuery={matchesQuery} />}
       {view === 'trends' && <TrendsView ads={ads} NOW={NOW} matchesQuery={matchesQuery} openDetail={openDetail} />}
       {view === 'pipeline' && <PipelineView ads={ads} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />}
-      {view === 'review' && <ReviewView ads={reviewAds} NOW={NOW} canEdit={canEdit} query={query} onDecide={onReviewDecide} />}
-      {view === 'filtered' && <FilteredView ads={filteredAds} NOW={NOW} canEdit={canEdit} query={query} onClear={onClearFlag} />}
-      {view === 'rejected' && <RejectedView ads={rejectedAds} NOW={NOW} canEdit={canEdit} query={query} onRestore={onRestoreRejected} />}
+      {view === 'review' && (
+        <LazyTab tab="review" loading={loadingTab === 'review'} failed={tabError === 'review'} retry={() => { setTabError(null); loadTab('review'); }} ready={loadedRef.current.review}>
+          <ReviewView ads={tabAds.review} NOW={NOW} canEdit={canEdit} query={query} onDecide={onReviewDecide} />
+        </LazyTab>
+      )}
+      {view === 'filtered' && (
+        <LazyTab tab="filtered" loading={loadingTab === 'filtered'} failed={tabError === 'filtered'} retry={() => { setTabError(null); loadTab('filtered'); }} ready={loadedRef.current.filtered}>
+          <FilteredView ads={tabAds.filtered} NOW={NOW} canEdit={canEdit} query={query} onClear={onClearFlag} />
+        </LazyTab>
+      )}
+      {view === 'rejected' && (
+        <LazyTab tab="rejected" loading={loadingTab === 'rejected'} failed={tabError === 'rejected'} retry={() => { setTabError(null); loadTab('rejected'); }} ready={loadedRef.current.rejected}>
+          <RejectedView ads={tabAds.rejected} NOW={NOW} canEdit={canEdit} query={query} onRestore={onRestoreRejected} />
+        </LazyTab>
+      )}
       {view === 'settings' && (
         <ControlRoom
           ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds}
@@ -452,12 +506,41 @@ export default function Dashboard({ ads: adsProp, reviewAds: reviewAdsProp = [],
         <Palette
           ads={ads} paletteQuery={paletteQuery} setPaletteQuery={setPaletteQuery}
           close={() => setPaletteOpen(false)}
-          go={(v) => { setView(v); setPaletteOpen(false); }}
+          go={(v) => { goView(v); setPaletteOpen(false); }}
           openDetail={(id) => { openDetail(id); setPaletteOpen(false); }}
         />
       )}
     </div>
   );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LAZY TAB - wrapper for the three views fetched on first open
+// ═════════════════════════════════════════════════════════════════════════════
+// Review, Filtered and Rejected used to ride along with every page render, about
+// 5.5 MB of a 12.9 MB payload for views most people never open. They now load on
+// click, which means three states the eager version never had.
+function LazyTab({ tab, loading, failed, retry, ready, children }) {
+  if (failed) {
+    return (
+      <div style={s('display:flex;flex-direction:column;align-items:center;gap:12px;padding:70px 20px')}>
+        <span style={s('font-size:12.5px;color:#ff8a80')}>Could not load the {tab} list.</span>
+        <button onClick={retry}
+          style={s(`background:#101216;border:1px solid rgba(255,255,255,.14);color:#C6C9CE;font-family:${MONO};font-size:11px;padding:7px 14px;cursor:pointer`)}>
+          TRY AGAIN
+        </button>
+      </div>
+    );
+  }
+  if (loading || !ready) {
+    return (
+      <div style={s('display:flex;align-items:center;justify-content:center;gap:10px;padding:70px 20px')}>
+        <span style={s(`width:8px;height:8px;border-radius:50%;background:${A};animation:freshpulse 1.4s ease-in-out infinite`)} />
+        <span style={s(`font-family:${MONO};font-size:11px;letter-spacing:.5px;color:#8A8E94`)}>LOADING {tab.toUpperCase()}...</span>
+      </div>
+    );
+  }
+  return children;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
