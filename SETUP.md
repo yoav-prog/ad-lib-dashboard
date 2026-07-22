@@ -163,7 +163,28 @@ database by hand.
 
 ---
 
-## 7. What is built vs. what is next
+## 7. Deployment region (performance)
+
+`web/vercel.json` pins functions to `bom1` (Mumbai, `ap-south-1`). This is not
+cosmetic. The Supabase database is in `ap-south-1`, and Vercel functions default
+to `iad1` (Washington DC), so every query was crossing the planet and back.
+
+Measured from a client in Israel against the Mumbai database:
+
+| | |
+|---|---|
+| Bare round trip (`select 1`) | ~220 ms |
+| Queries per dashboard render | 9 |
+| `getAds()` alone | ~4.0 s, ~13 MB |
+
+Vercel's own guidance is that functions should run in the same region as the
+database. Mumbai also happens to be closer to Israel than Virginia is, so this
+helps both hops. JSON has no comments, hence this note: **if the database ever
+moves region, change `vercel.json` to match.**
+
+---
+
+## 8. What is built vs. what is next
 
 **Built now (this foundation):**
 - `supabase/migrations/0001_initial_schema.sql` - schema, indexes, RLS, run lock.

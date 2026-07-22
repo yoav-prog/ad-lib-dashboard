@@ -13,7 +13,7 @@ import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import crypto from 'node:crypto';
 import { resolveCapabilities, CAPABILITY_KEYS } from './capabilities';
-import { findSessionUser, touchSession, deleteSessionByToken, normalizeEmail } from './users';
+import { findSessionUser, touchSession, sessionNeedsTouch, deleteSessionByToken, normalizeEmail } from './users';
 
 export const SESSION_COOKIE = 'adintel_session';
 export const BREAK_GLASS_COOKIE = 'adintel_breakglass';
@@ -97,10 +97,20 @@ export const getCurrentUser = cache(async () => {
   // loop of "authenticated but allowed to do nothing".
   if (user.status !== 'active') return null;
 
-  // Sliding expiry; the query is a no-op unless a day has passed.
-  touchSession(user.session_id).catch(() => { /* never block a read on this */ });
+  // Sliding expiry, but only when it is actually due. Checked against the row we
+  // already have, so on all but one request a day this costs no query at all.
+  if (sessionNeedsTouch(user)) {
+    touchSession(user.session_id).catch(() => { /* never block a read on this */ });
+  }
   return user;
 });
+
+// Is there a session cookie at all? A string check, no database work, so a
+// signed-out request can be turned away before anything expensive starts.
+export async function hasSessionCookie() {
+  const jar = await cookies();
+  return Boolean(jar.get(SESSION_COOKIE)?.value);
+}
 
 // The current user's effective permissions, or all-false when signed out.
 export const getCapabilities = cache(async () => {
