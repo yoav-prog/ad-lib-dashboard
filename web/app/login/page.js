@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { s } from '@/lib/style';
 import AuthShell, { authLabel, authInput, authButton, authError } from '@/components/AuthShell';
+import { ACTION_TIMEOUT_MS } from '@/lib/timeout';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -16,10 +17,14 @@ export default function Login() {
     setBusy(true);
     setErr('');
     try {
+      // This is a real request rather than a server action, so it can actually
+      // be aborted instead of merely abandoned. A hung login is the one case
+      // where retrying is harmless, so the message just says to try again.
       const r = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
+        signal: AbortSignal.timeout(ACTION_TIMEOUT_MS),
       });
       if (r.ok) {
         // A full navigation, not router.push: the session cookie was just set
@@ -29,8 +34,10 @@ export default function Login() {
       }
       const data = await r.json().catch(() => ({}));
       setErr(data.error || 'That email and password combination did not work.');
-    } catch {
-      setErr('Could not reach the server. Check your connection and try again.');
+    } catch (e) {
+      setErr(e?.name === 'TimeoutError' || e?.name === 'AbortError'
+        ? 'The server took too long to answer. Try again in a moment.'
+        : 'Could not reach the server. Check your connection and try again.');
     }
     setBusy(false);
   };

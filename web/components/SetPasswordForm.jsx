@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { s } from '@/lib/style';
 import { authLabel, authInput, authButton, authError } from '@/components/AuthShell';
 import { setPasswordWithToken } from '@/app/auth-actions';
+import { raceTimeout, TIMED_OUT } from '@/lib/timeout';
 
 // Shared by the invite and reset pages: the only difference is wording, so the
 // two flows cannot drift in behaviour.
@@ -32,12 +33,19 @@ export default function SetPasswordForm({ token, purpose, email, minLength }) {
     }
     setBusy(true);
     try {
-      const r = await setPasswordWithToken(token, purpose, password);
+      const r = await raceTimeout(setPasswordWithToken(token, purpose, password));
       if (r?.ok) {
         window.location.href = '/';
         return;
       }
-      setErr(r?.error || 'Something went wrong. Ask your admin for a fresh link.');
+      // The link is single use, so a retry after a timeout would report an
+      // already-spent token and look like a different problem. Send them to sign
+      // in instead: if it did land, the new password already works.
+      if (r === TIMED_OUT) {
+        setErr('This is taking longer than expected. Try signing in with the password you just chose; if that does not work, request a new link.');
+      } else {
+        setErr(r?.error || 'Something went wrong. Ask your admin for a fresh link.');
+      }
     } catch {
       setErr('Could not reach the server. Check your connection and try again.');
     }

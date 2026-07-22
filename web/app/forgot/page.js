@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { s } from '@/lib/style';
 import AuthShell, { authLabel, authInput, authButton, authNote } from '@/components/AuthShell';
 import { requestPasswordReset } from '@/app/auth-actions';
+import { raceTimeout } from '@/lib/timeout';
 
 export default function Forgot() {
   const [email, setEmail] = useState('');
@@ -15,8 +16,10 @@ export default function Forgot() {
     e.preventDefault();
     setBusy(true);
     // The action deliberately answers the same way whether or not the address
-    // has an account, so there is no error branch to render here.
-    const r = await requestPasswordReset(email).catch(() => null);
+    // has an account, so there is no error branch to render here. A timeout
+    // falls through to that same wording too: it carries no `message`, and
+    // saying anything more specific would leak whether the address exists.
+    const r = await raceTimeout(requestPasswordReset(email)).catch(() => null);
     setSent(r?.message || 'If that email has an account, a reset link is on its way. Check your inbox.');
     setBusy(false);
   };

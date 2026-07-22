@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { s } from '@/lib/style';
 import { authLabel, authInput, authButton, authError } from '@/components/AuthShell';
 import { breakGlassLogin } from '@/app/auth-actions';
+import { raceTimeout, TIMED_OUT } from '@/lib/timeout';
 
 export default function RescueForm() {
   const [passcode, setPasscode] = useState('');
@@ -16,12 +17,13 @@ export default function RescueForm() {
     setBusy(true);
     setErr('');
     try {
-      const r = await breakGlassLogin(passcode);
+      const r = await raceTimeout(breakGlassLogin(passcode));
       if (r?.ok) {
         window.location.href = '/admin';
         return;
       }
-      setErr(r?.error || 'That passcode is not correct.');
+      if (r === TIMED_OUT) setErr('This is taking longer than expected. Reload and try again.');
+      else setErr(r?.error || 'That passcode is not correct.');
     } catch {
       setErr('Could not reach the server. Check your connection and try again.');
     }
