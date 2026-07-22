@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { requireAuth, getCapabilities, hasSessionCookie } from '@/lib/auth';
-import { getAds, getReviewAds, getFilteredAds, getRejectedAds, getLastRun, getDomains, getRuns, getFeeds } from '@/lib/queries';
+import { getAds, getSecondaryCounts, getLastRun, getDomains, getRuns, getFeeds } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics } from '@/lib/metrics';
 import Dashboard from '@/components/Dashboard';
 
@@ -16,11 +16,13 @@ export default async function Page() {
   // pooler, and awaiting auth first put a full round trip in front of every
   // page load for no benefit: the queries below are the same either way, and
   // nothing is rendered until requireAuth() has had its say.
+  // Only Fresh Finds is fetched here. Review, Filtered and Rejected are loaded
+  // when their tab is first opened: together they were ~5.5 MB of every render
+  // for views most people never open. Their badges come from one COUNT query
+  // (~13 ms of database work) instead of from materialising the rows.
   const dataPromise = Promise.all([
     getAds(),
-    getReviewAds(),
-    getFilteredAds(),
-    getRejectedAds(),
+    getSecondaryCounts(),
     getLastRun(),
     getDomains(),
     getRuns(),
@@ -33,24 +35,16 @@ export default async function Page() {
 
   const user = await requireAuth();
   const caps = await getCapabilities();
-  const [rawAds, rawReviewAds, rawFilteredAds, rawRejectedAds, lastRun, domains, runs, feeds, metricsIndex] = await dataPromise;
+  const [rawAds, secondaryCounts, lastRun, domains, runs, feeds, metricsIndex] = await dataPromise;
   // Join the campaign metrics (revenue, clicks, RPC, keywords) onto every ad by
   // normalized landing-page URL, so each view and export reads plain ad fields.
   const feed = attachSheetMetrics(rawAds, metricsIndex);
-  const review = attachSheetMetrics(rawReviewAds, metricsIndex);
-  const filtered = attachSheetMetrics(rawFilteredAds, metricsIndex);
-  const rejected = attachSheetMetrics(rawRejectedAds, metricsIndex);
-  console.info('[metrics] attach', { ads: feed.ads.length, matched: feed.matched, reviewAds: review.ads.length, reviewMatched: review.matched, filteredAds: filtered.ads.length, rejectedAds: rejected.ads.length });
+  console.info('[metrics] attach', { ads: feed.ads.length, matched: feed.matched, secondary: secondaryCounts });
   const ads = feed.ads;
-  const reviewAds = review.ads;
-  const filteredAds = filtered.ads;
-  const rejectedAds = rejected.ads;
   return (
     <Dashboard
       ads={ads}
-      reviewAds={reviewAds}
-      filteredAds={filteredAds}
-      rejectedAds={rejectedAds}
+      secondaryCounts={secondaryCounts}
       domains={domains}
       runs={runs}
       feeds={feeds}
