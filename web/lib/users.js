@@ -28,6 +28,7 @@ const USER_COLUMNS = [
   'id', 'email', 'name', 'role', 'capabilities', 'status',
   'failed_login_count', 'locked_until', 'created_at', 'updated_at',
   'last_login_at', 'disabled_at', 'created_by',
+  'google_sub', 'google_linked_at',
 ];
 
 function mapUser(r) {
@@ -47,6 +48,8 @@ function mapUser(r) {
     last_login_at: iso(r.last_login_at),
     disabled_at: iso(r.disabled_at),
     created_by: r.created_by,
+    google_sub: r.google_sub ?? null,
+    google_linked_at: iso(r.google_linked_at),
   };
 }
 
@@ -234,6 +237,76 @@ export async function changeUserRole(id, { name, role, capabilities }) {
   });
 }
 
+// ── google identity ──────────────────────────────────────────────────────────
+
+// Attach a verified Google subject to an account and record the sign-in, all in
+// one transaction so two simultaneous callbacks cannot both claim the identity.
+//
+// This is also where an outstanding invite is redeemed. Signing in with Google
+// proves control of the mailbox the invite was sent to, which is exactly what
+// clicking the emailed link proves, so an 'invited' account activates here
+// without ever setting a password. Any unused invite or reset token is burned at
+// the same time, matching setPasswordAndActivate.
+//
+// Refuses rather than overwrites when the account already carries a different
+// subject: that means the address now belongs to a different Google identity
+// (a leaver's mailbox reissued), and inheriting the old account's role silently
+// would be the wrong answer. An admin unlinks it deliberately instead.
+export async function linkGoogleAccount(userId, googleSub) {
+  const sql = getSql();
+  return sql.begin(async (tx) => {
+    const [target] = await tx`
+      select status, google_sub from users where id = ${userId} for update
+    `;
+    if (!target) return { ok: false, reason: 'not-found' };
+    if (target.status === 'disabled') return { ok: false, reason: 'disabled' };
+    if (target.google_sub && target.google_sub !== googleSub) return { ok: false, reason: 'sub-mismatch' };
+
+    // The unique index would reject this anyway; catching it here turns a
+    // constraint violation into an answer the caller can act on.
+    const [other] = await tx`
+      select id from users where google_sub = ${googleSub} and id <> ${userId}
+    `;
+    if (other) return { ok: false, reason: 'sub-taken' };
+
+    const activated = target.status === 'invited';
+
+    // last_login_at and the throttle reset are what clearFailedLogins does for
+    // the password path. A lockout guards a guessable secret; a proven Google
+    // identity is not one, so a successful sign-in clears it.
+    const rows = await tx`
+      update users
+         set google_sub = ${googleSub},
+             google_linked_at = coalesce(google_linked_at, now()),
+             status = case when status = 'invited' then 'active' else status end,
+             failed_login_count = 0,
+             locked_until = null,
+             last_login_at = now(),
+             updated_at = now()
+       where id = ${userId}
+       returning ${tx(USER_COLUMNS)}
+    `;
+    if (activated) {
+      await tx`update user_tokens set used_at = now() where user_id = ${userId} and used_at is null`;
+    }
+    return { ok: true, activated, linked: !target.google_sub, user: mapUser(rows[0]) };
+  });
+}
+
+// Detach the Google identity, so the next sign-in links whichever one presents
+// itself. The recovery path for a reissued address, and the way to take Google
+// access away from someone who keeps their password.
+export async function unlinkGoogleAccount(userId) {
+  const sql = getSql();
+  const rows = await sql`
+    update users
+       set google_sub = null, google_linked_at = null, updated_at = now()
+     where id = ${userId} and google_sub is not null
+     returning id
+  `;
+  return Boolean(rows[0]);
+}
+
 // ── login throttling ─────────────────────────────────────────────────────────
 
 export async function registerFailedLogin(userId) {
@@ -309,7 +382,8 @@ export async function findSessionUser(token) {
            s.last_seen_at as session_last_seen_at,
            u.id, u.email, u.name, u.role, u.capabilities, u.status,
            u.failed_login_count, u.locked_until, u.created_at, u.updated_at,
-           u.last_login_at, u.disabled_at, u.created_by
+           u.last_login_at, u.disabled_at, u.created_by,
+           u.google_sub, u.google_linked_at
       from sessions s
       join users u on u.id = s.user_id
      where s.token_hash = ${sha256(token)} and s.expires_at > now()
@@ -386,7 +460,8 @@ export async function peekUserToken(token, purpose) {
     select t.id as token_id,
            u.id, u.email, u.name, u.role, u.capabilities, u.status,
            u.failed_login_count, u.locked_until, u.created_at, u.updated_at,
-           u.last_login_at, u.disabled_at, u.created_by
+           u.last_login_at, u.disabled_at, u.created_by,
+           u.google_sub, u.google_linked_at
       from user_tokens t
       join users u on u.id = t.user_id
      where t.token_hash = ${sha256(token)} and t.purpose = ${purpose}

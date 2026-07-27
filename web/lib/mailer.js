@@ -101,9 +101,15 @@ async function send({ to, subject, text, html }) {
   return info;
 }
 
-export async function sendInviteEmail({ to, name, url, invitedBy, expiresHours }) {
+// `googleAvailable` is passed in rather than read from the environment here,
+// because the check lives in lib/google-oauth.js and that module already imports
+// appUrl from this one. Handing the answer down keeps the dependency one-way.
+export async function sendInviteEmail({ to, name, url, invitedBy, expiresHours, googleAvailable = false }) {
   const who = invitedBy ? ` by ${invitedBy}` : '';
   const greeting = name ? `Hi ${name},` : 'Hi,';
+  const how = googleAvailable
+    ? 'Open this link to finish setting up. You can continue with your work Google account, or pick a password:'
+    : 'Set your password to finish setting up your account:';
   return send({
     to,
     subject: 'Your AdIntel account',
@@ -112,7 +118,7 @@ export async function sendInviteEmail({ to, name, url, invitedBy, expiresHours }
       '',
       `You have been given access to the AdIntel dashboard${who}.`,
       '',
-      'Set your password to finish setting up your account:',
+      how,
       url,
       '',
       `This link works once and expires in ${expiresHours} hours.`,
@@ -121,8 +127,12 @@ export async function sendInviteEmail({ to, name, url, invitedBy, expiresHours }
     html: shell(
       'Set up your account',
       `<p style="margin:0 0 12px;font-size:14px;line-height:1.6">${greeting}</p>
-       <p style="margin:0;font-size:14px;line-height:1.6">You have been given access to the AdIntel dashboard${who}. Pick a password to finish setting up your account.</p>`,
-      'Set my password',
+       <p style="margin:0;font-size:14px;line-height:1.6">You have been given access to the AdIntel dashboard${who}. ${
+         googleAvailable
+           ? 'Finish setting up with your work Google account, or pick a password.'
+           : 'Pick a password to finish setting up your account.'
+       }</p>`,
+      googleAvailable ? 'Set up my account' : 'Set my password',
       url,
       `This link works once and expires in ${expiresHours} hours. If you were not expecting this, you can ignore this email.`,
     ),

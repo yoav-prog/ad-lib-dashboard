@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { s } from '@/lib/style';
 import { A, MONO, relTime } from '@/lib/ui';
 import { CAPABILITIES, ROLE_META, ROLE_DEFAULTS, FIXED_ADMIN_ONLY, resolveCapabilities } from '@/lib/capabilities';
-import { inviteUser, resendInvite, updateUser, setUserDisabled, removeUser } from '@/app/admin/actions';
+import { inviteUser, resendInvite, updateUser, setUserDisabled, removeUser, unlinkGoogle } from '@/app/admin/actions';
 
 const PANEL = 'background:#0D0E11;border:1px solid rgba(255,255,255,.09)';
 const LABEL = 'font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase';
@@ -25,6 +25,20 @@ function capSummary(user) {
   if (!on.length) return 'Read-only';
   if (on.length === CAPABILITIES.length) return 'Full access';
   return on.filter((c) => c.key !== FIXED_ADMIN_ONLY).map((c) => c.label).join(', ');
+}
+
+// Shown when an account has a Google identity attached, so an admin can tell at
+// a glance how someone gets in before deciding whether unlinking is the fix.
+function googleChip(linkedAt) {
+  const when = linkedAt ? `, linked ${relTime(Date.now() - new Date(linkedAt).getTime())}` : '';
+  return (
+    <span
+      title={`Signs in with Google${when}`}
+      style={s(`font-family:${MONO};font-size:9px;letter-spacing:.5px;color:#8A8E94;border:1px solid rgba(255,255,255,.12);padding:1px 5px`)}
+    >
+      GOOGLE
+    </span>
+  );
 }
 
 function statusPill(status) {
@@ -103,7 +117,7 @@ export default function AdminView({ users: initialUsers, events, domain, mailPro
             <div style={s(`${LABEL};flex:2;min-width:0`)}>Permissions</div>
             <div style={s(`${LABEL};width:76px;flex-shrink:0`)}>Status</div>
             <div style={s(`${LABEL};width:88px;flex-shrink:0`)}>Last sign-in</div>
-            <div style={s(`${LABEL};width:250px;flex-shrink:0;text-align:right`)}>Actions</div>
+            <div style={s(`${LABEL};width:320px;flex-shrink:0;text-align:right`)}>Actions</div>
           </div>
 
           {users.map((u) => {
@@ -116,7 +130,12 @@ export default function AdminView({ users: initialUsers, events, domain, mailPro
                     <div style={s('font-size:12.5px;color:#E7E8EA;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>
                       {u.email}{isSelf && <span style={s(`color:${A};font-size:10px;margin-left:7px`)}>you</span>}
                     </div>
-                    {u.name && <div style={s('font-size:11px;color:#6C7076;margin-top:2px')}>{u.name}</div>}
+                    {(u.name || u.google_sub) && (
+                      <div style={s('display:flex;align-items:center;gap:8px;margin-top:3px')}>
+                        {u.name && <span style={s('font-size:11px;color:#6C7076')}>{u.name}</span>}
+                        {u.google_sub && googleChip(u.google_linked_at)}
+                      </div>
+                    )}
                   </div>
                   <div style={s(`width:74px;flex-shrink:0;font-family:${MONO};font-size:10.5px;color:#9CA0A6;text-transform:uppercase`)}>{u.role}</div>
                   <div style={s('flex:2;min-width:0;font-size:11.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{capSummary(u)}</div>
@@ -124,13 +143,28 @@ export default function AdminView({ users: initialUsers, events, domain, mailPro
                   <div style={s(`width:88px;flex-shrink:0;font-family:${MONO};font-size:10.5px;color:#6C7076`)}>
                     {u.last_login_at ? relTime(Date.now() - new Date(u.last_login_at).getTime()) : 'never'}
                   </div>
-                  <div style={s('width:250px;flex-shrink:0;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap')}>
+                  <div style={s('width:320px;flex-shrink:0;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap')}>
                     <button style={btn()} disabled={rowBusy} onClick={() => setEditing(editing === u.id ? null : u.id)}>
                       {editing === u.id ? 'CLOSE' : 'EDIT'}
                     </button>
                     {u.status !== 'disabled' && (
                       <button style={btn()} disabled={rowBusy} onClick={() => run(u.id, () => resendInvite(u.id))}>
                         {u.status === 'invited' ? 'RESEND' : 'RESET PW'}
+                      </button>
+                    )}
+                    {u.google_sub && (
+                      <button
+                        style={btn()} disabled={rowBusy || isSelf}
+                        title={isSelf
+                          ? 'You cannot unlink your own Google account'
+                          : 'Stop this account signing in with Google. Their password still works.'}
+                        onClick={() => {
+                          if (confirm(`Unlink Google sign-in for ${u.email}?\n\nThey will be signed out. Their password still works, and the next Google sign-in from that address will link again.`)) {
+                            run(u.id, () => unlinkGoogle(u.id));
+                          }
+                        }}
+                      >
+                        UNLINK
                       </button>
                     )}
                     <button
@@ -354,6 +388,8 @@ const EVENT_TEXT = {
   user_enabled: 'was enabled',
   user_deleted: 'was deleted',
   break_glass: 'break-glass sign-in',
+  google_linked: 'linked their Google account',
+  google_unlinked: 'had Google sign-in unlinked',
 };
 
 function ActivityLog({ events }) {

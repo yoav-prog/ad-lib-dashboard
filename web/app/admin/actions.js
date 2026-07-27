@@ -15,9 +15,10 @@ import { ROLES, overridesFor } from '@/lib/capabilities';
 import {
   createUser, findUserById, findUserByEmail, changeUserRole,
   disableUser, enableUser, deleteUser, createUserToken, deleteSessionsForUser,
-  logAuthEvent, normalizeEmail, INVITE_HOURS, RESET_HOURS,
+  unlinkGoogleAccount, logAuthEvent, normalizeEmail, INVITE_HOURS, RESET_HOURS,
 } from '@/lib/users';
 import { sendInviteEmail, sendResetEmail, appUrl, mailerConfigured, mailerMissing } from '@/lib/mailer';
+import { googleConfigured } from '@/lib/google-oauth';
 
 // Resolves the acting admin, or the break-glass session (which has no user row).
 async function actor() {
@@ -88,7 +89,7 @@ export async function inviteUser({ email, name, role, capabilities }) {
     const token = await createUserToken(user.id, 'invite', INVITE_HOURS);
     await sendInviteEmail({
       to: user.email, name: user.name, url: `${base}/invite/${token}`,
-      invitedBy: me.email, expiresHours: INVITE_HOURS,
+      invitedBy: me.email, expiresHours: INVITE_HOURS, googleAvailable: googleConfigured(),
     });
   } catch (e) {
     // The row exists but the invite did not go out. Say so precisely: the admin
@@ -131,7 +132,10 @@ export async function resendInvite(userId) {
     const token = await createUserToken(user.id, purpose, hours);
     const url = `${base}/${purpose}/${token}`;
     if (purpose === 'invite') {
-      await sendInviteEmail({ to: user.email, name: user.name, url, invitedBy: me.email, expiresHours: hours });
+      await sendInviteEmail({
+        to: user.email, name: user.name, url, invitedBy: me.email,
+        expiresHours: hours, googleAvailable: googleConfigured(),
+      });
     } else {
       await sendResetEmail({ to: user.email, name: user.name, url, expiresHours: hours });
     }
@@ -186,6 +190,43 @@ export async function updateUser(userId, { name, role, capabilities }) {
   revalidatePath('/admin');
   revalidatePath('/');
   return { ok: true, message: 'Saved.' };
+}
+
+// Detach a Google identity from an account. Two reasons to reach for it: the
+// address was reissued to a different person, so their sign-in is now being
+// refused as a conflict, or you want to stop someone using Google while leaving
+// their password working.
+//
+// Sessions go with it, matching what a role change does: taking a sign-in method
+// away should not leave the session it produced still running.
+export async function unlinkGoogle(userId) {
+  const me = await actor();
+  const ip = await clientIp();
+
+  const user = await findUserById(userId);
+  if (!user) return { ok: false, error: 'That account no longer exists.' };
+
+  // Same shape as the other self-harm guards. An admin with no password set
+  // could otherwise remove their own only way back in.
+  if (me.id && me.id === user.id) {
+    return { ok: false, error: 'You cannot unlink your own Google account. Ask another admin.' };
+  }
+  if (!user.google_sub) return { ok: false, error: 'That account has no Google account linked.' };
+
+  if (!await unlinkGoogleAccount(userId)) {
+    return { ok: false, error: 'That account has no Google account linked.' };
+  }
+  await deleteSessionsForUser(userId);
+
+  await logAuthEvent({
+    type: 'google_unlinked', userId, email: user.email,
+    actorId: me.id, actorEmail: me.email, ip,
+  });
+  revalidatePath('/admin');
+  return {
+    ok: true,
+    message: `Google sign-in unlinked for ${user.email}. They are signed out, and the next Google sign-in will link fresh.`,
+  };
 }
 
 export async function setUserDisabled(userId, disabled) {

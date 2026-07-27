@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { s } from '@/lib/style';
-import AuthShell from '@/components/AuthShell';
+import AuthShell, { GoogleButton, AuthDivider } from '@/components/AuthShell';
 import SetPasswordForm from '@/components/SetPasswordForm';
+import { emailDomainAllowed } from '@/lib/auth';
+import { googleConfigured } from '@/lib/google-oauth';
 import { peekUserToken, INVITE_HOURS } from '@/lib/users';
 import { MIN_PASSWORD_LENGTH } from '@/lib/password';
 
@@ -25,8 +27,25 @@ export default async function InvitePage({ params }) {
     );
   }
 
+  // Google finishes the invite too: signing in with the account this was
+  // addressed to proves the same thing clicking this link proves, and the
+  // callback activates the account. Only offered when it could actually work,
+  // so nobody is sent down a path that ends in a refusal.
+  const google = googleConfigured() && emailDomainAllowed(found.user.email);
+
   return (
-    <AuthShell title="Welcome to AdIntel" subtitle="Pick a password and you are in.">
+    <AuthShell
+      title="Welcome to AdIntel"
+      subtitle={google
+        ? 'Continue with your work Google account, or pick a password. Either one finishes your setup.'
+        : 'Pick a password and you are in.'}
+    >
+      {google && (
+        <>
+          <GoogleButton />
+          <AuthDivider label="or set a password" />
+        </>
+      )}
       <SetPasswordForm
         token={token}
         purpose="invite"

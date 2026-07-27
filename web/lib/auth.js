@@ -17,6 +17,7 @@ import { findSessionUser, touchSession, sessionNeedsTouch, deleteSessionByToken,
 
 export const SESSION_COOKIE = 'adintel_session';
 export const BREAK_GLASS_COOKIE = 'adintel_breakglass';
+export const OAUTH_COOKIE = 'adintel_oauth';
 
 const SESSION_DAYS = 30;
 const BREAK_GLASS_MINUTES = 30;
@@ -199,6 +200,48 @@ export async function setBreakGlassCookie() {
 export async function clearBreakGlassCookie() {
   const jar = await cookies();
   jar.delete({ name: BREAK_GLASS_COOKIE, path: '/admin' });
+}
+
+// The in-flight Google sign-in: state, nonce, and the PKCE verifier, held only
+// between the redirect out and the callback back.
+//
+// Scoped to the two OAuth routes so it is never sent anywhere else, and left
+// SameSite=Lax because the callback arrives as a top-level navigation from
+// accounts.google.com, which Strict would drop. Nothing in it is a credential:
+// it is a one-time correlation secret, useless on its own, which is why it is
+// stored as-is rather than signed. Base64 only so JSON survives a cookie value
+// intact whatever encodes it on the way out.
+const OAUTH_PATH = '/api/auth/google';
+
+export async function setOauthCookie(payload, minutes) {
+  const jar = await cookies();
+  jar.set(OAUTH_COOKIE, Buffer.from(JSON.stringify(payload)).toString('base64url'), {
+    ...baseCookie,
+    maxAge: 60 * minutes,
+    path: OAUTH_PATH,
+  });
+}
+
+// Returns null for absent, malformed, or truncated cookies. A sign-in that lost
+// its transaction has to start again; there is nothing to salvage.
+export async function readOauthCookie() {
+  const jar = await cookies();
+  const raw = jar.get(OAUTH_COOKIE)?.value;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+    if (!parsed || typeof parsed !== 'object') return null;
+    const { state, nonce, verifier } = parsed;
+    if (!state || !nonce || !verifier) return null;
+    return { state, nonce, verifier };
+  } catch {
+    return null;
+  }
+}
+
+export async function clearOauthCookie() {
+  const jar = await cookies();
+  jar.delete({ name: OAUTH_COOKIE, path: OAUTH_PATH });
 }
 
 // ── gates ────────────────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ import {
 } from '@/lib/users';
 import { hashPassword, validatePassword } from '@/lib/password';
 import { sendInviteEmail, sendResetEmail, appUrl, mailerConfigured, mailerMissing } from '@/lib/mailer';
+import { googleConfigured } from '@/lib/google-oauth';
 
 // Deliberately identical whether or not the address exists, whether or not it
 // is in the allowed domain, and whether or not mail actually went out.
@@ -41,7 +42,10 @@ export async function requestPasswordReset(email) {
     const url = `${appUrl()}/${purpose}/${token}`;
 
     if (purpose === 'invite') {
-      await sendInviteEmail({ to: user.email, name: user.name, url, expiresHours: hours });
+      await sendInviteEmail({
+        to: user.email, name: user.name, url, expiresHours: hours,
+        googleAvailable: googleConfigured(),
+      });
     } else {
       await sendResetEmail({ to: user.email, name: user.name, url, expiresHours: hours });
     }
@@ -140,7 +144,8 @@ export async function bootstrapFirstAdmin() {
   try {
     const token = await createUserToken(user.id, 'invite', INVITE_HOURS);
     await sendInviteEmail({
-      to: user.email, name: null, url: `${base}/invite/${token}`, expiresHours: INVITE_HOURS,
+      to: user.email, name: null, url: `${base}/invite/${token}`,
+      expiresHours: INVITE_HOURS, googleAvailable: googleConfigured(),
     });
   } catch (e) {
     console.error('[auth] bootstrap mail failed', { error: String(e?.message || e) });
