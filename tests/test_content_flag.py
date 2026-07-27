@@ -5,12 +5,15 @@ feed (false negative) or silently hide a clean one (false positive), so the
 normalization is pinned here - especially the negation guard, which is the difference
 between "not gambling" reading clean and it wrongly hiding the ad.
 
-Also guards the db wiring: content_flag must ride in AD_COLUMNS (or it never persists)
-and must stay OUT of the update set (or a re-scrape re-hides an ad a human cleared).
+Also guards the db wiring: content_flag must ride in AD_COLUMNS (or it never persists),
+must stay OUT of the update set (or a re-scrape re-hides an ad a human cleared), and
+must reach the row as NULL rather than '' when the ad could not be classified (or the
+column's check constraint rejects the row and takes the whole run down with it).
 """
 
 import content_flag
 import db
+import run_scrape
 
 
 # ── normalize_content_flag maps model answers to one category slug ────────────
@@ -86,3 +89,27 @@ def test_content_flag_is_insert_only_so_a_rescrape_never_re_hides_a_cleared_ad()
     # Like review_status, content_flag must not be in the ON CONFLICT update set: a
     # human clearing a false positive to 'none' must survive the next sighting.
     assert 'content_flag' not in db._UPDATE_COLUMNS
+
+
+# ── the written value must satisfy the column's check constraint ──────────────
+def _row(flag):
+    """The db row build_ad_dict makes for a bare ad - only content_flag matters here."""
+    return run_scrape.build_ad_dict(
+        {'ad_archive_id': 'a-1', 'snapshot': {}}, dict(run_scrape._EMPTY_MEDIA),
+        '', '', '', 1, '', 'example.com', '', '', '', '', '', flag,
+    )
+
+
+def test_an_unclassified_ad_is_written_as_null_never_an_empty_string():
+    # '' is what the classifier answers when it could not classify (no creative to look
+    # at, or an OpenAI hiccup). ads_content_flag_check takes NULL or a real slug only,
+    # so writing '' aborts the entire insert batch and fails the run.
+    assert _row('')['content_flag'] is None
+    assert _row(None)['content_flag'] is None
+
+
+def test_every_valid_slug_is_written_through_unchanged():
+    # The NULL coercion above must not swallow a real answer - 'none' included, since
+    # classified-clean is a decision the backfill must not revisit.
+    for slug in content_flag.CONTENT_FLAG_VALUES:
+        assert _row(slug)['content_flag'] == slug
