@@ -4,7 +4,8 @@ db.py - Supabase / Postgres data-access layer for the ad-intelligence pipeline.
 The scraper is a trusted server-side job. It talks to Postgres directly through
 the Supabase transaction pooler (Supavisor, port 6543). Transaction-mode pooling
 requires server-side prepared statements to be disabled, which we do by passing
-prepare_threshold=None to psycopg.
+prepare_threshold=None to psycopg. Every connection is also dialled with a bounded
+connect_timeout - see CONNECT_TIMEOUT_SECONDS for what an unbounded one once cost.
 
 State lives in three tables (see supabase/migrations/0001_initial_schema.sql):
     runs     one row per scrape run; the concurrency lock + integrity boundary
@@ -64,15 +65,36 @@ def _dsn() -> str:
     return dsn
 
 
-@contextmanager
-def connect():
-    """Yield a psycopg connection configured for the transaction pooler."""
-    conn = psycopg.connect(
+# Seconds to wait for a connection before giving up. Without this psycopg waits its
+# own default of 130s, and libpq applies that separately to EACH address the host
+# resolves to - the Supabase pooler resolves to three - so one unreachable pooler
+# blocked a single connect() for ~6.5 minutes. That is what let a live run's heartbeat
+# go silent long enough for the dashboard to call it STALLED (2026-07-27; see
+# _plans/2026-07-27-db-connection-resilience.md). 10s per address caps the wait at
+# ~30s: far above a warm connect, far below the 90s stall threshold.
+CONNECT_TIMEOUT_SECONDS = 10
+
+
+def open_connection():
+    """A new psycopg connection configured for the transaction pooler.
+
+    Prefer connect(), which closes it for you. This exists for the run heartbeat,
+    which holds one connection open for the whole run instead of dialling a new one
+    every two seconds.
+    """
+    return psycopg.connect(
         _dsn(),
         autocommit=True,
         prepare_threshold=None,     # required for transaction-mode pooling
         row_factory=dict_row,
+        connect_timeout=CONNECT_TIMEOUT_SECONDS,
     )
+
+
+@contextmanager
+def connect():
+    """Yield a psycopg connection configured for the transaction pooler."""
+    conn = open_connection()
     try:
         yield conn
     finally:

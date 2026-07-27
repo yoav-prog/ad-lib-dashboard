@@ -60,7 +60,7 @@ async def test_heartbeat_keeps_flushing_during_threaded_blocking_call(monkeypatc
     flushes = []
     monkeypatch.setattr(
         run_scrape, '_flush_once',
-        lambda run_id, logger, progress: flushes.append(time.monotonic()))
+        lambda run_id, logger, progress, holder: flushes.append(time.monotonic()))
 
     stop = asyncio.Event()
     hb = asyncio.create_task(run_scrape._run_heartbeat(
