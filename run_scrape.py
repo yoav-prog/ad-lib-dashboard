@@ -240,7 +240,14 @@ def get_bucket():
 def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
                   feed, domain, language, country, vertical, brand, creative_language,
                   content_flag='', review_status='approved'):
-    """Map a raw Apify ad + enrichment + media to a db.AD_COLUMNS dict."""
+    """Map a raw Apify ad + enrichment + media to a db.AD_COLUMNS dict.
+
+    content_flag is emitted as NULL, never '': the classifier answers '' when it could
+    not classify the ad (nothing to look at, or an OpenAI hiccup), and the column's
+    check constraint accepts only NULL or a real slug - an '' would abort the whole
+    insert batch and fail the run. NULL is also exactly what the column means by "not
+    classified yet", so the ad stays visible and the backfill picks it up later.
+    """
     snapshot = ad.get('snapshot', {})
     body = snapshot.get('body', {})
 
@@ -308,7 +315,7 @@ def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
         'brand': brand,
         'creative_language': creative_language,
         'review_status': review_status,
-        'content_flag': content_flag,
+        'content_flag': content_flag or None,
     }
 
 
