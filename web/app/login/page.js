@@ -1,60 +1,68 @@
-'use client';
-
-import { useState } from 'react';
 import Link from 'next/link';
 import { s } from '@/lib/style';
-import AuthShell, { authLabel, authInput, authButton, authError } from '@/components/AuthShell';
+import AuthShell, { GoogleButton, AuthDivider, authError } from '@/components/AuthShell';
+import LoginForm from '@/components/LoginForm';
+import { allowedDomain } from '@/lib/auth';
+import { googleConfigured } from '@/lib/google-oauth';
 
-export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
+export const dynamic = 'force-dynamic';
 
-  const submit = async (e) => {
-    e.preventDefault();
-    setBusy(true);
-    setErr('');
-    try {
-      const r = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      if (r.ok) {
-        // A full navigation, not router.push: the session cookie was just set
-        // and every page reads it on the server.
-        window.location.href = '/';
-        return;
-      }
-      const data = await r.json().catch(() => ({}));
-      setErr(data.error || 'That email and password combination did not work.');
-    } catch {
-      setErr('Could not reach the server. Check your connection and try again.');
-    }
-    setBusy(false);
-  };
+// A failed Google round trip comes back here as a short ?e= code. The codes are
+// deliberately coarse: each one maps to a sentence that tells the person what to
+// do next, and the specific reason stays in the server log and the audit trail.
+// Nothing here confirms whether an address has an account.
+function googleErrorMessage(code, domain) {
+  const at = domain ? `@${domain}` : 'work';
+  switch (code) {
+    case 'google_off':
+      return 'Google sign-in is not set up on this server yet. Use your email and password.';
+    case 'google_denied':
+      return 'Google sign-in was cancelled. Nothing has changed.';
+    case 'google_expired':
+      return 'That sign-in was interrupted or took too long. Start it again.';
+    case 'google_domain':
+      return `That is not a ${at} Google account. Switch accounts and try again.`;
+    case 'google_unknown':
+      return 'That account has not been added yet. Ask an admin to invite you.';
+    case 'google_disabled':
+      return 'That account has been disabled. Contact your admin.';
+    case 'google_conflict':
+      return 'This account is linked to a different Google account. Ask an admin to unlink it first.';
+    case 'google_throttled':
+      return 'Too many attempts from this network. Wait 15 minutes and try again.';
+    case 'google_failed':
+      return 'Google sign-in did not work. Try again, or use your email and password below.';
+    default:
+      return '';
+  }
+}
+
+export default async function LoginPage({ searchParams }) {
+  const { e } = await searchParams;
+  const domain = allowedDomain();
+  const google = googleConfigured();
+  const message = googleErrorMessage(Array.isArray(e) ? e[0] : e, domain);
+
+  const subtitle = google
+    ? 'Continue with your work Google account, or use the password you set from your invite.'
+    : 'Use your work email and the password you set from your invite.';
 
   return (
-    <AuthShell title="Sign in" subtitle="Use your work email and the password you set from your invite.">
-      <form onSubmit={submit}>
-        <label style={authLabel} htmlFor="email">Email</label>
-        <input
-          id="email" type="email" value={email} autoFocus required autoComplete="username"
-          onChange={(e) => setEmail(e.target.value)} style={authInput(Boolean(err))}
-        />
-        <div style={s('height:14px')} />
-        <label style={authLabel} htmlFor="password">Password</label>
-        <input
-          id="password" type="password" value={password} required autoComplete="current-password"
-          onChange={(e) => setPassword(e.target.value)} style={authInput(Boolean(err))}
-        />
-        {err && <div style={authError} role="alert">{err}</div>}
-        <div style={s('height:16px')} />
-        <button type="submit" disabled={busy} style={authButton(busy)}>
-          {busy ? 'SIGNING IN...' : 'SIGN IN'}
-        </button>
-      </form>
+    <AuthShell title="Sign in" subtitle={subtitle}>
+      {/* Sits above the Google button because that is what it is about. */}
+      {message && (
+        <div style={{ ...authError, marginTop: 0, marginBottom: '16px' }} role="alert">{message}</div>
+      )}
+
+      {google && (
+        <>
+          <GoogleButton />
+          <AuthDivider />
+        </>
+      )}
+
+      <LoginForm />
+
       <div style={s('margin-top:16px;text-align:center')}>
         <Link href="/forgot" style={s('font-size:11.5px;color:#8A8E94;text-decoration:none')}>
           Forgot your password?

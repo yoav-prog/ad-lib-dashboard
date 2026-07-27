@@ -129,15 +129,60 @@ for local work). Full descriptions are in `.env.example`.
 | `ADMIN_EMAIL` | Where `/setup` sends the first invite. |
 | `SMTP_*`, `EMAIL_FROM` | Google Workspace SMTP for invites and resets. `SMTP_PASS` is an App Password. |
 | `BREAK_GLASS_PASSCODE` | Optional emergency access. Leave blank to disable. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Optional. Turns on "Continue with Google". Both unset means the button never appears. |
 
 **First run.**
 
-1. Apply `supabase/migrations/0009_users_and_sessions.sql`.
+1. Apply `supabase/migrations/0009_users_and_sessions.sql`, then
+   `supabase/migrations/0011_google_identity.sql`.
 2. Deploy, then open `/setup` once. It emails a setup link to `ADMIN_EMAIL` and
    then closes permanently. It only ever mails that one address, so leaving it
    exposed is safe.
 3. Open the link, pick a password, and you are signed in as the first admin.
 4. Invite everyone else from `/admin`.
+
+**Sign in with Google (optional).** Adds a "Continue with Google" button to
+`/login` and to invite links, next to the password form. It costs nothing:
+this uses Google's plain OAuth 2.0 endpoints, which are free and have no
+per-user charge. It is not Cloud Identity Platform, which is the paid product
+with a similar name.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), pick the
+   project (the one holding the existing service accounts is fine) and open
+   **APIs & Services → OAuth consent screen**. Choose **Internal**. That limits
+   sign-in to your own Workspace organisation and skips Google's verification
+   review. External would work but puts the app in front of a review and a
+   consent warning for no benefit here.
+2. **Credentials → Create credentials → OAuth client ID → Web application.**
+   Under *Authorized redirect URIs* add, exactly:
+   - `https://your-dashboard.vercel.app/api/auth/google/callback` (must match
+     `APP_URL`)
+   - `http://localhost:3000/api/auth/google/callback` for local work
+3. Put the client ID and secret into `GOOGLE_CLIENT_ID` and
+   `GOOGLE_CLIENT_SECRET` in Vercel and in `.env.local`.
+4. Apply `supabase/migrations/0011_google_identity.sql` if you have not already.
+
+What it does and does not change:
+
+- **Access is still invite-only.** Google proves who someone is; it does not
+  decide whether they may sign in. An address nobody invited at `/admin` is
+  refused, and no account is ever created automatically.
+- **It finishes an invite.** Someone who has been invited can click Continue with
+  Google instead of setting a password, and their account activates. Handy, and
+  it means fewer passwords in the database.
+- **Passwords still work.** Nothing about the email and password path changed, so
+  a broken OAuth client never locks the team out.
+- **Workspace accounts only.** The account must be managed by your Workspace
+  organisation (the `hd` claim). A personal Google account that happens to hold a
+  company address is refused.
+- **One Google account per person.** The Google subject is recorded on first use.
+  If an address is later reissued to a different person, their sign-in is refused
+  as a conflict rather than inheriting the old account. An admin clears that with
+  **UNLINK** on the `/admin` row, which also signs the account out.
+
+If sign-in fails and the server log shows `redirect_uri_mismatch`, the URI in the
+console does not match `APP_URL` byte for byte. That is almost always a trailing
+slash or `http` against `https`.
 
 **Roles and permissions.** A role sets the defaults and the `/admin` checkboxes
 override individual permissions per person.
