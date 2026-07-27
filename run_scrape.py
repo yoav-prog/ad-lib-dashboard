@@ -156,22 +156,59 @@ class _Tee:
         return getattr(self._stream, name)
 
 
-def _flush_once(run_id, logger, progress):
-    """Persist buffered logs + a heartbeat/progress snapshot. Never raises."""
+class _FlushConnection:
+    """One psycopg connection held open across heartbeat flushes.
+
+    db.connect() dials a fresh TCP + TLS connection every call, and the heartbeat
+    flushes every 2s, so a 45-minute run opened well over a thousand of them against
+    the pooler before counting upserts. Holding one also keeps the happy path off the
+    connect path entirely, so a slow pooler cannot delay a heartbeat that has a
+    perfectly good connection already.
+    """
+
+    def __init__(self):
+        self._conn = None
+
+    def get(self):
+        """The live connection, dialled on first use and after any failure."""
+        if self._conn is None or self._conn.closed:
+            self._conn = db.open_connection()
+        return self._conn
+
+    def drop(self):
+        """Discard the connection so the next flush redials. Never raises."""
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _flush_once(run_id, logger, progress, holder):
+    """Persist a heartbeat/progress snapshot + buffered logs. Never raises.
+
+    The heartbeat goes first so that a log insert which fails on its own (an oversized
+    batch, say) still leaves the run reading as alive. There is deliberately no retry
+    here: with autocommit on, retrying after a partly-applied executemany would double
+    up log rows, and the heartbeat loop already comes back around in two seconds.
+    """
     rows = logger.drain()
     try:
-        with db.connect() as conn:
-            if rows:
-                db.insert_run_logs(conn, run_id, rows)
-            db.update_progress(
-                conn, run_id,
-                current_domain=progress.get('current_domain'),
-                domains_total=progress.get('domains_total'),
-                domains_done=progress.get('domains_done'),
-                ads_found_so_far=progress.get('ads_found_so_far'),
-            )
+        conn = holder.get()
+        db.update_progress(
+            conn, run_id,
+            current_domain=progress.get('current_domain'),
+            domains_total=progress.get('domains_total'),
+            domains_done=progress.get('domains_done'),
+            ads_found_so_far=progress.get('ads_found_so_far'),
+        )
+        if rows:
+            db.insert_run_logs(conn, run_id, rows)
     except Exception as e:
-        # Fail-open: a dropped flush loses a few log lines, never the scrape.
+        # Fail-open: a dropped flush loses a few log lines, never the scrape. The
+        # connection may be half-dead, so drop it rather than reuse it next tick.
+        holder.drop()
         print(f'[run-log flush failed: {e}]', file=sys.__stderr__)
 
 
@@ -179,16 +216,48 @@ async def _run_heartbeat(run_id, logger, progress, stop_event, interval=2.0):
     """Flush logs + heartbeat every `interval`s until stopped, then flush once more.
 
     A dedicated task, so the heartbeat stays fresh even while a domain's Apify
-    fetch is running. A stale heartbeat therefore means the process died, not that
-    it is merely busy - which is what lets the dashboard flip to STALLED honestly.
+    fetch is running. A stale heartbeat therefore means the process cannot reach the
+    database, either because it died or because the pooler is unreachable - which is
+    what lets the dashboard flip to STALLED honestly.
     """
-    while not stop_event.is_set():
+    holder = _FlushConnection()
+    try:
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+            await asyncio.to_thread(_flush_once, run_id, logger, progress, holder)
+        await asyncio.to_thread(_flush_once, run_id, logger, progress, holder)
+    finally:
+        holder.drop()
+
+
+async def _db_write_with_retry(label, write, attempts=5, base_delay=3.0):
+    """Run `write(conn)` on a fresh connection, retrying a transient pooler failure.
+
+    Raises the last error once the attempts run out, so a caller's control flow is
+    unchanged - this only buys the write a few more chances first. Runs in a thread
+    because run() is async: a bare db.connect() there blocks the event loop, and the
+    heartbeat task with it, which is how a pooler blip once looked like a dead run.
+    """
+    for attempt in range(1, attempts + 1):
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=interval)
-        except asyncio.TimeoutError:
-            pass
-        await asyncio.to_thread(_flush_once, run_id, logger, progress)
-    await asyncio.to_thread(_flush_once, run_id, logger, progress)
+            await asyncio.to_thread(_db_write_once, write)
+            return
+        except Exception as e:
+            if attempt == attempts:
+                print(f'[db] {label} failed after {attempt} attempt(s): {e}')
+                raise
+            delay = base_delay * attempt
+            print(f'[db] {label} attempt {attempt}/{attempts} failed ({e}); '
+                  f'retrying in {delay:g}s')
+            await asyncio.sleep(delay)
+
+
+def _db_write_once(write):
+    with db.connect() as conn:
+        write(conn)
 
 
 def _install_thread_excepthook():
@@ -632,16 +701,27 @@ async def run(args):
                 except Exception as e:
                     print(f'[budget] could not mark deferred domains due: {e}')
 
-        with db.connect() as conn:
-            db.finish_run(conn, run_id, total_found, total_new)
+        # Worth retrying hard: by now the run has spent its Apify, OpenAI and
+        # ScrapingBee budget, and this one write is what decides whether any of it
+        # reaches the feed - the queries only surface ads from a completed run.
+        await _db_write_with_retry(
+            'finish_run', lambda conn: db.finish_run(conn, run_id, total_found, total_new))
         print(f'\nDONE: found={total_found} new={total_new}')
         _notify_slack(total_found, total_new)
     except Exception as e:
         # Print the traceback first so it lands in run_logs (redacted), then record
         # the failure. The full traceback is exactly what you want for a failed run.
         print(f'\nrun FAILED: {e}\n{traceback.format_exc()}')
-        with db.connect() as conn:
-            db.fail_run(conn, run_id, e)
+        # Fewer attempts than finish_run: claim_run's stale reclaim is the backstop,
+        # so a doomed status write must not add minutes to an already dying job. And
+        # it can never be allowed to raise - on 2026-07-27 this write's own connect
+        # timeout became the reported traceback, hiding the error that killed the run.
+        try:
+            await _db_write_with_retry(
+                'fail_run', lambda conn: db.fail_run(conn, run_id, e), attempts=2)
+        except Exception as db_error:
+            print(f'[db] could not record the failure ({db_error}); '
+                  f'claim_run will reclaim this run as stale')
         raise
     finally:
         # Flush trailing partial lines, stop the heartbeat (its final tick drains
