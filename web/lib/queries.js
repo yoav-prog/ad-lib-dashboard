@@ -1,4 +1,5 @@
 import { getSql } from './db';
+import { createTtlCache } from './ttl-cache';
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 
@@ -26,7 +27,6 @@ function mapAd(r) {
     publisher_platform: r.publisher_platform || [],
     start_date: iso(r.start_date),
     total_active_time: r.total_active_time,
-    article_title: r.article_title,
     resolved_url: r.resolved_url,
     article_content: r.article_content ?? null,
     has_article: r.has_article ?? (r.article_content != null && r.article_content !== ''),
@@ -52,16 +52,18 @@ function mapAd(r) {
   };
 }
 
-// Every ad column the feed ships to the browser. article_content is deliberately
-// absent: the landing-article bodies dwarf every other field combined (tens of MB
-// across a few thousand ads) and only the Detail view reads them, so it fetches
-// the one it needs on demand (getAdArticle) guided by the has_article flag.
+// Every ad column the feed ships to the browser. article_content and article_title
+// are deliberately absent: the landing-article bodies dwarf every other field
+// combined (tens of MB across a few thousand ads) and only the Detail view reads
+// them, so it fetches both on demand (getAdArticle) guided by the has_article flag.
+// article_title rode along in the feed for a while at ~5% of the payload for a field
+// nothing but the Detail heading shows; it now loads with its body instead.
 const FEED_COLUMNS = [
   'ad_archive_id', 'page_id', 'page_name', 'domain', 'feed', 'caption', 'cta_text',
   'body_text', 'cta_type', 'title', 'link_description', 'link_url', 'display_format',
   'extra_texts', 'original_image_urls', 'video_hd_url', 'video_preview_url',
   'extra_image_urls', 'extra_video_urls', 'publisher_platform', 'start_date',
-  'total_active_time', 'article_title', 'resolved_url', 'rank', 'language', 'country', 'vertical',
+  'total_active_time', 'resolved_url', 'rank', 'language', 'country', 'vertical',
   'brand', 'creative_language', 'content_flag', 'rsoc_tier', 'rsoc_policy_area', 'rsoc_reason',
   'first_seen_at', 'last_seen_at', 'status', 'owner', 'linked_article_url',
   'is_saved', 'tags', 'notes', 'review_status',
@@ -75,6 +77,23 @@ const FEED_COLUMNS = [
 const notProhibited = (sql) => sql`(a.content_flag is null or a.content_flag = 'none')`;
 const isProhibited = (sql) => sql`(a.content_flag is not null and a.content_flag <> 'none')`;
 
+// The feed is identical for every viewer and costs ~1.3s to query and serialize
+// (~14k wide rows), yet it was rebuilt on every navigation because the page renders
+// dynamically for auth. Hold it in memory for a short window instead: a warm instance
+// serves repeat loads and concurrent viewers straight from this cache. Ad edits bust
+// it at once (bustAdsCache, called from the mutation actions), so the change is visible
+// on the next render; the TTL is the backstop for rows a scrape writes straight to the
+// database, which never call those actions. See lib/ttl-cache.js for why this is an
+// in-memory cache and not Next's Data Cache.
+const FEED_CACHE_TTL_MS = 60 * 1000;
+const feedCache = createTtlCache(FEED_CACHE_TTL_MS);
+
+// Drop the cached feed so the next getAds() rebuilds it from the database. Called by
+// every server action that changes what the feed would show.
+export function bustAdsCache() {
+  feedCache.bust();
+}
+
 // Only surface ads confirmed by a completed run, so a failed / mid-flight scrape
 // never leaks half-enriched rows into the feed. Rows with no run association
 // (e.g. a backfill) are shown as-is. Only approved ads reach the feed - pending
@@ -83,7 +102,13 @@ const isProhibited = (sql) => sql`(a.content_flag is not null and a.content_flag
 // cap: every eligible ad ships, and the client paginates the rendering - a
 // LIMIT here silently hid everything past the newest N.
 export async function getAds() {
+  const cached = feedCache.peek();
+  if (cached) {
+    console.info('[feed cache] hit', { rows: cached.value.length, ageMs: cached.ageMs });
+    return cached.value;
+  }
   const sql = getSql();
+  const t0 = Date.now();
   const rows = await sql`
     select ${sql(FEED_COLUMNS)},
            (article_content is not null and article_content <> '') as has_article
@@ -95,7 +120,10 @@ export async function getAds() {
        or a.last_run_id in (select id from runs where status = 'completed'))
     order by a.last_seen_at desc nulls last
   `;
-  return rows.map(mapAd);
+  const ads = rows.map(mapAd);
+  feedCache.fill(ads);
+  console.info('[feed cache] miss - rebuilt from db', { rows: ads.length, ms: Date.now() - t0 });
+  return ads;
 }
 
 // The review queue: ads whose destination did not match their tracked domain,

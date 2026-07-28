@@ -4,7 +4,10 @@ import { getAds, getSecondaryCounts, getLastRun, getDomains, getRuns, getFeeds }
 import { getSheetMetricsIndex, attachSheetMetrics } from '@/lib/metrics';
 import Dashboard from '@/components/Dashboard';
 
-// Always read fresh from the database on each request.
+// The page renders per request (it reads the auth cookie), so it is never statically
+// cached. The feed itself is the heavy part - getAds holds it in a short-lived
+// in-memory cache (see lib/queries.js) so navigations and concurrent viewers do not
+// each rebuild ~14k rows; edits bust that cache at once.
 export const dynamic = 'force-dynamic';
 
 export default async function Page() {

@@ -3,7 +3,7 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts } from '@/lib/queries';
+import { getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
@@ -82,6 +82,7 @@ export async function updateAdWorkflow(adId, patch) {
   if (!Object.keys(set).length) return;
   const sql = getSql();
   await sql`update ads set ${sql(set)} where ad_archive_id = ${adId}`;
+  bustAdsCache();
   revalidatePath('/');
 }
 
@@ -101,6 +102,7 @@ export async function reviewAds(ids, decision) {
     returning ad_archive_id
   `;
   console.info('[review decide]', { decision, requested: clean.length, updated: rows.length });
+  bustAdsCache();
   revalidatePath('/');
   return { ok: true, updated: rows.length };
 }
@@ -123,6 +125,7 @@ export async function clearContentFlag(ids) {
     returning ad_archive_id
   `;
   console.info('[content-flag clear]', { requested: clean.length, updated: rows.length });
+  bustAdsCache();
   revalidatePath('/');
   return { ok: true, updated: rows.length };
 }
@@ -143,6 +146,7 @@ export async function restoreRejectedAds(ids) {
     returning ad_archive_id
   `;
   console.info('[rejected restore]', { requested: clean.length, updated: rows.length });
+  bustAdsCache();
   revalidatePath('/');
   return { ok: true, updated: rows.length };
 }
@@ -152,6 +156,7 @@ export async function deleteAds(ids) {
   if (!Array.isArray(ids) || !ids.length) return;
   const sql = getSql();
   await sql`delete from ads where ad_archive_id = any(${ids})`;
+  bustAdsCache();
   revalidatePath('/');
 }
 
@@ -162,6 +167,7 @@ export async function bulkUpdateAds(ids, patch) {
   if (!Object.keys(set).length) return;
   const sql = getSql();
   await sql`update ads set ${sql(set)} where ad_archive_id = any(${ids})`;
+  bustAdsCache();
   revalidatePath('/');
 }
 
