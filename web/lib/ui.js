@@ -72,15 +72,15 @@ export function tarzoSlug(ad) {
 // `search` from there and fall back to the raw link_url for the direct format.
 export const isPredicto = (ad) => (ad.feed || '').toLowerCase() === 'predicto';
 
-// The decoded `search` query param of a URL ('' when absent or unparseable).
-// URLSearchParams turns '+' into a space and undoes %xx, so Format B's
-// "Startup+Grants+Guide+2026+en" reads clean while Format A's hyphen slug stays
-// hyphenated.
-function searchParam(url) {
+// The decoded value of a URL's query param `name` (default `search`; '' when
+// absent or unparseable). URLSearchParams turns '+' into a space and undoes %xx,
+// so Predicto's "Startup+Grants+Guide+2026+en" and Visymo's
+// "cirug%C3%ADa%20para%20eliminar%20la%20papada" both read as plain words.
+function searchParam(url, name = 'search') {
   const t = String(url || '').trim();
   if (!t) return '';
   try {
-    return new URL(t.includes('://') ? t : `https://${t}`).searchParams.get('search') || '';
+    return new URL(t.includes('://') ? t : `https://${t}`).searchParams.get(name) || '';
   } catch {
     return '';
   }
@@ -99,6 +99,24 @@ export function predictoQuery(ad) {
   const raw = searchParam(ad.resolved_url) || searchParam(firstUrl(ad.link_url));
   return raw.replace(/-[0-9a-f]{6}$/i, (m) => (/\d/.test(m) ? '' : m)).replace(/\s+/g, ' ').trim();
 }
+
+// The Visymo feed only. Their landing links carry the searched phrase in a `q`
+// query param (…/dsr?ctid=…&q=cirug%C3%ADa%20para%20eliminar%20la%20papada&…).
+// URLSearchParams undoes the %xx (and any '+') encoding, so it reads as plain
+// words. No tracking-id suffix to strip (unlike Predicto); casing is left as-is.
+// '' for any other feed, or when the link exposes no q (never a guess).
+export const isVisymo = (ad) => (ad.feed || '').toLowerCase() === 'visymo';
+export function visymoQuery(ad) {
+  if (!isVisymo(ad)) return '';
+  return searchParam(firstUrl(ad.link_url), 'q').replace(/\s+/g, ' ').trim();
+}
+
+// The searched phrase behind a search-arbitrage ad, dispatched to each feed's own
+// rule (Predicto reads `search` + strips its id; Visymo reads `q`). One shared
+// "Query" column renders this, so a mixed Fresh Finds view shows every ad its own
+// query. An ad is only ever one feed, so the two helpers never both fire; every
+// other feed yields '' (blank cell, NULL in exports).
+export const searchQuery = (ad) => predictoQuery(ad) || visymoQuery(ad);
 
 export const titleCase = (v) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v);
 export const pad = (n, w = 2) => String(n).padStart(w, '0');
@@ -231,7 +249,7 @@ export const SHEET_COLUMNS = [
   { key: 'cta',       header: 'CTA',              kind: 'text',  get: (a) => a.cta_text,                                            width: 90,  align: 'LEFT',   wrap: false },
   { key: 'link',      header: 'Link',             kind: 'text',  get: (a) => a.link_url,                                            width: 170, align: 'LEFT',   wrap: false },
   { key: 'slug',      header: 'Slug',             kind: 'text',  get: (a) => tarzoSlug(a),                                          width: 150, align: 'LEFT',   wrap: false },
-  { key: 'query',     header: 'Search Query',     kind: 'text',  get: (a) => predictoQuery(a),                                      width: 260, align: 'LEFT',   wrap: true  },
+  { key: 'query',     header: 'Query',            kind: 'text',  get: (a) => searchQuery(a),                                        width: 260, align: 'LEFT',   wrap: true  },
   { key: 'revenue',   header: 'Revenue Prediction', kind: 'text', get: (a) => fmtDec(a.sheet_revenue),                              width: 110, align: 'RIGHT',  wrap: false },
   { key: 'clicks',    header: 'Clicks',           kind: 'text',  get: (a) => (a.sheet_clicks != null ? a.sheet_clicks : ''),        width: 70,  align: 'RIGHT',  wrap: false },
   { key: 'rpc',       header: 'RPC',              kind: 'text',  get: (a) => fmtDec(a.sheet_rpc),                                   width: 65,  align: 'RIGHT',  wrap: false },

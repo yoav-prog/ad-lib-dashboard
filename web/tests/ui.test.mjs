@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -295,16 +295,58 @@ test('predictoQuery: only the Predicto feed gets a query (gated by feed, case-in
   assert.equal(predictoQuery({ feed: 'Tarzo', link_url: 'https://x.com/y?search=nope' }), '');
 });
 
-test('the Search Query column flows through buildSheetData and buildCsv', () => {
-  const { columns, rows } = buildSheetData([predictoDirect, imageAd], NOW, ['query']);
-  assert.deepEqual(columns.map((c) => c.header), ['Search Query']);
+// ── Visymo: the searched phrase sits in the link_url `q` param (no redirect) ────
+const visymoAd = {
+  ad_archive_id: 'v-a', feed: 'Visymo',
+  link_url: 'https://www.clueblog.com/dsr?ctid=krd-97badd33&q=cirug%C3%ADa%20para%20eliminar%20la%20papada&asid=a2_ch59&de=m&rac=Lee%20m%C3%A1s%20sobre%20cirug%C3%ADa%20para%20eliminar%20la%20papada&pub=fb&tv=dark&locale=es_ES',
+};
+
+test('visymoQuery: decodes the q param (accents + spaces), ignores the other params', () => {
+  assert.equal(visymoQuery(visymoAd), 'cirugía para eliminar la papada');
+});
+
+test('visymoQuery: handles + as space and leaves casing as-is; no id-suffix stripping', () => {
+  assert.equal(visymoQuery({ feed: 'Visymo', link_url: 'https://x.com/dsr?q=Best+VPN+Deals+2026' }), 'Best VPN Deals 2026');
+  // Unlike Predicto, a trailing hex-looking token is NOT stripped (Visymo has no id suffix).
+  assert.equal(visymoQuery({ feed: 'Visymo', link_url: 'https://x.com/dsr?q=wear-perfume-7a075c' }), 'wear-perfume-7a075c');
+});
+
+test('visymoQuery: uses the first destination of a DCO pipe-joined link_url', () => {
+  const ad = { feed: 'Visymo', link_url: 'https://a.com/dsr?q=first+one | https://b.com/dsr?q=second+two' };
+  assert.equal(visymoQuery(ad), 'first one');
+});
+
+test('visymoQuery: blank (never a guess) when a Visymo link exposes no q', () => {
+  assert.equal(visymoQuery({ feed: 'Visymo', link_url: 'https://www.clueblog.com/dsr?ctid=krd-97badd33&asid=a2_ch59' }), '');
+  assert.equal(visymoQuery({ feed: 'Visymo', link_url: 'not a url' }), '');
+  assert.equal(visymoQuery({ feed: 'Visymo', link_url: '' }), '');
+});
+
+test('visymoQuery: only the Visymo feed gets a query (gated by feed, case-insensitive)', () => {
+  assert.equal(isVisymo({ feed: 'visymo' }), true);
+  assert.equal(isVisymo({ feed: 'Predicto' }), false);
+  // A non-Visymo ad with a coincidental q param stays blank.
+  assert.equal(visymoQuery({ feed: 'Tarzo', link_url: 'https://x.com/y?q=nope' }), '');
+});
+
+// searchQuery is the per-feed dispatcher the shared "Query" column renders.
+test('searchQuery: dispatches to each feed rule and blanks every other feed', () => {
+  assert.equal(searchQuery(visymoAd), 'cirugía para eliminar la papada');
+  assert.equal(searchQuery(predictoRedirect), 'Startup Grants Guide 2026 en');
+  assert.equal(searchQuery({ feed: 'Tarzo', link_url: 'https://x.com/dcg/1/some-slug?q=nope&search=nope' }), '');
+});
+
+test('the shared Query column flows through buildSheetData and buildCsv for both feeds', () => {
+  const { columns, rows } = buildSheetData([predictoDirect, visymoAd, imageAd], NOW, ['query']);
+  assert.deepEqual(columns.map((c) => c.header), ['Query']);
   assert.equal(rows[0].cells[0].value,
     'understanding-bladder-cancer-surgery-a-comprehensive-guide-to-the-procedure-and-recovery-process');
-  assert.equal(rows[1].cells[0].value, ''); // non-Predicto ad -> empty cell
+  assert.equal(rows[1].cells[0].value, 'cirugía para eliminar la papada'); // Visymo shares the same column
+  assert.equal(rows[2].cells[0].value, ''); // non-arbitrage ad -> empty cell
 
-  const [header, row] = buildCsv([predictoRedirect], NOW).split('\r\n');
-  assert.ok(header.includes('"Search Query"'));
-  assert.ok(row.includes('"Startup Grants Guide 2026 en"'));
+  const [header, row] = buildCsv([visymoAd], NOW).split('\r\n');
+  assert.ok(header.includes('"Query"'));
+  assert.ok(row.includes('"cirugía para eliminar la papada"'));
 });
 
 // ── prohibited-content: the Filtered view's queue filter + label map ───────────
