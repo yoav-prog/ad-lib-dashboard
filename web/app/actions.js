@@ -3,7 +3,7 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache } from '@/lib/queries';
+import { getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
@@ -74,6 +74,39 @@ export async function refreshSecondaryCounts() {
   const user = await getCurrentUser();
   if (!user) throw new Error('Forbidden: sign in required');
   return getSecondaryCounts();
+}
+
+// ── Server-side Fresh Finds (Phase 2b): the feed's data, one page at a time ────
+// These wrap the query engine (lib/queries getFeed*) so the Dashboard can filter, sort,
+// search and page against the database instead of holding the whole feed. Read-only, so the
+// gate matches the feed itself - any signed-in account. The rows already carry their campaign
+// metrics inline (the SQL join), so a page here is the same shape the old all-rows path built.
+export async function loadFeedPage(params) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  const { rows, total, page, pageSize } = await getFeedPage(params || {});
+  return { ok: true, rows, total, page, pageSize };
+}
+
+export async function loadFeedFacets(selectedFeeds) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  return { ok: true, facets: await getFeedFacets(Array.isArray(selectedFeeds) ? selectedFeeds : []) };
+}
+
+export async function loadFeedTicker() {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  return { ok: true, ticker: await getFeedTicker() };
+}
+
+// Every row matching the current filter set, for an export or a select-all. Gated on
+// export_data like the sheet export: this hands back the whole filtered feed at once.
+export async function loadFeedExport(params) {
+  await requireCapability('export_data');
+  const rows = await getFeedExport(params || {});
+  console.info('[feed export action]', { rows: rows.length });
+  return { ok: true, rows };
 }
 
 export async function updateAdWorkflow(adId, patch) {
