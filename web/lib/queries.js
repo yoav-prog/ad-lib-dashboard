@@ -87,11 +87,24 @@ const isProhibited = (sql) => sql`(a.content_flag is not null and a.content_flag
 // in-memory cache and not Next's Data Cache.
 const FEED_CACHE_TTL_MS = 60 * 1000;
 const feedCache = createTtlCache(FEED_CACHE_TTL_MS);
+// The base (unfiltered) feed total is the same for everyone and the one expensive count
+// (~14k rows), so it is cached like the feed itself. Filtered counts are smaller and
+// computed live. Held here so bustAdsCache clears it alongside the feed.
+const baseCountCache = createTtlCache(FEED_CACHE_TTL_MS);
+// The feed-independent facets (every group except the feed-scoped Domain) are the same for
+// everyone and change slowly, so they are cached too - the first facet load computes them, the
+// rest are instant. Domain is computed live per selected feed. A longer TTL than the feed
+// because filter option lists shift far more slowly than the rows, and any ad edit busts it
+// anyway; the cost is ~12 grouped scans, worth paying rarely.
+const FACET_CACHE_TTL_MS = 5 * 60 * 1000;
+const facetCache = createTtlCache(FACET_CACHE_TTL_MS);
 
-// Drop the cached feed so the next getAds() rebuilds it from the database. Called by
-// every server action that changes what the feed would show.
+// Drop the cached feed, base count and facets so the next read rebuilds from the database.
+// Called by every server action that changes what the feed would show.
 export function bustAdsCache() {
   feedCache.bust();
+  baseCountCache.bust();
+  facetCache.bust();
 }
 
 // Only surface ads confirmed by a completed run, so a failed / mid-flight scrape
@@ -242,7 +255,8 @@ function mapFeedRow(r) {
 // metrics join is a LEFT JOIN, so an ad with no campaign keeps its row with null metrics.
 export async function getFeedPage({ filters = {}, dateRange = 'all', search = '', sort = 'fresh', dir = 'desc', page = 0, pageSize = 100 } = {}) {
   const sql = getSql();
-  const where = andAll(sql, feedConditions(sql, { filters, dateRange, search }));
+  const conds = feedConditions(sql, { filters, dateRange, search });
+  const where = andAll(sql, conds);
   const order = feedOrder(sql, sort, dir);
   const size = Math.max(1, Math.min(500, Number(pageSize) || 100));
   const pg = Math.max(0, Number(page) || 0);
@@ -258,14 +272,134 @@ export async function getFeedPage({ filters = {}, dateRange = 'all', search = ''
     order by ${order}
     limit ${size} offset ${pg * size}
   `;
+  // A base feed (only the 3 base conditions, no user filter) always counts the same ~14k
+  // rows, so serve that one expensive count from cache; a filtered feed counts its smaller set.
+  const total = await feedTotal(sql, where, conds.length === 3);
+  console.info('[feed page]', { sort, dir, page: pg, size, rows: rows.length, total, ms: Date.now() - t0 });
+  return { rows: rows.map(mapFeedRow), total, page: pg, pageSize: size };
+}
+
+// The total for a feed WHERE. Caches only the base (unfiltered) count, which is the same for
+// everyone and the one that scans the whole feed; filtered counts run live.
+async function feedTotal(sql, where, isBase) {
+  if (isBase) {
+    const cached = baseCountCache.peek();
+    if (cached) return cached.value;
+  }
   const [{ total }] = await sql`
     select count(*)::int as total
+    from ads a left join campaign_metrics cm on cm.url_key = a.campaign_url_key
+    where ${where}
+  `;
+  if (isBase) baseCountCache.fill(total);
+  return total;
+}
+
+// Filter facets: for each filter column, the distinct values present in the base feed and how
+// many ads carry each. Computed over the WHOLE feed (not the active filter set), matching the
+// client, so a facet count answers "how many ads have this value" regardless of other filters.
+// Only the Domain facet narrows - to the selected feed(s) - because that is how the client
+// scopes it. The client keeps the ordering, labels and hide-when-empty rules; this returns raw
+// { value, count } lists so those stay in one place (Dashboard). geos comes from the joined
+// campaign metrics, one country per ad that earns there.
+// One single-column facet: the distinct non-null values and their ad counts under a WHERE.
+async function facetColumn(sql, colExpr, whereFrag) {
+  const rows = await sql`
+    select ${colExpr} as value, count(*)::int as count
+    from ads a
+    where ${whereFrag} and ${colExpr} is not null
+    group by ${colExpr}
+  `;
+  return rows.map((r) => ({ value: r.value, count: r.count }));
+}
+
+// The feed-independent facets (everything but Domain), computed over the base feed. Run
+// SEQUENTIALLY on purpose: firing them all at once overwhelms the Supabase transaction pooler
+// and stalls. They are cached, so this cost is paid once per TTL, not per request.
+async function computeBaseFacets(sql) {
+  const base = andAll(sql, feedConditions(sql, {}));
+  const t0 = Date.now();
+  const out = {
+    feed: await facetColumn(sql, sql`a.feed`, base),
+    vertical: await facetColumn(sql, sql`a.vertical`, base),
+    country: await facetColumn(sql, sql`a.country`, base),
+    language: await facetColumn(sql, sql`a.language`, base),
+    creative_language: await facetColumn(sql, sql`a.creative_language`, base),
+    brand: await facetColumn(sql, sql`a.brand`, base),
+    rsoc: await facetColumn(sql, sql`a.rsoc_tier`, base),
+    format: await facetColumn(sql, sql`a.display_format`, base),
+    status: await facetColumn(sql, sql`a.status`, base),
+  };
+  // GEOS: split each ad's "CC-pct,CC-pct" into its countries and count ads per country
+  // (busiest first). Inner join drops ads with no matched campaign.
+  const geos = await sql`
+    select split_part(g, '-', 1) as value, count(*)::int as count
+    from ads a
+    join campaign_metrics cm on cm.url_key = a.campaign_url_key,
+         lateral unnest(string_to_array(cm.geos, ',')) as g
+    where ${base} and cm.geos is not null and split_part(g, '-', 1) <> ''
+    group by 1
+    order by count desc
+  `;
+  out.geos = geos.map((r) => ({ value: r.value, count: r.count }));
+  console.info('[feed facets] base computed', { groups: Object.keys(out).length, ms: Date.now() - t0 });
+  return out;
+}
+
+export async function getFeedFacets(selectedFeeds = []) {
+  const sql = getSql();
+  // Domain is scoped to the selected feed(s), so it is always live; the rest are cached.
+  const domain = await facetColumn(sql, sql`a.domain`, andAll(sql, feedConditions(sql, { filters: { feed: selectedFeeds } })));
+  const cached = facetCache.peek();
+  if (cached) return { domain, ...cached.value };
+  const rest = await computeBaseFacets(sql);
+  facetCache.fill(rest);
+  return { domain, ...rest };
+}
+
+// The headline ticker counts over the base feed, in one round trip: total tracked, "seen this
+// scrape / fresh 24h", new in 7 days, and 60-day proven winners. Freshness keys off the latest
+// completed run's start (falling back to a 24h window before the first run), exactly like the
+// client's isFresh.
+export async function getFeedTicker() {
+  const sql = getSql();
+  const base = andAll(sql, feedConditions(sql, {}));
+  const [row] = await sql`
+    select
+      count(*)::int as total,
+      count(*) filter (
+        where coalesce(a.last_seen_at, a.first_seen_at) >=
+              coalesce((select started_at from runs where status = 'completed' order by finished_at desc nulls last limit 1),
+                       now() - interval '24 hours')
+      )::int as fresh,
+      count(*) filter (where a.first_seen_at >= now() - interval '168 hours')::int as new7,
+      count(*) filter (where ${daysRunningSql(sql)} >= 60)::int as winners
+    from ads a
+    where ${base}
+  `;
+  return { total: row.total, fresh: row.fresh, new7: row.new7, winners: row.winners };
+}
+
+// Every row matching a filter set, in sort order, with no pagination - what an export ships.
+// Same predicate, join and sort as getFeedPage; the caller (export action) turns these into CSV
+// or a sheet. Can be large by design (a full unfiltered export is the whole feed).
+export async function getFeedExport({ filters = {}, dateRange = 'all', search = '', sort = 'fresh', dir = 'desc' } = {}) {
+  const sql = getSql();
+  const where = andAll(sql, feedConditions(sql, { filters, dateRange, search }));
+  const order = feedOrder(sql, sort, dir);
+  const t0 = Date.now();
+  const rows = await sql`
+    select ${sql(FEED_COLUMNS)},
+           (a.article_content is not null and a.article_content <> '') as has_article,
+           cm.revenue as sheet_revenue, cm.clicks as sheet_clicks, cm.rpc as sheet_rpc,
+           cm.geos as sheet_geos, cm.geo_split as sheet_geo_split, cm.keywords as sheet_keywords
     from ads a
     left join campaign_metrics cm on cm.url_key = a.campaign_url_key
     where ${where}
+    order by ${order}
   `;
-  console.info('[feed page]', { sort, dir, page: pg, size, rows: rows.length, total, ms: Date.now() - t0 });
-  return { rows: rows.map(mapFeedRow), total, page: pg, pageSize: size };
+  console.info('[feed export]', { rows: rows.length, ms: Date.now() - t0 });
+  return rows.map(mapFeedRow);
 }
 
 // The review queue: ads whose destination did not match their tracked domain,
