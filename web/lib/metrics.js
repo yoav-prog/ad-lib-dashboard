@@ -215,3 +215,16 @@ export async function getSheetMetricsIndex(nowMs = Date.now(), { force = false }
 export function metricsStatus() {
   return { campaigns: cache?.index ? cache.index.size : 0, error: lastError };
 }
+
+// A fresh, uncached read of the metrics sheet into the same index every render uses.
+// Unlike getSheetMetricsIndex it THROWS on a read failure instead of quietly serving a
+// stale/null index: its one caller (the campaign_metrics sync, lib/metrics-sync) must be
+// able to abort and leave the table untouched when the Sheets API is briefly down, rather
+// than prune it to nothing on empty data. Not for per-render use - it hits the network on
+// every call and keeps its own SPREADSHEET_ID/TAB_NAME as the single source of the sheet
+// location, shared with getSheetMetricsIndex above.
+export async function loadMetricsIndexFresh(nowMs = Date.now()) {
+  if (!sheetsConfigured()) throw new Error('Google service-account credentials are not configured on the server.');
+  const values = await readSheetTab({ spreadsheetId: SPREADSHEET_ID, tabName: TAB_NAME }, nowMs);
+  return buildMetricsIndex(values);
+}
