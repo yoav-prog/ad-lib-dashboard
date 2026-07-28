@@ -400,6 +400,26 @@ test('the feed and review queries exclude prohibited ads; the Filtered query sel
   assert.ok(getRejected.includes('notProhibited(sql)'), 'Rejected view must exclude prohibited');
 });
 
+// ── payload guard: article_title stays OUT of the feed, the Detail fetch keeps it ──
+// article_title is ~5% of the feed payload for a field only the Detail heading shows,
+// so getAds must not select it (re-adding it silently re-bloats every page load), while
+// getAdArticle must still fetch it (or the Detail heading silently goes blank). Both
+// article bodies (title + content) ride the same on-demand fetch.
+test('the feed omits article_title/article_content but the Detail fetch still returns them', () => {
+  const queries = readFileSync(fileURLToPath(new URL('../lib/queries.js', import.meta.url)), 'utf8');
+  const start = queries.indexOf('const FEED_COLUMNS');
+  const feedCols = queries.slice(start, queries.indexOf('];', start));
+  assert.ok(!feedCols.includes("'article_title'"), 'FEED_COLUMNS must not ship article_title');
+  assert.ok(!feedCols.includes("'article_content'"), 'FEED_COLUMNS must not ship article_content');
+
+  const actions = readFileSync(fileURLToPath(new URL('../app/actions.js', import.meta.url)), 'utf8');
+  const getAdArticle = actions.slice(
+    actions.indexOf('export async function getAdArticle'),
+    actions.indexOf('export async function loadSecondaryTab'),
+  );
+  assert.match(getAdArticle, /select[\s\S]*article_title[\s\S]*article_content[\s\S]*from ads/, 'getAdArticle must still fetch the article title and body');
+});
+
 // ── RSoC policy grade: the Fresh Finds "Policy" column label + color maps ───────
 test('rsocTierLabel and rsocTierColor cover the three tiers and default safely', () => {
   for (const t of RSOC_TIER_ORDER) {
