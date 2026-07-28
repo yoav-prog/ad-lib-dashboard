@@ -6,7 +6,7 @@
 //
 // Never import this from a client component: it touches the sheet and the database.
 import { getSql } from './db.js';
-import { loadMetricsIndexFresh } from './metrics.js';
+import { loadMetricsIndexFresh, resolveCampaignKey, FEED } from './metrics.js';
 
 // The table columns written on every sync, in order. updated_at is set by SQL (now()),
 // not carried here.
@@ -71,7 +71,16 @@ export async function syncCampaignMetrics(nowMs = Date.now()) {
       )
       select count(*)::int as pruned from gone
     `;
-    const stats = { upserted: rows.length, pruned, ms: Date.now() - t0 };
+    // Now the table matches the sheet, resolve each ad to its campaign so the feed can join.
+    // Guarded so a resolution failure (e.g. this deploys before migration 0013 adds the
+    // column) degrades to "metrics synced, keys not refreshed" rather than failing the sync.
+    let resolved = { matched: 0, updated: 0 };
+    try {
+      resolved = await resolveAdCampaignKeys(sql, new Set(rows.map((r) => r.url_key)));
+    } catch (e) {
+      console.error('[metrics sync] campaign_url_key resolution failed (metrics still synced)', { message: String(e?.message || e) });
+    }
+    const stats = { upserted: rows.length, pruned, adsMatched: resolved.matched, adsRewritten: resolved.updated, ms: Date.now() - t0 };
     console.info('[metrics sync]', stats);
     return stats;
   }
@@ -80,4 +89,36 @@ export async function syncCampaignMetrics(nowMs = Date.now()) {
   const stats = { upserted: 0, pruned: 0, skipped: 'empty-read', ms: Date.now() - t0 };
   console.warn('[metrics sync] sheet returned no campaigns; left campaign_metrics untouched', stats);
   return stats;
+}
+
+// Fill ads.campaign_url_key for every tonic rsoc ad from the current set of campaign keys,
+// so the feed can join metrics by that key in SQL. Only the tonic feed carries metrics, so
+// this reads just those ads (not the whole table), resolves each with the shared
+// resolveCampaignKey, and writes back only the rows whose key actually changed
+// (`is distinct from`) to keep the update small. Returns how many matched and how many rows
+// were rewritten this run.
+async function resolveAdCampaignKeys(sql, keySet) {
+  const ads = await sql`select ad_archive_id, feed, link_url from ads where lower(trim(feed)) = ${FEED}`;
+  const ids = [];
+  const keys = [];
+  let matched = 0;
+  for (const a of ads) {
+    const key = resolveCampaignKey(a.feed, a.link_url, keySet);
+    if (key) matched += 1;
+    ids.push(a.ad_archive_id);
+    keys.push(key);
+  }
+  if (!ids.length) return { matched: 0, updated: 0 };
+  const [{ updated }] = await sql`
+    with m as (
+      select unnest(${ids}::text[]) as id, unnest(${keys}::text[]) as key
+    ), upd as (
+      update ads a set campaign_url_key = m.key
+      from m
+      where a.ad_archive_id = m.id and a.campaign_url_key is distinct from m.key
+      returning 1
+    )
+    select count(*)::int as updated from upd
+  `;
+  return { matched, updated };
 }
