@@ -308,7 +308,8 @@ def get_bucket():
 # ═════════════════════════════════════════════════════════════════════════════
 def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
                   feed, domain, language, country, vertical, brand, creative_language,
-                  content_flag='', review_status='approved'):
+                  content_flag='', review_status='approved',
+                  rsoc_tier=None, rsoc_policy_area=None, rsoc_reason=None):
     """Map a raw Apify ad + enrichment + media to a db.AD_COLUMNS dict.
 
     content_flag is emitted as NULL, never '': the classifier answers '' when it could
@@ -316,6 +317,11 @@ def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
     check constraint accepts only NULL or a real slug - an '' would abort the whole
     insert batch and fail the run. NULL is also exactly what the column means by "not
     classified yet", so the ad stays visible and the backfill picks it up later.
+
+    rsoc_tier / rsoc_policy_area / rsoc_reason ride the same NULL-means-unclassified rule:
+    an unscored row (no deny-list hit and a failed/absent model call) writes NULL on all
+    three, so it stays visible and the backfill picks it up. rsoc_tier has a check
+    constraint (green/yellow/red), so a blank would abort the batch - hence `or None`.
     """
     snapshot = ad.get('snapshot', {})
     body = snapshot.get('body', {})
@@ -385,6 +391,9 @@ def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
         'creative_language': creative_language,
         'review_status': review_status,
         'content_flag': content_flag or None,
+        'rsoc_tier': rsoc_tier or None,
+        'rsoc_policy_area': rsoc_policy_area or None,
+        'rsoc_reason': rsoc_reason or None,
     }
 
 
@@ -433,19 +442,26 @@ async def process_ad(ad, rank, bucket, verticals, feed, domain, gpt_session,
     # calls add no wall-clock latency.
     brand_image = _primary_image_url(media)
     ad_copy = fb.ad_copy_text(snapshot)
-    brand, creative_lang, content_flag = await asyncio.gather(
+    brand, creative_lang, content_flag, rsoc = await asyncio.gather(
         fb.gpt_detect_brand(gpt_session, ad_copy, brand_image),
         fb.gpt_detect_creative_language(gpt_session, brand_image),
         fb.gpt_detect_prohibited(gpt_session, ad_copy, brand_image),
+        fb.gpt_detect_rsoc_risk(gpt_session, ad_copy, brand_image, domain),
     )
     if content_flag and content_flag != 'none':
         # Only log real hits, so a scrape that suddenly starts hiding a competitor's
         # whole feed is visible (a sign the prompt or model regressed). Grep [prohibited].
         print(f"  [{ad.get('ad_archive_id', '')}] 🚫 [prohibited] hidden: {content_flag}")
+    rsoc_tier, rsoc_policy_area, rsoc_reason = rsoc
+    if rsoc_tier in ('yellow', 'red'):
+        # Log the graded rows (not the green majority), so a scrape that suddenly floods
+        # red - a prompt/model regression - is visible immediately. Grep [rsoc policy].
+        print(f"  [{ad.get('ad_archive_id', '')}] [rsoc policy] {rsoc_tier}: {rsoc_policy_area} - {rsoc_reason}")
 
     return build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
                          feed, domain, language, country, vertical, brand, creative_lang,
-                         content_flag, review_status)
+                         content_flag, review_status,
+                         rsoc_tier, rsoc_policy_area, rsoc_reason)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
