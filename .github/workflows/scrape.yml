@@ -49,3 +49,18 @@ jobs:
           GCS_CLIENT_ID: ${{ secrets.GCS_CLIENT_ID }}
           GCS_PRIVATE_KEY: ${{ secrets.GCS_PRIVATE_KEY }}
           GCS_PRIVATE_KEY_ID: ${{ secrets.GCS_PRIVATE_KEY_ID }}
+
+      # After a scrape lands new ads, nudge the campaign_metrics table to re-sync from the
+      # Google Sheet so revenue / RPC / GEOS stay current (a Vercel Cron also does this
+      # every 30 min - see web/vercel.json). Non-fatal and self-skipping: a failed ping
+      # never fails the scrape, and the step no-ops when the endpoint/secret are unset.
+      - name: Refresh campaign metrics
+        if: ${{ always() }}
+        run: |
+          if [ -z "$METRICS_SYNC_URL" ]; then echo "METRICS_SYNC_URL not set; skipping metrics sync"; exit 0; fi
+          curl -fsS -m 60 "$METRICS_SYNC_URL" -H "Authorization: Bearer $CRON_SECRET" \
+            && echo "metrics sync ok" \
+            || echo "metrics sync ping failed (non-fatal)"
+        env:
+          METRICS_SYNC_URL: ${{ secrets.METRICS_SYNC_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
