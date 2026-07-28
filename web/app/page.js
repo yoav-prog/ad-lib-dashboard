@@ -1,8 +1,15 @@
 import { redirect } from 'next/navigation';
 import { requireAuth, getCapabilities, hasSessionCookie } from '@/lib/auth';
-import { getAds, getSecondaryCounts, getLastRun, getDomains, getRuns, getFeeds } from '@/lib/queries';
+import { getAds, getSecondaryCounts, getLastRun, getDomains, getRuns, getFeeds, getFeedPage, getFeedFacets, getFeedTicker } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics } from '@/lib/metrics';
 import Dashboard from '@/components/Dashboard';
+
+// Phase 2 server-side feed, off by default. When on, the page ships one page plus the filter
+// facets and ticker counts instead of the whole feed, and the Dashboard drives filtering,
+// sorting, search and paging against the database. Flag-gated so it can be verified on a
+// preview before it replaces the working client-side path in production.
+const SERVER_FEED = process.env.SERVER_SIDE_FEED === '1';
+const INITIAL_PAGE_SIZE = 100;
 
 // The page renders per request (it reads the auth cookie), so it is never statically
 // cached. The feed itself is the heavy part - getAds holds it in a short-lived
@@ -23,30 +30,47 @@ export default async function Page() {
   // when their tab is first opened: together they were ~5.5 MB of every render
   // for views most people never open. Their badges come from one COUNT query
   // (~13 ms of database work) instead of from materialising the rows.
-  const dataPromise = Promise.all([
-    getAds(),
-    getSecondaryCounts(),
-    getLastRun(),
-    getDomains(),
-    getRuns(),
-    getFeeds(),
-    getSheetMetricsIndex(),
-  ]);
-  // If the session turns out to be invalid we redirect and never read this, so
-  // make sure a rejection cannot surface as an unhandled one.
-  dataPromise.catch(() => {});
+  // Data both feed modes need.
+  const commonPromise = Promise.all([getSecondaryCounts(), getLastRun(), getDomains(), getRuns(), getFeeds()]);
+  commonPromise.catch(() => {});
+
+  // The feed itself. Server mode: one page + facets + ticker. Client mode (default): the whole
+  // feed, with metrics joined in memory (the pre-Phase-2 path). Only one of these runs.
+  const feedPromise = SERVER_FEED
+    ? Promise.all([getFeedPage({ pageSize: INITIAL_PAGE_SIZE }), getFeedFacets([]), getFeedTicker()])
+    : Promise.all([getAds(), getSheetMetricsIndex()]);
+  // If the session turns out to be invalid we redirect and never read these, so make sure a
+  // rejection cannot surface as an unhandled one.
+  feedPromise.catch(() => {});
 
   const user = await requireAuth();
   const caps = await getCapabilities();
-  const [rawAds, secondaryCounts, lastRun, domains, runs, feeds, metricsIndex] = await dataPromise;
-  // Join the campaign metrics (revenue, clicks, RPC, keywords) onto every ad by
-  // normalized landing-page URL, so each view and export reads plain ad fields.
-  const feed = attachSheetMetrics(rawAds, metricsIndex);
-  console.info('[metrics] attach', { ads: feed.ads.length, matched: feed.matched, secondary: secondaryCounts });
-  const ads = feed.ads;
+  const [secondaryCounts, lastRun, domains, runs, feeds] = await commonPromise;
+
+  let ads;
+  let initialFeed = null;
+  let facets = null;
+  let ticker = null;
+  if (SERVER_FEED) {
+    [initialFeed, facets, ticker] = await feedPromise;
+    ads = initialFeed.rows;  // the first page, so the client has something to render immediately
+    console.info('[feed] server-side first page', { rows: initialFeed.rows.length, total: initialFeed.total });
+  } else {
+    const [rawAds, metricsIndex] = await feedPromise;
+    // Join the campaign metrics (revenue, clicks, RPC, keywords) onto every ad by normalized
+    // landing-page URL, so each view and export reads plain ad fields.
+    const feed = attachSheetMetrics(rawAds, metricsIndex);
+    console.info('[metrics] attach', { ads: feed.ads.length, matched: feed.matched, secondary: secondaryCounts });
+    ads = feed.ads;
+  }
+
   return (
     <Dashboard
       ads={ads}
+      serverFeed={SERVER_FEED}
+      initialFeed={initialFeed}
+      facets={facets}
+      ticker={ticker}
       secondaryCounts={secondaryCounts}
       domains={domains}
       runs={runs}
