@@ -17,9 +17,9 @@ import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
 import FilteredView from '@/components/FilteredView';
 import RejectedView from '@/components/RejectedView';
-import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts } from '@/app/actions';
+import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts, loadFeedPage, loadFeedFacets, loadFeedTicker } from '@/app/actions';
 
-export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0, filtered: 0, rejected: 0 }, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null }) {
+export default function Dashboard({ ads: adsProp, serverFeed = false, initialFeed = null, facets: facetsProp = null, ticker: tickerProp = null, secondaryCounts = { review: 0, filtered: 0, rejected: 0 }, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null }) {
   // The server resolved these; the UI only decides what to render. Every action
   // is gated again server-side, so hiding a control is a courtesy, not the lock.
   const canEdit = caps.edit_ads === true;
@@ -57,13 +57,53 @@ export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0,
   const [dateRange, setDateRange] = useState('all');
   const [page, setPage] = useState(0);
   const { pageSize, setPageSize } = usePageSize('adintel.pagesize.freshfinds');
+
+  // ── server-side feed (Phase 2, flag-gated) ──────────────────────────────────
+  // When serverFeed is on, the feed's rows, total, facets and ticker come from the database a
+  // page at a time rather than from a full in-memory `ads` array. The fetch effects below run
+  // only in that mode; client mode leaves them idle and keeps the original memos. Export,
+  // select-all and cross-page detail nav still read the loaded page here - they move
+  // server-side in a follow-up.
+  const [feedPage, setFeedPage] = useState(initialFeed);       // { rows, total, page, pageSize } | null
+  const [serverFacets, setServerFacets] = useState(facetsProp);
+  const [serverTicker, setServerTicker] = useState(tickerProp);
+  const [feedLoading, setFeedLoading] = useState(false);
+  const serverMode = serverFeed && feedPage != null;
+
+  // Fetch the page whenever the query shape changes (`query` is already debounced).
+  useEffect(() => {
+    if (!serverFeed) return;
+    let alive = true;
+    setFeedLoading(true);
+    loadFeedPage({ filters, dateRange, search: query, sort, dir: sortDir, page, pageSize })
+      .then((r) => { if (alive && r?.ok) setFeedPage(r); })
+      .catch((e) => console.error('[feed] page load failed', e))
+      .finally(() => { if (alive) setFeedLoading(false); });
+    return () => { alive = false; };
+  }, [serverFeed, filters, dateRange, query, sort, sortDir, page, pageSize]);
+
+  // Refetch facets when the selected feed changes - the Domain facet is scoped to it. Ticker is
+  // whole-feed and filter-independent, so it stays as first loaded.
+  useEffect(() => {
+    if (!serverFeed) return;
+    let alive = true;
+    loadFeedFacets(filters.feed).then((r) => { if (alive && r?.ok) setServerFacets(r.facets); }).catch(() => {});
+    return () => { alive = false; };
+  }, [serverFeed, filters.feed]);
+
   const [selIndex, setSelIndex] = useState(0);
   const [detailId, setDetailId] = useState(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState('');
 
-  const updateLocal = (id, patch) =>
+  // Apply a row transform to the rendered rows in whichever mode is live: client mode edits the
+  // full `ads` array, server mode edits the loaded page (feedPage.rows), so an optimistic change
+  // shows at once either way.
+  const patchFeedPage = (fn) => { if (serverFeed) setFeedPage((prev) => (prev ? { ...prev, rows: fn(prev.rows) } : prev)); };
+  const updateLocal = (id, patch) => {
     setAds((prev) => prev.map((a) => (a.ad_archive_id === id ? { ...a, ...patch } : a)));
+    patchFeedPage((rows) => rows.map((a) => (a.ad_archive_id === id ? { ...a, ...patch } : a)));
+  };
   const commit = (id, patch) => { if (!canEdit) return; updateAdWorkflow(id, patch).catch((e) => console.error('save failed', e)); };
   const update = (id, patch) => { if (!canEdit) return; updateLocal(id, patch); commit(id, patch); };
 
@@ -76,6 +116,7 @@ export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0,
     if (!canEdit || !selected.size) return;
     const ids = [...selected];
     setAds((prev) => prev.filter((a) => !selected.has(a.ad_archive_id)));
+    patchFeedPage((rows) => rows.filter((a) => !selected.has(a.ad_archive_id)));
     clearSel();
     try { await deleteAds(ids); } catch (e) { console.error(e); }
   };
@@ -83,6 +124,7 @@ export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0,
     if (!canEdit || !selected.size) return;
     const ids = [...selected];
     setAds((prev) => prev.map((a) => (selected.has(a.ad_archive_id) ? { ...a, ...patch } : a)));
+    patchFeedPage((rows) => rows.map((a) => (selected.has(a.ad_archive_id) ? { ...a, ...patch } : a)));
     try { await bulkUpdateAds(ids, patch); } catch (e) { console.error(e); }
   };
   // Re-scraping is a scrape, so this one answers to run_scrapes rather than to
@@ -351,12 +393,16 @@ export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0,
   // counts and exports all keep seeing the full filtered list. This is what lets
   // the feed hold every ad ever found without the browser rendering them all.
   const paged = useMemo(() => pageSlice(filtered, page, pageSize), [filtered, page, pageSize]);
+  // The rows to render and the row count that drives the pager: server mode uses the loaded
+  // page and the database total; client mode uses the sliced/filtered in-memory list.
+  const feedRows = serverMode ? feedPage.rows : paged;
+  const feedTotal = serverMode ? feedPage.total : filtered.length;
 
   // Back to page one whenever the visible set changes shape - staying on page 7
   // of a brand-new list is disorienting. The list can also shrink under us
   // (bulk delete, refreshed server props), so clamp separately.
   useEffect(() => { setPage(0); setSelIndex(0); }, [query, filters, dateRange, sort, sortDir, pageSize]);
-  useEffect(() => { setPage((p) => clampPage(p, filtered.length, pageSize)); }, [filtered.length, pageSize]);
+  useEffect(() => { setPage((p) => clampPage(p, feedTotal, pageSize)); }, [feedTotal, pageSize]);
 
   const goPage = useCallback((p, total, size) => {
     setPage(p);
@@ -451,7 +497,8 @@ export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0,
 
       {view === 'fresh' && (
         <FreshFinds
-          ads={ads} filtered={filtered} paged={paged} NOW={NOW}
+          ads={ads} filtered={serverMode ? feedRows : filtered} paged={feedRows} NOW={NOW}
+          serverMode={serverMode} total={feedTotal} serverFacets={serverFacets} serverTicker={serverTicker} feedLoading={feedLoading}
           page={page} pageSize={pageSize} setPageSize={setPageSize} goPage={goPage}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
@@ -669,7 +716,7 @@ const FRESH_COLS = [
 ];
 const FRESH_COLS_LS = 'adintel.cols.freshfinds';
 
-function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail, onRefreshMetrics }) {
+function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = null, serverFacets = null, serverTicker = null, feedLoading = false, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail, onRefreshMetrics }) {
   const selCount = selected ? selected.size : 0;
   const [sheetOpen, setSheetOpen] = useState(false);
   const filteredIds = filtered.map((a) => a.ad_archive_id);
@@ -699,8 +746,10 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
   // Paging bookkeeping for the toolbar counter and the bottom pager. The row
   // slice itself (`paged`) is computed by the parent, which also owns the
   // keyboard navigation across pages.
-  const pages = pageCount(filtered.length, pageSize);
-  const range = pageRange(filtered.length, page, pageSize);
+  // Total matching rows: the database total in server mode, the filtered list length otherwise.
+  const count = serverMode ? total : filtered.length;
+  const pages = pageCount(count, pageSize);
+  const range = pageRange(count, page, pageSize);
 
   // Slug (Tarzo) and Query (the search-arbitrage phrase, Predicto & Visymo) are
   // feed-specific: each rides along only while the current view actually contains
@@ -714,41 +763,67 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
   const tableMinW = 294 + thumbColW + (showSlug ? 150 : 0) + (showQuery ? 240 : 0)
     + FRESH_COLS.reduce((n, c) => n + (cols.has(c.key) ? c.w : 0), 0);
   const [gsearch, setGsearch] = useState({});
-  const uniq = (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
-  const countBy = (key, val) => ads.filter((a) => a[key] === val).length;
 
-  // Feed-scoped Domain facet: once a feed is chosen, the Domain list shows only
-  // that feed's domains (and their counts), so the picker never offers a domain
-  // the current feed can't contain. Any already-picked domain stays in the list
-  // even if it falls outside the feed, so a stale choice is never stranded
-  // unselectable (its count then reads 0, a hint that it matches nothing here).
+  // Facet + ticker data comes from the loaded rows in client mode, and from the server's
+  // whole-feed aggregates in server mode. These helpers hide that difference so the `groups`
+  // and `metrics` builders below read the same either way. COL_TO_FACET maps a client column
+  // name to its server facet key where they differ.
+  const COL_TO_FACET = { display_format: 'format', rsoc_tier: 'rsoc' };
+  const fk = (col) => COL_TO_FACET[col] || col;
+  const facetMap = useMemo(() => {
+    if (!serverMode) return null;
+    const m = {};
+    for (const k in (serverFacets || {})) m[k] = new Map((serverFacets[k] || []).map((x) => [x.value, x.count]));
+    return m;
+  }, [serverMode, serverFacets]);
+  const uniq = serverMode
+    ? (key) => ((serverFacets || {})[fk(key)] || []).map((x) => x.value)
+    : (key) => [...new Set(ads.map((a) => a[key]).filter(Boolean))];
+  const countBy = serverMode
+    ? (key, val) => (facetMap[fk(key)]?.get(val) || 0)
+    : (key, val) => ads.filter((a) => a[key] === val).length;
+  const hasAny = serverMode ? (key) => ((serverFacets || {})[fk(key)] || []).length > 0 : (key) => ads.some((a) => a[key]);
+
+  // Feed-scoped Domain facet: once a feed is chosen, the Domain list shows only that feed's
+  // domains (and their counts) - server mode scopes it in the query (facets refetch on feed
+  // change), client mode filters the in-memory rows. Any already-picked domain stays in the
+  // list even if it falls outside the feed (count then reads 0), so a stale choice is never
+  // stranded unselectable.
   const feedScoped = filters.feed.length ? ads.filter((a) => filters.feed.includes(a.feed)) : ads;
-  const uniqIn = (rows, key) => [...new Set(rows.map((a) => a[key]).filter(Boolean))];
-  const countIn = (rows, key, val) => rows.filter((a) => a[key] === val).length;
+  const uniqIn = serverMode
+    ? (rows, key) => ((serverFacets || {})[fk(key)] || []).map((x) => x.value)
+    : (rows, key) => [...new Set(rows.map((a) => a[key]).filter(Boolean))];
+  const countIn = serverMode
+    ? (rows, key, val) => (facetMap[fk(key)]?.get(val) || 0)
+    : (rows, key, val) => rows.filter((a) => a[key] === val).length;
   const withSelected = (list, sel) => [...list, ...sel.filter((v) => v && !list.includes(v))];
 
-  const fresh24 = ads.filter(isFresh).length;
-  const new7 = ads.filter((a) => hoursSince(a.first_seen_at, NOW) <= 168).length;
-  const winners = ads.filter((a) => daysRunning(a, NOW) >= 60).length;
+  const fresh24 = serverMode ? (serverTicker?.fresh ?? 0) : ads.filter(isFresh).length;
+  const new7 = serverMode ? (serverTicker?.new7 ?? 0) : ads.filter((a) => hoursSince(a.first_seen_at, NOW) <= 168).length;
+  const winners = serverMode ? (serverTicker?.winners ?? 0) : ads.filter((a) => daysRunning(a, NOW) >= 60).length;
+  const totalTracked = serverMode ? (serverTicker?.total ?? count) : ads.length;
   const metrics = [
     { label: lastRunStart ? 'Seen This Scrape' : 'Fresh 24h', value: pad(fresh24), color: A },
     { label: 'New 7d', value: pad(new7), color: '#E7E8EA' },
     { label: 'Proven Winners', value: pad(winners), color: A },
-    { label: 'Total Tracked', value: pad(ads.length, 3), color: '#E7E8EA' },
+    { label: 'Total Tracked', value: pad(totalTracked, 3), color: '#E7E8EA' },
     { label: 'Competitors', value: pad(uniq('domain').length), color: '#E7E8EA' },
     { label: 'Verticals', value: pad(uniq('vertical').length), color: '#E7E8EA' },
   ];
-  const vcount = {};
-  ads.forEach((a) => { if (a.vertical) vcount[a.vertical] = (vcount[a.vertical] || 0) + 1; });
-  const vertMix = Object.entries(vcount).sort((x, y) => y[1] - x[1]).slice(0, 4)
-    .map(([label, n]) => ({ label, pct: `${Math.round((n / (ads.length || 1)) * 100)}%` }));
+  const vertMix = serverMode
+    ? [...((serverFacets || {}).vertical || [])].sort((x, y) => y.count - x.count).slice(0, 4)
+        .map((v) => ({ label: v.value, pct: `${Math.round((v.count / (totalTracked || 1)) * 100)}%` }))
+    : (() => {
+        const vcount = {};
+        ads.forEach((a) => { if (a.vertical) vcount[a.vertical] = (vcount[a.vertical] || 0) + 1; });
+        return Object.entries(vcount).sort((x, y) => y[1] - x[1]).slice(0, 4)
+          .map(([label, n]) => ({ label, pct: `${Math.round((n / (ads.length || 1)) * 100)}%` }));
+      })();
 
-  // GEOS facet: every country that appears in some ad's sheet revenue split,
-  // busiest first. Selecting one keeps ads that earn there at all (any share) -
-  // "show me everything making money in ES", per the sheet, not per AdIntel's
-  // own Country guess.
-  const geoCounts = new Map();
-  for (const a of ads) for (const c of geoCountries(a.sheet_geos)) geoCounts.set(c, (geoCounts.get(c) || 0) + 1);
+  // GEOS facet: every country that appears in some ad's sheet revenue split, busiest first.
+  const geoCounts = serverMode
+    ? new Map(((serverFacets || {}).geos || []).map((x) => [x.value, x.count]))
+    : (() => { const m = new Map(); for (const a of ads) for (const c of geoCountries(a.sheet_geos)) m.set(c, (m.get(c) || 0) + 1); return m; })();
 
   const groups = [
     { title: 'Domain', group: 'domain', vals: withSelected(uniqIn(feedScoped, 'domain'), filters.domain), count: (v) => countIn(feedScoped, 'domain', v) },
@@ -759,13 +834,13 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
     ...(geoCounts.size ? [{ title: 'GEOS (Earns In)', group: 'geos', vals: [...geoCounts.keys()].sort((x, y) => geoCounts.get(y) - geoCounts.get(x)), count: (v) => geoCounts.get(v) || 0 }] : []),
     { title: 'Language', group: 'language', vals: uniq('language'), count: (v) => countBy('language', v) },
     // Language of the text ON the creative; hidden until some ad is classified.
-    ...(ads.some((a) => a.creative_language) ? [{ title: 'Creative Language', group: 'creative_language', vals: uniq('creative_language'), count: (v) => countBy('creative_language', v) }] : []),
+    ...(hasAny('creative_language') ? [{ title: 'Creative Language', group: 'creative_language', vals: uniq('creative_language'), count: (v) => countBy('creative_language', v) }] : []),
     // Brand keys ('none'/'brand'/'car_brand') get a readable label; ordered by
     // BRAND_OPTIONS. Hidden entirely until some ad is classified (before the backfill).
-    ...(ads.some((a) => a.brand) ? [{ title: 'Brand', group: 'brand', vals: BRAND_OPTIONS.map((o) => o.key).filter((k) => countBy('brand', k)), count: (v) => countBy('brand', v), label: (v) => brandLabel(v) }] : []),
+    ...(hasAny('brand') ? [{ title: 'Brand', group: 'brand', vals: BRAND_OPTIONS.map((o) => o.key).filter((k) => countBy('brand', k)), count: (v) => countBy('brand', v), label: (v) => brandLabel(v) }] : []),
     // RSoC policy tier (red/yellow/green), ordered most-severe first. Hidden entirely until
     // some ad is classified (before the backfill), like Brand and Creative Language.
-    ...(ads.some((a) => a.rsoc_tier) ? [{ title: 'Policy (RSoC)', group: 'rsoc', vals: RSOC_TIER_ORDER.filter((k) => countBy('rsoc_tier', k)), count: (v) => countBy('rsoc_tier', v), label: (v) => rsocTierLabel(v) }] : []),
+    ...(hasAny('rsoc_tier') ? [{ title: 'Policy (RSoC)', group: 'rsoc', vals: RSOC_TIER_ORDER.filter((k) => countBy('rsoc_tier', k)), count: (v) => countBy('rsoc_tier', v), label: (v) => rsocTierLabel(v) }] : []),
     { title: 'Format', group: 'format', vals: uniq('display_format'), count: (v) => countBy('display_format', v) },
     { title: 'Status', group: 'status', vals: uniq('status'), count: (v) => countBy('status', v) },
   ];
@@ -907,7 +982,7 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
               <>
                 <div style={s('display:flex;align-items:center;gap:12px')}>
                   <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>
-                    {pad(filtered.length)} <span style={s('color:#5A5E64')}>ads</span>
+                    {pad(count)} <span style={s('color:#5A5E64')}>ads</span>
                     {pages > 1 && <span style={s('color:#5A5E64')}> &middot; showing {fmtInt(range.from)}-{fmtInt(range.to)}</span>}
                   </span>
                   <span style={s('color:#2E3136')}>|</span>
@@ -1154,13 +1229,13 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
             );
           })}
 
-          <Pager page={page} total={filtered.length} pageSize={pageSize} onPage={(p) => goPage(p, filtered.length, pageSize)} />
+          <Pager page={page} total={count} pageSize={pageSize} onPage={(p) => goPage(p, count, pageSize)} />
           <div style={s('padding:20px 16px;text-align:center')}>
             <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D;letter-spacing:.5px`)}>
-              {pages > 1 ? <>PAGE {page + 1} OF {fmtInt(pages)}</> : <>END OF FEED</>} &middot; {pad(filtered.length)} RECORDS
+              {pages > 1 ? <>PAGE {page + 1} OF {fmtInt(pages)}</> : <>END OF FEED</>} &middot; {pad(count)} RECORDS
             </span>
           </div>
-          {filtered.length === 0 && (
+          {count === 0 && (
             <div style={s('padding:60px 16px;text-align:center;color:#5A5E64;font-size:13px')}>No ads match. Run a scrape or clear filters.</div>
           )}
         </div>

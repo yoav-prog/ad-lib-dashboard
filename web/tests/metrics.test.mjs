@@ -3,7 +3,7 @@
 // duplicate-URL aggregation), and the ad join. Run with `npm test`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeUrlKey, adUrlKeys, buildMetricsIndex, attachSheetMetrics } from '../lib/metrics.js';
+import { normalizeUrlKey, adUrlKeys, buildMetricsIndex, attachSheetMetrics, resolveCampaignKey } from '../lib/metrics.js';
 
 // ── normalizeUrlKey ───────────────────────────────────────────────────────────
 
@@ -190,4 +190,33 @@ test('attachSheetMetrics survives a null index (Sheets outage) and empty input',
   assert.equal(ads[0].sheet_revenue, null);
   assert.deepEqual(attachSheetMetrics([], index).ads, []);
   assert.deepEqual(attachSheetMetrics(null, index).ads, []);
+});
+
+// ── resolveCampaignKey (fills ads.campaign_url_key for the server-side feed join) ──────
+// Must match attachSheetMetrics' rule exactly: same feed gate, same adUrlKeys, first key
+// present in the campaign set wins. A drift here would join an ad to the wrong campaign (or
+// none) once the feed sorts/filters by metrics in SQL.
+const KEYS = new Set(['a.com/x', 'b.com/y', 'shop.example.com/deal']);
+
+test('resolveCampaignKey returns the matching key for a tonic rsoc ad', () => {
+  assert.equal(resolveCampaignKey('tonic rsoc', 'https://a.com/x?utm=1', KEYS), 'a.com/x');
+  assert.equal(resolveCampaignKey('TONIC RSOC ', 'https://www.b.com/y/', KEYS), 'b.com/y'); // feed case/space + www/slash tolerant
+});
+
+test('resolveCampaignKey is null for a non-tonic feed even when the link would match', () => {
+  assert.equal(resolveCampaignKey('predicto', 'https://a.com/x', KEYS), null);
+  assert.equal(resolveCampaignKey('', 'https://a.com/x', KEYS), null);
+});
+
+test('resolveCampaignKey is null when no normalized link key is in the set', () => {
+  assert.equal(resolveCampaignKey('tonic rsoc', 'https://unknown.com/z', KEYS), null);
+  assert.equal(resolveCampaignKey('tonic rsoc', '', KEYS), null);
+  assert.equal(resolveCampaignKey('tonic rsoc', null, KEYS), null);
+});
+
+test('resolveCampaignKey takes the first matching destination of a pipe-joined link', () => {
+  // First destination misses, second hits -> the second key wins (first present wins).
+  assert.equal(resolveCampaignKey('tonic rsoc', 'https://miss.com/a | https://b.com/y', KEYS), 'b.com/y');
+  // First destination hits -> it wins even though a later one also would.
+  assert.equal(resolveCampaignKey('tonic rsoc', 'https://a.com/x | https://b.com/y', KEYS), 'a.com/x');
 });

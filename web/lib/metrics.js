@@ -16,7 +16,9 @@ import { readSheetTab, sheetsConfigured } from './sheets.js';
 const SPREADSHEET_ID = process.env.METRICS_SPREADSHEET_ID || '1ErBMP6TNNjNDBJg9qTIQOAkaO0fzpaOIDZ_BakphM-g';
 const TAB_NAME = process.env.METRICS_SHEET_TAB || 'DB2';
 const NETWORK = 'facebook-rsoc';
-const FEED = 'tonic rsoc'; // only ads in this AdIntel feed carry sheet metrics
+// Only ads in this AdIntel feed carry sheet metrics. Exported so the metrics sync can
+// narrow its ad query to this feed without re-typing the literal (one source of the gate).
+export const FEED = 'tonic rsoc';
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 // Reduce a URL to the key both sides are matched on: bare lowercase host (no
@@ -179,6 +181,18 @@ export function attachSheetMetrics(ads, index) {
     };
   });
   return { ads: out, matched };
+}
+
+// The campaign_metrics url_key an ad resolves to: the first of its normalized link keys
+// (adUrlKeys) that exists in `keySet`, or null. Gated to the tonic rsoc feed exactly like
+// attachSheetMetrics above - a non-tonic ad never carries metrics - and using the same
+// adUrlKeys, so the database join the server-side feed does matches the in-memory attach
+// this mirrors. `keySet` is a Set of the url_keys currently in campaign_metrics. Pure: the
+// metrics sync (lib/metrics-sync) calls it per ad to fill ads.campaign_url_key.
+export function resolveCampaignKey(feed, linkUrl, keySet) {
+  if (norm(feed) !== FEED) return null;
+  for (const key of adUrlKeys(linkUrl)) if (keySet.has(key)) return key;
+  return null;
 }
 
 // One index is shared for its TTL across every page render on a warm instance,
