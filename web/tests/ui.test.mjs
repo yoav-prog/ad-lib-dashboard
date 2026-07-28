@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -208,22 +208,43 @@ test('fmtInt and fmtDec render numbers for reading and stay empty on null', () =
   assert.equal(fmtDec('abc'), '');
 });
 
-// The tables' COLUMNS picker: stored selections survive only for keys the
-// table still knows; anything unusable falls back to the caller's defaults.
-const pickerDefs = [{ key: 'a', label: 'A', w: 1 }, { key: 'b', label: 'B', w: 1 }];
+// The tables' COLUMNS picker persists the HIDDEN keys, so a column added to the catalog after
+// a selection was saved stays visible instead of being hidden by a stale list.
+const pickerDefs = [{ key: 'a', label: 'A', w: 1 }, { key: 'b', label: 'B', w: 1 }, { key: 'c', label: 'C', w: 1 }];
 
-test('sanitizeColumnKeys drops unknown keys and keeps known ones', () => {
-  assert.deepEqual(sanitizeColumnKeys(['b', 'zombie', 'a'], pickerDefs), ['b', 'a']);
+test('columnVisibility hides exactly the keys in the stored hidden list', () => {
+  assert.deepEqual(columnVisibility({ h: ['b'] }, pickerDefs), ['a', 'c']);
+  assert.deepEqual(columnVisibility({ h: [] }, pickerDefs), ['a', 'b', 'c']);
 });
 
-test('sanitizeColumnKeys keeps a legitimate empty selection', () => {
-  assert.deepEqual(sanitizeColumnKeys([], pickerDefs), []);
+test('columnVisibility keeps a newly added column visible (the Policy-column bug)', () => {
+  // A selection saved when the catalog was [a, b] (user hid b). 'c' was added later; because we
+  // store hidden keys, 'c' is not in the hidden list and therefore shows by default.
+  assert.deepEqual(columnVisibility({ h: ['b'] }, pickerDefs), ['a', 'c']);
 });
 
-test('sanitizeColumnKeys returns null for unusable stored values', () => {
-  assert.equal(sanitizeColumnKeys(null, pickerDefs), null);
-  assert.equal(sanitizeColumnKeys('a,b', pickerDefs), null);
-  assert.equal(sanitizeColumnKeys(undefined, pickerDefs), null);
+test('columnVisibility ignores stale hidden keys no longer in the catalog', () => {
+  assert.deepEqual(columnVisibility({ h: ['b', 'zombie'] }, pickerDefs), ['a', 'c']);
+});
+
+test('columnVisibility treats the legacy visible-array format as show-everything', () => {
+  // Old format stored VISIBLE keys; we cannot tell a hidden column from one that did not exist
+  // yet, so we reset to all columns once rather than leave a new column hidden.
+  assert.deepEqual(columnVisibility(['a'], pickerDefs), ['a', 'b', 'c']);
+  assert.deepEqual(columnVisibility(['a', 'b'], pickerDefs), ['a', 'b', 'c']);
+});
+
+test('columnVisibility shows everything on first visit or garbage', () => {
+  assert.deepEqual(columnVisibility(null, pickerDefs), ['a', 'b', 'c']);
+  assert.deepEqual(columnVisibility('nonsense', pickerDefs), ['a', 'b', 'c']);
+  assert.deepEqual(columnVisibility({ nope: 1 }, pickerDefs), ['a', 'b', 'c']);
+});
+
+test('columnPrefValue stores the hidden keys, tagged, and round-trips', () => {
+  assert.deepEqual(columnPrefValue(new Set(['a', 'c']), pickerDefs), { h: ['b'] });
+  assert.deepEqual(columnPrefValue(new Set(['a', 'b', 'c']), pickerDefs), { h: [] });
+  // Persisting a selection and reading it back yields the same visible set.
+  assert.deepEqual(columnVisibility(columnPrefValue(new Set(['b']), pickerDefs), pickerDefs), ['b']);
 });
 
 // Predicto feed: the searched phrase is pulled from the landing link. Format A

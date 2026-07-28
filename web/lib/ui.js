@@ -336,14 +336,28 @@ export function geoCountries(geos) {
   return String(geos).split(',').map((p) => p.split('-')[0].trim()).filter(Boolean);
 }
 
-// Table column picker: keep only keys the table still knows from a stored
-// selection. null when the stored value is unusable (first visit, corrupt
-// JSON), so callers fall back to their defaults; an empty array is a
-// legitimate choice (only the fixed columns stay visible).
-export function sanitizeColumnKeys(stored, defs) {
-  if (!Array.isArray(stored)) return null;
-  const known = new Set(defs.map((d) => d.key));
-  return stored.filter((k) => known.has(k));
+// Table column picker persistence. We store the HIDDEN keys (tagged `{ h: [...] }`), not the
+// visible ones, so a column ADDED to the catalog after a selection was saved shows by default
+// instead of being silently hidden by a stale list (the bug that kept the Policy column
+// invisible for anyone who had ever customized their columns). columnVisibility turns a stored
+// value into the keys to show; columnPrefValue turns a chosen visible set into the value to save.
+//
+// A legacy value (a bare array of VISIBLE keys, the old format) is treated as "show everything":
+// we cannot tell a deliberately-hidden column from one that did not exist yet, so we reset that
+// table's picker once rather than leave a newly added column hidden. From then on the value is
+// the new tagged format and curation sticks.
+export function columnVisibility(stored, defs) {
+  const all = defs.map((d) => d.key);
+  if (stored && !Array.isArray(stored) && Array.isArray(stored.h)) {
+    const hidden = new Set(stored.h);
+    return all.filter((k) => !hidden.has(k));
+  }
+  return all; // first visit, legacy bare-array format, or garbage -> everything visible
+}
+
+export function columnPrefValue(visible, defs) {
+  const shown = new Set(visible);
+  return { h: defs.map((d) => d.key).filter((k) => !shown.has(k)) };
 }
 
 // Accept either a bare spreadsheet id or a full Google Sheets URL and return the id.

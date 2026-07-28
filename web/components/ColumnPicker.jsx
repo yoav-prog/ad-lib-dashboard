@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { s } from '@/lib/style';
-import { A, MONO, sanitizeColumnKeys } from '@/lib/ui';
+import { A, MONO, columnVisibility, columnPrefValue } from '@/lib/ui';
 
 // Per-table column visibility, remembered per browser. `defs` is the table's
 // catalog of hideable columns [{ key, label, w }]; structural columns
@@ -16,16 +16,16 @@ export function useColumnPrefs(storageKey, defs) {
   // after mount. Reading localStorage during render would desync hydration.
   useEffect(() => {
     try {
-      const kept = sanitizeColumnKeys(JSON.parse(window.localStorage.getItem(storageKey)), defs);
-      if (kept) setVisible(new Set(kept));
+      setVisible(new Set(columnVisibility(JSON.parse(window.localStorage.getItem(storageKey)), defs)));
     } catch { /* first visit or unusable value: keep everything visible */ }
   }, [storageKey, defs]);
 
   const save = (next) => {
     setVisible(next);
     try {
-      window.localStorage.setItem(storageKey, JSON.stringify([...next]));
-      console.info('[columns] saved', { key: storageKey, visible: [...next] });
+      const value = columnPrefValue(next, defs);
+      window.localStorage.setItem(storageKey, JSON.stringify(value));
+      console.info('[columns] saved', { key: storageKey, hidden: value.h });
     } catch { /* private mode: the choice lives for this session only */ }
   };
   const toggle = (key) => {
