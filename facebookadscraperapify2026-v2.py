@@ -23,6 +23,7 @@ import time
 import brand   # shared brand prompt + answer parsing (SSOT with backfill_brand.py)
 import content_flag   # shared prohibited-content prompt + parsing (SSOT with backfill_content_flag.py)
 import creative_language   # shared creative-language prompt + parsing (SSOT with backfill_creative_language.py)
+import rsoc_policy   # shared RSoC policy-risk rubric + deny-list + parsing (SSOT with backfill_rsoc_policy.py)
 
 # ── Secrets & configuration (loaded from the environment) ─────────────────────
 # Nothing sensitive is hardcoded. Copy .env.example to .env and fill it in, or
@@ -420,6 +421,42 @@ async def gpt_detect_prohibited(session, ad_copy, image_url):
         except Exception as e:
             print(f"  ⚠️  GPT prohibited-content error: {e}")
             return ''
+
+
+async def gpt_detect_rsoc_risk(session, ad_copy, image_url, domain=''):
+    """Grade how much RSoC policy care this ad's topic/angle would demand as a
+    (tier, policy_area, reason) verdict - a DIFFERENT axis from gpt_detect_prohibited (which
+    hides prohibited ads). The deterministic deny-list floor runs first and always applies,
+    even when the model call fails, so a hazardous vertical can never come back as green. The
+    model grades on top; the prompt + deny-list + parsing live in rsoc_policy.py so the live
+    path and backfill_rsoc_policy.py never drift. Returns (None, None, None) only when neither
+    the floor nor the model produced anything, so the row stays unscored (NULL) and visible."""
+    floor = rsoc_policy.hazard_floor(ad_copy, domain)
+    messages = rsoc_policy.build_rsoc_messages(ad_copy, image_url, domain)
+    if messages is None:
+        return rsoc_policy.combine_verdict(None, floor)
+    async with GPT_SEMAPHORE:
+        try:
+            payload = {
+                "model": rsoc_policy.RSOC_MODEL,
+                "messages": messages,
+                "max_tokens": 40,
+                "temperature": 0,
+            }
+            async with session.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    model_verdict = rsoc_policy.parse_rsoc_answer(result['choices'][0]['message']['content'])
+                    return rsoc_policy.combine_verdict(model_verdict, floor)
+                return rsoc_policy.combine_verdict(None, floor)
+        except Exception as e:
+            print(f"  ⚠️  GPT rsoc-policy error: {e}")
+            return rsoc_policy.combine_verdict(None, floor)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SCRAPINGBEE ARTICLE SCRAPING  (async wrapper with semaphore)

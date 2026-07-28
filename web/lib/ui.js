@@ -175,6 +175,30 @@ const CONTENT_FLAG_BY_KEY = Object.fromEntries(CONTENT_FLAG_OPTIONS.map((o) => [
 // unexpected value (e.g. a new category added server-side first) still reads.
 export const contentFlagLabel = (key) => CONTENT_FLAG_BY_KEY[key]?.label || key || '';
 
+// RSoC policy-risk grade (see rsoc_policy.py). A Fresh Finds row's topic/angle graded
+// green/yellow/red against Google Publisher Restrictions + RSoC misleading-claim rules. A
+// DIFFERENT axis from content_flag: it never hides a row, it only annotates how much policy
+// care the topic would need before we build an article on it. 'green' means "no known
+// restriction on this topic", NOT "safe to publish" - the article still needs its own check.
+// RSOC_POLICY_AREAS is kept in sync with rsoc_policy.POLICY_AREA_LABELS.
+export const RSOC_TIER_META = {
+  red:    { label: 'Red',    color: '#E5575B', hint: 'Restricted vertical or prohibited angle - building this risks RSoC strikes' },
+  yellow: { label: 'Yellow', color: '#E8A33D', hint: 'Sensitive topic - buildable with care, needs a human look' },
+  green:  { label: 'Green',  color: '#57A65B', hint: 'No known RSoC restriction on this topic (not a guarantee the article is safe)' },
+};
+export const RSOC_TIER_ORDER = ['red', 'yellow', 'green'];
+export const RSOC_POLICY_AREAS = {
+  none: 'Clear', health_claims: 'Health / medical claims', supplements: 'Unapproved supplements',
+  prescription: 'Prescription drugs', weight_loss: 'Weight-loss / before-after', financial: 'Financial / get-rich',
+  gambling: 'Online gambling', alcohol: 'Alcohol', tobacco: 'Tobacco / vaping', drugs: 'Recreational drugs / CBD',
+  weapons: 'Weapons', adult: 'Sexual / suggestive', shocking: 'Shocking content', political: 'Political / sensitive',
+  misleading: 'Misleading / clickbait', other: 'Other policy',
+};
+export const rsocTierColor = (tier) => RSOC_TIER_META[tier]?.color || '#45484D';
+export const rsocTierLabel = (tier) => RSOC_TIER_META[tier]?.label || '';
+export const rsocTierHint = (tier) => RSOC_TIER_META[tier]?.hint || '';
+export const rsocAreaLabel = (area) => RSOC_POLICY_AREAS[area] || area || '';
+
 // The Filtered view's queue filter: text search plus category / domain / page facets.
 // Mirrors filterReviewAds but keys the primary facet on the content_flag category.
 export function filterFlaggedAds(ads, query, filters = {}) {

@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, sanitizeColumnKeys, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -398,4 +398,49 @@ test('the feed and review queries exclude prohibited ads; the Filtered query sel
   // The Rejected view lists rejected ads but still lets prohibited win (excluded here).
   assert.ok(getRejected.includes("a.review_status = 'rejected'"), 'Rejected view must target rejected ads');
   assert.ok(getRejected.includes('notProhibited(sql)'), 'Rejected view must exclude prohibited');
+});
+
+// ── RSoC policy grade: the Fresh Finds "Policy" column label + color maps ───────
+test('rsocTierLabel and rsocTierColor cover the three tiers and default safely', () => {
+  for (const t of RSOC_TIER_ORDER) {
+    assert.equal(rsocTierLabel(t), RSOC_TIER_META[t].label);
+    assert.match(rsocTierColor(t), /^#[0-9A-Fa-f]{6}$/);
+  }
+  // An unknown/absent tier must render blank + a neutral color, never a stray word.
+  assert.equal(rsocTierLabel(null), '');
+  assert.equal(rsocTierLabel('bogus'), '');
+  assert.match(rsocTierColor(undefined), /^#[0-9A-Fa-f]{6}$/);
+});
+
+test('RSOC_TIER_ORDER is most-severe first and lists exactly the three tiers', () => {
+  assert.deepEqual(RSOC_TIER_ORDER, ['red', 'yellow', 'green']);
+  assert.deepEqual(Object.keys(RSOC_TIER_META).sort(), ['green', 'red', 'yellow']);
+});
+
+test('rsocAreaLabel maps known slugs and falls back to the raw key', () => {
+  assert.equal(rsocAreaLabel('supplements'), 'Unapproved supplements');
+  assert.equal(rsocAreaLabel('none'), 'Clear');
+  // A slug the UI does not know yet (server added one first) still renders, never blank-swallowed.
+  assert.equal(rsocAreaLabel('brand_new_area'), 'brand_new_area');
+  assert.equal(rsocAreaLabel(''), '');
+});
+
+// The web label map must stay in sync with the Python source of truth
+// (rsoc_policy.POLICY_AREA_LABELS). A drift here means the column shows a raw slug.
+test('RSOC_POLICY_AREAS matches the Python POLICY_AREA_LABELS keys', () => {
+  const py = readFileSync(fileURLToPath(new URL('../../rsoc_policy.py', import.meta.url)), 'utf8');
+  const block = py.slice(py.indexOf('POLICY_AREA_LABELS = {'), py.indexOf('}', py.indexOf('POLICY_AREA_LABELS = {')));
+  const pyKeys = [...block.matchAll(/'([a-z_]+)':/g)].map((m) => m[1]).sort();
+  assert.deepEqual(Object.keys(RSOC_POLICY_AREAS).sort(), pyKeys);
+});
+
+// ── rule-20 guard: the feed must actually ship the rsoc_* fields to the browser ─
+// The Policy column reads a.rsoc_tier / a.rsoc_policy_area / a.rsoc_reason, so if the feed
+// query stops selecting them (or mapAd stops mapping them) the column silently goes blank.
+test('the feed query selects the rsoc columns and mapAd maps them', () => {
+  const src = readFileSync(fileURLToPath(new URL('../lib/queries.js', import.meta.url)), 'utf8');
+  for (const col of ['rsoc_tier', 'rsoc_policy_area', 'rsoc_reason']) {
+    assert.ok(src.includes(`'${col}'`), `FEED_COLUMNS must select ${col}`);
+    assert.ok(src.includes(`${col}: r.${col}`), `mapAd must map ${col}`);
+  }
 });

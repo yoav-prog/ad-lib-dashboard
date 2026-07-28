@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, isPredicto, isVisymo, searchQuery, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, brandLabel, brandColor, BRAND_OPTIONS, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, isPredicto, isVisymo, searchQuery, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, brandLabel, brandColor, BRAND_OPTIONS, rsocTierColor, rsocTierLabel, rsocTierHint, rsocAreaLabel, RSOC_TIER_ORDER, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
@@ -51,7 +51,7 @@ export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0,
   const [sort, setSort] = useState('fresh');
   const [sortDir, setSortDir] = useState('desc');
   const [filters, setFilters] = useState({
-    domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], format: [], status: [],
+    domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], rsoc: [], format: [], status: [],
     daysMin: '', daysMax: '', rankMin: '', rankMax: '',
   });
   const [dateRange, setDateRange] = useState('all');
@@ -297,6 +297,7 @@ export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0,
       if (f.language.length && !f.language.includes(a.language)) return false;
       if (f.creative_language.length && !f.creative_language.includes(a.creative_language)) return false;
       if (f.brand.length && !f.brand.includes(a.brand)) return false;
+      if (f.rsoc.length && !f.rsoc.includes(a.rsoc_tier)) return false;
       if (f.format.length && !f.format.includes(a.display_format)) return false;
       if (f.feed.length && !f.feed.includes(a.feed)) return false;
       if (f.status.length && !f.status.includes(a.status)) return false;
@@ -454,7 +455,7 @@ export default function Dashboard({ ads: adsProp, secondaryCounts = { review: 0,
           page={page} pageSize={pageSize} setPageSize={setPageSize} goPage={goPage}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
-          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
+          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], rsoc: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
@@ -648,6 +649,7 @@ const FRESH_COLS = [
   { key: 'domain',   label: 'Domain',             w: 132 },
   { key: 'brand',    label: 'Brand',              w: 96 },
   { key: 'creative_language', label: 'Creative Lang', w: 100 },
+  { key: 'rsoc',     label: 'Policy',             w: 132 },
   { key: 'url',      label: 'URL',                w: 168 },
   { key: 'revenue',  label: 'Revenue Prediction', w: 96 },
   { key: 'clicks',   label: 'Clicks',             w: 76 },
@@ -761,10 +763,13 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
     // Brand keys ('none'/'brand'/'car_brand') get a readable label; ordered by
     // BRAND_OPTIONS. Hidden entirely until some ad is classified (before the backfill).
     ...(ads.some((a) => a.brand) ? [{ title: 'Brand', group: 'brand', vals: BRAND_OPTIONS.map((o) => o.key).filter((k) => countBy('brand', k)), count: (v) => countBy('brand', v), label: (v) => brandLabel(v) }] : []),
+    // RSoC policy tier (red/yellow/green), ordered most-severe first. Hidden entirely until
+    // some ad is classified (before the backfill), like Brand and Creative Language.
+    ...(ads.some((a) => a.rsoc_tier) ? [{ title: 'Policy (RSoC)', group: 'rsoc', vals: RSOC_TIER_ORDER.filter((k) => countBy('rsoc_tier', k)), count: (v) => countBy('rsoc_tier', v), label: (v) => rsocTierLabel(v) }] : []),
     { title: 'Format', group: 'format', vals: uniq('display_format'), count: (v) => countBy('display_format', v) },
     { title: 'Status', group: 'status', vals: uniq('status'), count: (v) => countBy('status', v) },
   ];
-  const checkboxGroups = ['domain', 'feed', 'vertical', 'country', 'geos', 'language', 'creative_language', 'brand', 'format', 'status'];
+  const checkboxGroups = ['domain', 'feed', 'vertical', 'country', 'geos', 'language', 'creative_language', 'brand', 'rsoc', 'format', 'status'];
   const activeFilterCount =
     checkboxGroups.reduce((n, k) => n + (filters[k]?.length || 0), 0)
     + (dateRange !== 'all' ? 1 : 0)
@@ -960,6 +965,7 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
             {cols.has('domain') && <div style={s('width:132px;flex-shrink:0')}>Domain</div>}
             {cols.has('brand') && <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>Brand</div>}
             {cols.has('creative_language') && <div title="Language of the text ON the creative (image / video), not the ad copy" style={s('width:100px;flex-shrink:0;padding-left:16px')}>Creative Lang</div>}
+            {cols.has('rsoc') && <div title="How much policy care this topic/angle would need on Google RSoC. Green = no known restriction on the topic (NOT a guarantee the article you write is safe); Yellow = build with care; Red = restricted vertical or prohibited angle, likely to draw strikes." style={s('width:132px;flex-shrink:0;padding-left:16px')}>Policy</div>}
             <div style={s('flex:1;min-width:0')}>Headline</div>
             {cols.has('url') && <div style={s('width:168px;flex-shrink:0')}>URL</div>}
             {showSlug && <div style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
@@ -1021,6 +1027,19 @@ function FreshFinds({ ads, filtered, paged, NOW, page, pageSize, setPageSize, go
                 {cols.has('creative_language') && (
                   <div style={s('width:100px;flex-shrink:0;padding-left:16px')} title={a.creative_language || (a.creative_language === '' ? 'No text on the creative' : '')}>
                     <span style={s(`font-family:${MONO};font-size:11px;color:${a.creative_language ? '#B6B9BE' : '#45484D'}`)}>{langCode(a.creative_language) || '-'}</span>
+                  </div>
+                )}
+                {cols.has('rsoc') && (
+                  <div style={s('width:132px;flex-shrink:0;padding-left:16px;min-width:0')}
+                    title={a.rsoc_tier
+                      ? `${rsocTierLabel(a.rsoc_tier)} - ${rsocAreaLabel(a.rsoc_policy_area)}${a.rsoc_reason ? ': ' + a.rsoc_reason : ''}\n\n${rsocTierHint(a.rsoc_tier)}`
+                      : 'Not yet classified for RSoC policy'}>
+                    {a.rsoc_tier
+                      ? <span style={s(`display:inline-flex;align-items:center;gap:5px;max-width:100%;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:${rsocTierColor(a.rsoc_tier)};border:1px solid ${rsocTierColor(a.rsoc_tier)}55;padding:2px 6px;white-space:nowrap`)}>
+                          <span style={s(`width:6px;height:6px;border-radius:50%;background:${rsocTierColor(a.rsoc_tier)};flex-shrink:0`)} />
+                          <span style={s('overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{rsocAreaLabel(a.rsoc_policy_area)}</span>
+                        </span>
+                      : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
                   </div>
                 )}
                 <CopyCell value={a.title || a.caption || a.body_text || ''} style={s('flex:1;min-width:0;padding-right:16px')}>
@@ -1443,6 +1462,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
     ['country', ad.country, '#C6C9CE'],
     ['vertical', ad.vertical, '#C6C9CE'],
     ['brand', brandLabel(ad.brand), ad.brand ? brandColor(ad.brand) : '#C6C9CE'],
+    ['policy (rsoc)', ad.rsoc_tier ? `${rsocTierLabel(ad.rsoc_tier)} - ${rsocAreaLabel(ad.rsoc_policy_area)}${ad.rsoc_reason ? ` (${ad.rsoc_reason})` : ''}` : '', ad.rsoc_tier ? rsocTierColor(ad.rsoc_tier) : '#C6C9CE'],
     ['rank', ad.rank != null ? `#${ad.rank}` : '', '#C6C9CE'],
     ['domain', ad.domain, '#C6C9CE'],
   ];

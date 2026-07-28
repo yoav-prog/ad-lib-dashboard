@@ -100,6 +100,11 @@ async def test_article_scrape_only_for_approved(fb, monkeypatch, review_status, 
     async def fake_gpt(*args, **kwargs):
         return ''
 
+    # The RSoC detector returns a (tier, area, reason) tuple, not a string, so it needs its
+    # own stub - (None, None, None) is the "unscored" verdict, mirroring an empty ''.
+    async def fake_rsoc(*args, **kwargs):
+        return (None, None, None)
+
     monkeypatch.setattr(run_scrape.fb, 'scrape_article_async', fake_scrape_article)
     monkeypatch.setattr(run_scrape.fb, 'gpt_detect_language', fake_gpt)
     monkeypatch.setattr(run_scrape.fb, 'gpt_detect_country', fake_gpt)
@@ -107,6 +112,7 @@ async def test_article_scrape_only_for_approved(fb, monkeypatch, review_status, 
     monkeypatch.setattr(run_scrape.fb, 'gpt_detect_brand', fake_gpt)
     monkeypatch.setattr(run_scrape.fb, 'gpt_detect_creative_language', fake_gpt)
     monkeypatch.setattr(run_scrape.fb, 'gpt_detect_prohibited', fake_gpt)
+    monkeypatch.setattr(run_scrape.fb, 'gpt_detect_rsoc_risk', fake_rsoc)
 
     row = await run_scrape.process_ad(
         _ad('x', 'https://example.com/page'), 1, None, [], '', 'example.com',

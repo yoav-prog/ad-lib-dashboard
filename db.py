@@ -39,6 +39,7 @@ AD_COLUMNS = [
     'article_title', 'article_content', 'resolved_url', 'rank',
     'language', 'country', 'vertical', 'brand', 'creative_language', 'review_status',
     'content_flag',
+    'rsoc_tier', 'rsoc_policy_area', 'rsoc_reason',
 ]
 
 # Refreshed every time an ad is re-seen (everything except its identity), with
