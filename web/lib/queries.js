@@ -1,5 +1,5 @@
-import { getSql } from './db';
-import { createTtlCache } from './ttl-cache';
+import { getSql } from './db.js';
+import { createTtlCache } from './ttl-cache.js';
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 
@@ -124,6 +124,148 @@ export async function getAds() {
   feedCache.fill(ads);
   console.info('[feed cache] miss - rebuilt from db', { rows: ads.length, ms: Date.now() - t0 });
   return ads;
+}
+
+// ── Server-side feed (Phase 2): one page from the database ────────────────────
+// getAds ships the whole feed and the browser filters, sorts and paginates it. getFeedPage
+// is the database-side equivalent: it applies the SAME base predicate, filters, search and
+// sort the client does today (see Dashboard's `filtered`), joins the campaign metrics by the
+// resolved campaign_url_key so revenue / RPC / GEOS sort and filter in SQL, and returns one
+// page plus the total. It lives beside getAds during the cutover, guarded by a parity check,
+// so the client model is retired only once the two agree.
+
+// daysRunning(ad) from lib/ui, in SQL: whole days since start_date, at least 1, or 0 with no
+// start_date. Kept byte-for-byte in intent so the days filter and sort match the client.
+const daysRunningSql = (sql) =>
+  sql`(case when a.start_date is not null then greatest(1, round(extract(epoch from (now() - a.start_date)) / 86400.0)) else 0 end)`;
+
+// The same text the client search scans (Dashboard searchIndex), concatenated and lowered.
+// concat_ws skips nulls like the client's filter(Boolean); cm.keywords is the joined sheet
+// keywords; tags is an array. brand is the raw key here rather than its label - a small, rare
+// difference from the client's brandLabel(brand) that only shows on brand-word searches.
+const feedHaystackSql = (sql) =>
+  sql`lower(concat_ws(' ', a.title, a.page_name, a.domain, a.vertical, a.country, a.language,
+    a.creative_language, a.brand, a.body_text, a.caption, a.cta_text, a.cta_type, a.link_url,
+    a.notes, cm.keywords, array_to_string(a.tags, ' ')))`;
+
+// Combine condition fragments with AND (the list always has the base predicate, so it is
+// never empty).
+const andAll = (sql, conds) => conds.reduce((acc, c) => sql`${acc} and ${c}`);
+
+// The WHERE conditions for a feed query, from the same inputs the client filter reads. Every
+// value is a bound parameter (postgres.js), so nothing here interpolates client text into SQL.
+function feedConditions(sql, { filters = {}, dateRange = 'all', search = '' } = {}) {
+  const f = filters || {};
+  const conds = [
+    sql`a.review_status = 'approved'`,
+    notProhibited(sql),
+    sql`((a.first_run_id is null and a.last_run_id is null)
+      or a.first_run_id in (select id from runs where status = 'completed')
+      or a.last_run_id in (select id from runs where status = 'completed'))`,
+  ];
+
+  const inList = (frag, vals) => { if (Array.isArray(vals) && vals.length) conds.push(frag(vals)); };
+  inList((v) => sql`a.domain = any(${v})`, f.domain);
+  inList((v) => sql`a.feed = any(${v})`, f.feed);
+  inList((v) => sql`a.vertical = any(${v})`, f.vertical);
+  inList((v) => sql`a.country = any(${v})`, f.country);
+  inList((v) => sql`a.language = any(${v})`, f.language);
+  inList((v) => sql`a.creative_language = any(${v})`, f.creative_language);
+  inList((v) => sql`a.brand = any(${v})`, f.brand);
+  inList((v) => sql`a.display_format = any(${v})`, f.format);
+  inList((v) => sql`a.status = any(${v})`, f.status);
+  inList((v) => sql`a.rsoc_tier = any(${v})`, f.rsoc);
+
+  // GEOS: cm.geos is "CC-pct,CC-pct"; keep a row if any selected country appears as a token.
+  if (Array.isArray(f.geos) && f.geos.length) {
+    const geo = f.geos.map((c) => sql`cm.geos ~ ${'(^|,)' + String(c) + '-'}`).reduce((a, c) => sql`${a} or ${c}`);
+    conds.push(sql`(${geo})`);
+  }
+
+  const num = (v) => (v !== '' && v != null && Number.isFinite(Number(v)) ? Number(v) : null);
+  const daysMin = num(f.daysMin), daysMax = num(f.daysMax);
+  if (daysMin != null) conds.push(sql`${daysRunningSql(sql)} >= ${daysMin}`);
+  if (daysMax != null) conds.push(sql`${daysRunningSql(sql)} <= ${daysMax}`);
+
+  // The client sinks null-rank ads whenever either rank bound is set, then applies the bounds.
+  const rankMin = num(f.rankMin), rankMax = num(f.rankMax);
+  if (rankMin != null || rankMax != null) conds.push(sql`a.rank is not null`);
+  if (rankMin != null) conds.push(sql`a.rank >= ${rankMin}`);
+  if (rankMax != null) conds.push(sql`a.rank <= ${rankMax}`);
+
+  const hours = dateRange === '24h' ? 24 : dateRange === '7d' ? 168 : dateRange === '30d' ? 720 : null;
+  if (hours != null) conds.push(sql`a.first_seen_at >= now() - (${hours} * interval '1 hour')`);
+
+  for (const t of String(search || '').trim().toLowerCase().split(/\s+/).filter(Boolean)) {
+    conds.push(sql`${feedHaystackSql(sql)} like ${'%' + t + '%'}`);
+  }
+
+  return conds;
+}
+
+// ORDER BY for a feed query, from the same sort keys + direction the client uses, each ending
+// with a stable ad_archive_id tiebreak so paging is deterministic. rank and the sheet metrics
+// always sink their nulls to the bottom, matching the client; an unknown key falls back to
+// freshness (the client's default branch).
+function feedOrder(sql, sort, dir) {
+  const desc = dir !== 'asc';                 // the client default is desc
+  const d = desc ? sql`desc` : sql`asc`;
+  const tie = sql`a.ad_archive_id desc`;
+  switch (sort) {
+    case 'days':     return sql`${daysRunningSql(sql)} ${d} nulls last, ${tie}`;
+    case 'rank':     return sql`a.rank ${desc ? sql`asc` : sql`desc`} nulls last, ${tie}`; // rank 1 first on desc
+    case 'revenue':  return sql`cm.revenue ${d} nulls last, ${tie}`;
+    case 'rpc':      return sql`cm.rpc ${d} nulls last, ${tie}`;
+    case 'page':     return sql`coalesce(a.page_name, '') ${d}, ${tie}`;
+    case 'domain':   return sql`coalesce(a.domain, '') ${d}, ${tie}`;
+    case 'vertical': return sql`coalesce(a.vertical, '') ${d}, ${tie}`;
+    default:         return sql`coalesce(a.last_seen_at, a.first_seen_at) ${d} nulls last, ${tie}`;
+  }
+}
+
+// A feed row carries the campaign metrics inline (from the join) in the same shape
+// attachSheetMetrics produces, so a caller reads plain sheet_* fields either way. geo_split is
+// stored as JSON text (migration 0012), parsed back here for the breakdown popup.
+function mapFeedRow(r) {
+  return {
+    ...mapAd(r),
+    sheet_revenue: r.sheet_revenue ?? null,
+    sheet_clicks: r.sheet_clicks ?? null,
+    sheet_rpc: r.sheet_rpc ?? null,
+    sheet_geos: r.sheet_geos ?? null,
+    sheet_geo_split: r.sheet_geo_split ? JSON.parse(r.sheet_geo_split) : null,
+    sheet_keywords: r.sheet_keywords ?? null,
+  };
+}
+
+// One page of the feed plus the total for the same filter set. `page` is zero-based. The
+// metrics join is a LEFT JOIN, so an ad with no campaign keeps its row with null metrics.
+export async function getFeedPage({ filters = {}, dateRange = 'all', search = '', sort = 'fresh', dir = 'desc', page = 0, pageSize = 100 } = {}) {
+  const sql = getSql();
+  const where = andAll(sql, feedConditions(sql, { filters, dateRange, search }));
+  const order = feedOrder(sql, sort, dir);
+  const size = Math.max(1, Math.min(500, Number(pageSize) || 100));
+  const pg = Math.max(0, Number(page) || 0);
+  const t0 = Date.now();
+  const rows = await sql`
+    select ${sql(FEED_COLUMNS)},
+           (a.article_content is not null and a.article_content <> '') as has_article,
+           cm.revenue as sheet_revenue, cm.clicks as sheet_clicks, cm.rpc as sheet_rpc,
+           cm.geos as sheet_geos, cm.geo_split as sheet_geo_split, cm.keywords as sheet_keywords
+    from ads a
+    left join campaign_metrics cm on cm.url_key = a.campaign_url_key
+    where ${where}
+    order by ${order}
+    limit ${size} offset ${pg * size}
+  `;
+  const [{ total }] = await sql`
+    select count(*)::int as total
+    from ads a
+    left join campaign_metrics cm on cm.url_key = a.campaign_url_key
+    where ${where}
+  `;
+  console.info('[feed page]', { sort, dir, page: pg, size, rows: rows.length, total, ms: Date.now() - t0 });
+  return { rows: rows.map(mapFeedRow), total, page: pg, pageSize: size };
 }
 
 // The review queue: ads whose destination did not match their tracked domain,
