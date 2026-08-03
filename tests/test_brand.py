@@ -60,3 +60,27 @@ def test_messages_work_with_image_and_no_copy():
     msgs = brand.build_brand_messages('', 'https://cdn.example.com/a.jpg')
     assert msgs is not None
     assert any(p.get('type') == 'image_url' for p in msgs[1]['content'])
+
+
+# ── the system prompt spells out the exclusions that stop false positives ─────
+# gpt-4.1-mini follows instructions literally, so the words that used to fire a
+# false brand must be named as non-brands in the prompt itself. These guard the
+# reported regressions (generic nouns, public institutions, the bare word
+# "brand") and fail loudly if a future edit loosens the prompt back.
+def _system_prompt():
+    # Read it the way the model does - the system message of a real request.
+    msgs = brand.build_brand_messages('some copy', '')
+    assert msgs[0]['role'] == 'system'
+    return msgs[0]['content'].lower()
+
+
+def test_prompt_excludes_generic_nouns_and_public_institutions():
+    prompt = _system_prompt()
+    assert 'phones' in prompt  # a generic product category, not a brand
+    assert 'police' in prompt  # a public institution, not a brand
+
+
+def test_prompt_excludes_the_bare_word_brand_and_defaults_to_none():
+    prompt = _system_prompt()
+    assert 'in any language' in prompt  # the literal word "brand" is not a brand
+    assert 'unsure' in prompt           # no specific brand -> none, don't guess
