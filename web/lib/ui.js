@@ -198,6 +198,14 @@ export const rsocTierColor = (tier) => RSOC_TIER_META[tier]?.color || '#45484D';
 export const rsocTierLabel = (tier) => RSOC_TIER_META[tier]?.label || '';
 export const rsocTierHint = (tier) => RSOC_TIER_META[tier]?.hint || '';
 export const rsocAreaLabel = (area) => RSOC_POLICY_AREAS[area] || area || '';
+// The Policy column's export/CSV value: the tier with its area, e.g. "Red - Unapproved
+// supplements". Green shows just the tier (its area is 'none'); an unclassified ad exports ''
+// so a sheet cell is blank rather than a fake grade, matching the other enrichment columns.
+export const rsocPolicyText = (a) => {
+  if (!a || !a.rsoc_tier) return '';
+  const area = a.rsoc_policy_area && a.rsoc_policy_area !== 'none' ? ` - ${rsocAreaLabel(a.rsoc_policy_area)}` : '';
+  return rsocTierLabel(a.rsoc_tier) + area;
+};
 
 // The Filtered view's queue filter: text search plus category / domain / page facets.
 // Mirrors filterReviewAds but keys the primary facet on the content_flag category.
@@ -288,6 +296,7 @@ export const SHEET_COLUMNS = [
   { key: 'country',   header: 'Country',          kind: 'text',  get: (a) => a.country,                                             width: 70,  align: 'CENTER', wrap: false },
   { key: 'language',  header: 'Language',         kind: 'text',  get: (a) => langCode(a.language),                                  width: 80,  align: 'CENTER', wrap: false },
   { key: 'creative_language', header: 'Creative Language', kind: 'text', get: (a) => langCode(a.creative_language),                    width: 110, align: 'CENTER', wrap: false },
+  { key: 'policy',    header: 'Policy',           kind: 'text',  get: (a) => rsocPolicyText(a),                                     width: 150, align: 'LEFT',   wrap: false },
   { key: 'brand',     header: 'Brand',            kind: 'text',  get: (a) => brandLabel(a.brand),                                   width: 90,  align: 'LEFT',   wrap: false },
   { key: 'feed',      header: 'Feed',             kind: 'text',  get: (a) => a.feed,                                                width: 90,  align: 'LEFT',   wrap: false },
   { key: 'status',    header: 'Status',           kind: 'text',  get: (a) => a.status,                                              width: 80,  align: 'CENTER', wrap: false },
