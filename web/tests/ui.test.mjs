@@ -193,6 +193,24 @@ test('exports carry a Creative Language column as an ISO code', () => {
   assert.equal(r2[0].cells[0].value, '');
 });
 
+test('exports carry a Policy column with the RSoC tier and area', () => {
+  const graded = { ...imageAd, rsoc_tier: 'red', rsoc_policy_area: 'supplements', rsoc_reason: 'keto gummies angle' };
+  const { columns, rows } = buildSheetData([graded], NOW, ['ad_id', 'policy']);
+  const col = columns.findIndex((c) => c.header === 'Policy');
+  assert.notEqual(col, -1);
+  assert.equal(rows[0].cells[col].value, 'Red - Unapproved supplements');
+  // Green shows just the tier (its area is 'none', not appended).
+  const { rows: r2 } = buildSheetData([{ ...imageAd, rsoc_tier: 'green', rsoc_policy_area: 'none' }], NOW, ['policy']);
+  assert.equal(r2[0].cells[0].value, 'Green');
+  // An ungraded ad exports an empty cell, never a fake grade.
+  const { rows: r3 } = buildSheetData([imageAd], NOW, ['policy']);
+  assert.equal(r3[0].cells[0].value, '');
+  // And it rides the CSV too.
+  const [header, row] = buildCsv([graded], NOW).split('\r\n');
+  assert.ok(header.includes('"Policy"'));
+  assert.ok(row.includes('"Red - Unapproved supplements"'));
+});
+
 test('geoCountries lists the countries in a GEOS split, in order', () => {
   assert.deepEqual(geoCountries('ES-90,MX-10'), ['ES', 'MX']);
   assert.deepEqual(geoCountries('US-100'), ['US']);
