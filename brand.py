@@ -25,13 +25,24 @@ BRAND_VALUES = ('none', 'brand', 'car_brand')
 BRAND_MODEL = 'gpt-4.1-mini'
 
 _SYSTEM_PROMPT = (
-    "You classify whether an advertising CREATIVE features a commercial brand, "
-    "using BOTH the image (logos, product packaging, wordmarks) and the ad copy "
-    "(brand names). Reply with EXACTLY ONE token, nothing else:\n"
-    "- car_brand : the brand shown or named is an automobile manufacturer "
+    "You classify whether an advertising CREATIVE features a specific, NAMED "
+    "commercial brand, from a logo or wordmark in the image or a brand name in the "
+    "ad copy. A brand is the proper name of one particular company or product line "
+    "that you could name - e.g. Nike, Samsung, Coca-Cola, IKEA, Toyota.\n"
+    "The following are NOT brands - answer none for them:\n"
+    "- generic product categories or common nouns: phones, shoes, cars, insurance, "
+    "supplements, a clinic, a course\n"
+    "- governments, public services, and institutions: police, army, a ministry, a "
+    "public hospital\n"
+    "- the mere presence of the word \"brand\" itself, in any language, and slogans "
+    "or an unnamed seller such as \"the best store\" or \"our company\"\n"
+    "Classify as a brand ONLY when you can point to a specific named brand or a "
+    "recognizable logo/wordmark. If you cannot, or you are unsure, answer none.\n"
+    "Reply with EXACTLY ONE token, nothing else:\n"
+    "- car_brand : the named brand is an automobile manufacturer "
     "(e.g. Toyota, BMW, Ford, Tesla, Mercedes)\n"
-    "- brand : any other recognizable commercial brand is present\n"
-    "- none : no recognizable brand; a generic or unbranded creative\n"
+    "- brand : any other specific named commercial brand is present\n"
+    "- none : no specific named brand; a generic or unbranded creative\n"
     "Respond with only one of: car_brand, brand, none"
 )
 
