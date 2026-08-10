@@ -1,14 +1,15 @@
 import { redirect } from 'next/navigation';
 import { requireAuth, getCapabilities, hasSessionCookie } from '@/lib/auth';
-import { getAds, getSecondaryCounts, getLastRun, getDomains, getRuns, getFeeds, getFeedPage, getFeedFacets, getFeedTicker } from '@/lib/queries';
+import { getAds, getSecondaryCounts, getLastRun, getDomains, getRuns, getFeeds, getFeedPage, getFeedTicker } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics } from '@/lib/metrics';
 import Dashboard from '@/components/Dashboard';
 
-// Phase 2 server-side feed, off by default. When on, the page ships one page plus the filter
-// facets and ticker counts instead of the whole feed, and the Dashboard drives filtering,
-// sorting, search and paging against the database. Flag-gated so it can be verified on a
-// preview before it replaces the working client-side path in production.
-const SERVER_FEED = process.env.SERVER_SIDE_FEED === '1';
+// Server-side feed, ON by default since the Phase 3 cutover: the page ships one page plus
+// the ticker counts instead of the whole ~28 MB feed, and the Dashboard drives filtering,
+// sorting, search, paging, selection and export against the database. Facets are not
+// server-rendered - the Dashboard fetches them on mount anyway, so shipping them here was
+// double work. SERVER_SIDE_FEED=0 restores the old all-rows client path (the rollback lever).
+const SERVER_FEED = process.env.SERVER_SIDE_FEED !== '0';
 const INITIAL_PAGE_SIZE = 100;
 
 // The page renders per request (it reads the auth cookie), so it is never statically
@@ -34,10 +35,10 @@ export default async function Page() {
   const commonPromise = Promise.all([getSecondaryCounts(), getLastRun(), getDomains(), getRuns(), getFeeds()]);
   commonPromise.catch(() => {});
 
-  // The feed itself. Server mode: one page + facets + ticker. Client mode (default): the whole
-  // feed, with metrics joined in memory (the pre-Phase-2 path). Only one of these runs.
+  // The feed itself. Server mode (default): one page + ticker. Client mode (flag off): the
+  // whole feed, with metrics joined in memory (the pre-Phase-2 path). Only one of these runs.
   const feedPromise = SERVER_FEED
-    ? Promise.all([getFeedPage({ pageSize: INITIAL_PAGE_SIZE }), getFeedFacets([]), getFeedTicker()])
+    ? Promise.all([getFeedPage({ pageSize: INITIAL_PAGE_SIZE }), getFeedTicker()])
     : Promise.all([getAds(), getSheetMetricsIndex()]);
   // If the session turns out to be invalid we redirect and never read these, so make sure a
   // rejection cannot surface as an unhandled one.
@@ -49,10 +50,9 @@ export default async function Page() {
 
   let ads;
   let initialFeed = null;
-  let facets = null;
   let ticker = null;
   if (SERVER_FEED) {
-    [initialFeed, facets, ticker] = await feedPromise;
+    [initialFeed, ticker] = await feedPromise;
     ads = initialFeed.rows;  // the first page, so the client has something to render immediately
     console.info('[feed] server-side first page', { rows: initialFeed.rows.length, total: initialFeed.total });
   } else {
@@ -69,7 +69,6 @@ export default async function Page() {
       ads={ads}
       serverFeed={SERVER_FEED}
       initialFeed={initialFeed}
-      facets={facets}
       ticker={ticker}
       secondaryCounts={secondaryCounts}
       domains={domains}

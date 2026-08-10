@@ -11,7 +11,7 @@ import { addDomain, updateDomain, deleteDomain, bulkUpdateDomains, deleteDomains
 // checkboxes and the bulk bar appear for both while the controls inside each
 // answer to their own capability.
 export default function ControlRoom({
-  ads, domains, runs, NOW, query = '', feeds = [],
+  ads, heldCounts = null, domains, runs, NOW, query = '', feeds = [],
   canRun = false, canManageDomains = false,
   runStatus = { active: null, lastRun: null }, runLogs = [], pending = false,
   onRunNow, onRunDomains, onMarkFailed, onSeeNewAds, onStop,
@@ -56,8 +56,13 @@ export default function ControlRoom({
     && Date.now() - new Date(lastRun.finished_at).getTime() < 10 * 60 * 1000;
   const showLivePanel = pending || !!active || recentlyFinished;
 
-  const adsByDomain = {};
-  ads.forEach((a) => { if (a.domain) adsByDomain[a.domain] = (adsByDomain[a.domain] || 0) + 1; });
+  // Held counts: provided by the server when the page no longer ships every ad
+  // (server-side feed), counted from the in-memory array otherwise.
+  const adsByDomain = heldCounts ?? (() => {
+    const m = {};
+    ads.forEach((a) => { if (a.domain) m[a.domain] = (m[a.domain] || 0) + 1; });
+    return m;
+  })();
 
   // Quick search across every visible field, so one box finds a row by domain,
   // feed, country, status, its Max Ads, or its cadence. The global top-bar search
