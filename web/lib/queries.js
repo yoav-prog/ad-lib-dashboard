@@ -167,7 +167,9 @@ const andAll = (sql, conds) => conds.reduce((acc, c) => sql`${acc} and ${c}`);
 
 // The WHERE conditions for a feed query, from the same inputs the client filter reads. Every
 // value is a bound parameter (postgres.js), so nothing here interpolates client text into SQL.
-function feedConditions(sql, { filters = {}, dateRange = 'all', search = '' } = {}) {
+// `ids` scopes the query to an explicit id list (a selection export) on top of the base
+// predicate, so a selected row still has to be feed-eligible to come back.
+function feedConditions(sql, { filters = {}, dateRange = 'all', search = '', ids = null } = {}) {
   const f = filters || {};
   const conds = [
     sql`a.review_status = 'approved'`,
@@ -212,6 +214,8 @@ function feedConditions(sql, { filters = {}, dateRange = 'all', search = '' } = 
   for (const t of String(search || '').trim().toLowerCase().split(/\s+/).filter(Boolean)) {
     conds.push(sql`${feedHaystackSql(sql)} like ${'%' + t + '%'}`);
   }
+
+  if (Array.isArray(ids) && ids.length) conds.push(sql`a.ad_archive_id = any(${ids.map(String)})`);
 
   return conds;
 }
@@ -380,12 +384,13 @@ export async function getFeedTicker() {
   return { total: row.total, fresh: row.fresh, new7: row.new7, winners: row.winners };
 }
 
-// Every row matching a filter set, in sort order, with no pagination - what an export ships.
-// Same predicate, join and sort as getFeedPage; the caller (export action) turns these into CSV
-// or a sheet. Can be large by design (a full unfiltered export is the whole feed).
-export async function getFeedExport({ filters = {}, dateRange = 'all', search = '', sort = 'fresh', dir = 'desc' } = {}) {
+// Every row matching a filter set - or an explicit id list (a selection) - in sort order,
+// with no pagination: what an export ships. Same predicate, join and sort as getFeedPage; the
+// caller (export action) turns these into CSV or a sheet. Can be large by design (a full
+// unfiltered export is the whole feed).
+export async function getFeedExport({ filters = {}, dateRange = 'all', search = '', sort = 'fresh', dir = 'desc', ids = null } = {}) {
   const sql = getSql();
-  const where = andAll(sql, feedConditions(sql, { filters, dateRange, search }));
+  const where = andAll(sql, feedConditions(sql, { filters, dateRange, search, ids }));
   const order = feedOrder(sql, sort, dir);
   const t0 = Date.now();
   const rows = await sql`
@@ -400,6 +405,43 @@ export async function getFeedExport({ filters = {}, dateRange = 'all', search = 
   `;
   console.info('[feed export]', { rows: rows.length, ms: Date.now() - t0 });
   return rows.map(mapFeedRow);
+}
+
+// Only the ids matching a filter set, in sort order, optionally capped - what "select all
+// matching" and "select first N" read when the rows live server-side. The metrics join stays
+// because the sort key and the GEOS/search conditions can reference it; the payload is ids
+// only, so even the whole feed's list is a few hundred KB, not tens of MB.
+export async function getFeedIds({ filters = {}, dateRange = 'all', search = '', sort = 'fresh', dir = 'desc', limit = null } = {}) {
+  const sql = getSql();
+  const where = andAll(sql, feedConditions(sql, { filters, dateRange, search }));
+  const order = feedOrder(sql, sort, dir);
+  const cap = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : null;
+  const t0 = Date.now();
+  const rows = await sql`
+    select a.ad_archive_id
+    from ads a
+    left join campaign_metrics cm on cm.url_key = a.campaign_url_key
+    where ${where}
+    order by ${order}
+    ${cap != null ? sql`limit ${cap}` : sql``}
+  `;
+  console.info('[feed ids]', { rows: rows.length, limit: cap, ms: Date.now() - t0 });
+  return rows.map((r) => r.ad_archive_id);
+}
+
+// Ads held per tracked domain, under the same base predicate as the feed, so Control Room's
+// "Held" column matches what counting the shipped array used to say - the page no longer
+// ships every ad for the browser to count.
+export async function getDomainAdCounts() {
+  const sql = getSql();
+  const base = andAll(sql, feedConditions(sql, {}));
+  const rows = await sql`
+    select a.domain, count(*)::int as count
+    from ads a
+    where ${base} and a.domain is not null
+    group by a.domain
+  `;
+  return Object.fromEntries(rows.map((r) => [r.domain, r.count]));
 }
 
 // The review queue: ads whose destination did not match their tracked domain,

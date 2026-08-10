@@ -30,13 +30,14 @@ export function usePageSize(storageKey) {
 }
 
 // Segmented rows-per-page control, styled like the images S/M/L picker so the
-// toolbar reads as one family of view controls.
-export function PageSizePicker({ value, onChange }) {
+// toolbar reads as one family of view controls. `hideAll` drops the ALL option
+// for tables the server pages (it caps a page at 500, so ALL would be a lie).
+export function PageSizePicker({ value, onChange, hideAll = false }) {
   return (
     <>
       <span style={s(`font-family:${MONO};font-size:10px;color:#5A5E64;letter-spacing:.3px`)}>rows</span>
       <div style={s('display:flex;gap:1px;background:rgba(255,255,255,.08)')}>
-        {PAGE_SIZES.map((n) => (
+        {PAGE_SIZES.filter((n) => !(hideAll && n === 'all')).map((n) => (
           <button key={n} onClick={() => onChange(n)}
             title={n === 'all' ? 'Show every row on one page (can be slow with thousands)' : `Show ${n} rows per page`}
             style={s(`padding:3px 7px;background:${value === n ? '#1A1C20' : '#0D0E11'};border:none;color:${value === n ? A : '#8A8E94'};font-family:${MONO};font-size:10px;cursor:pointer`)}>

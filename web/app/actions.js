@@ -3,7 +3,7 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport } from '@/lib/queries';
+import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
@@ -100,13 +100,48 @@ export async function loadFeedTicker() {
   return { ok: true, ticker: await getFeedTicker() };
 }
 
-// Every row matching the current filter set, for an export or a select-all. Gated on
-// export_data like the sheet export: this hands back the whole filtered feed at once.
+// Every row matching the current filter set - or an explicit id list (a selection) - for
+// the CSV download. Signed-in is the gate, not export_data: the CSV button has always been
+// available to every account (the data used to sit in their browser wholesale), and
+// loadSecondaryTab/loadFullFeed already hand full row sets to any signed-in user. Pushing
+// to Google Sheets stays behind export_data (exportToSheet below).
 export async function loadFeedExport(params) {
-  await requireCapability('export_data');
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
   const rows = await getFeedExport(params || {});
   console.info('[feed export action]', { rows: rows.length });
   return { ok: true, rows };
+}
+
+// The id list matching the current filter set, in sort order, optionally capped - what
+// "select all matching" and "select first N" read when the rows live server-side. Ids only,
+// so the payload stays small at any feed size. Read-only: any signed-in account.
+export async function loadFeedIds(params) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  const ids = await getFeedIds(params || {});
+  return { ok: true, ids };
+}
+
+// The whole feed with metrics attached - what the page itself shipped on every load before
+// the server-side feed. The Competitors, Trends and Pipeline views still analyse every ad
+// in the browser, so they fetch this once, on first open, the way the secondary tabs do.
+// Read-only, so the gate matches the feed: any signed-in account.
+export async function loadFullFeed() {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  const [rows, metricsIndex] = await Promise.all([getAds(), getSheetMetricsIndex()]);
+  const { ads, matched } = attachSheetMetrics(rows, metricsIndex);
+  console.info('[full feed]', { rows: ads.length, matched });
+  return { ok: true, ads };
+}
+
+// Ads held per tracked domain, for Control Room's Held column - counted in the database
+// now that the page no longer ships every ad. Read-only: any signed-in account.
+export async function loadDomainAdCounts() {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  return { ok: true, counts: await getDomainAdCounts() };
 }
 
 export async function updateAdWorkflow(adId, patch) {

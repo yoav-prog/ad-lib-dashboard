@@ -17,9 +17,13 @@ import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
 import FilteredView from '@/components/FilteredView';
 import RejectedView from '@/components/RejectedView';
-import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts, loadFeedPage, loadFeedFacets, loadFeedTicker } from '@/app/actions';
+import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts, loadFeedPage, loadFeedFacets, loadFeedIds, loadFeedExport, loadFullFeed, loadDomainAdCounts } from '@/app/actions';
 
-export default function Dashboard({ ads: adsProp, serverFeed = false, initialFeed = null, facets: facetsProp = null, ticker: tickerProp = null, secondaryCounts = { review: 0, filtered: 0, rejected: 0 }, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null }) {
+// The views that still analyse every ad in the browser. With the server-side feed on,
+// the full array is fetched once, on the first visit to any of them (ensureFullFeed).
+const FULL_FEED_VIEWS = ['competitor', 'trends', 'pipeline'];
+
+export default function Dashboard({ ads: adsProp, serverFeed = false, initialFeed = null, ticker: tickerProp = null, secondaryCounts = { review: 0, filtered: 0, rejected: 0 }, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null }) {
   // The server resolved these; the UI only decides what to render. Every action
   // is gated again server-side, so hiding a control is a courtesy, not the lock.
   const canEdit = caps.edit_ads === true;
@@ -56,16 +60,21 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   });
   const [dateRange, setDateRange] = useState('all');
   const [page, setPage] = useState(0);
-  const { pageSize, setPageSize } = usePageSize('adintel.pagesize.freshfinds');
+  const { pageSize: pageSizeRaw, setPageSize } = usePageSize('adintel.pagesize.freshfinds');
+  // The server pages the feed at 500 rows max, so "every row on one page" is not offered
+  // in server mode; a remembered 'all' from the old client path maps to the biggest page.
+  const pageSize = serverFeed && pageSizeRaw === 'all' ? 500 : pageSizeRaw;
 
-  // ── server-side feed (Phase 2, flag-gated) ──────────────────────────────────
+  // ── server-side feed (the default; SERVER_SIDE_FEED=0 restores client mode) ─
   // When serverFeed is on, the feed's rows, total, facets and ticker come from the database a
-  // page at a time rather than from a full in-memory `ads` array. The fetch effects below run
-  // only in that mode; client mode leaves them idle and keeps the original memos. Export,
-  // select-all and cross-page detail nav still read the loaded page here - they move
-  // server-side in a follow-up.
+  // page at a time rather than from a full in-memory `ads` array, and select-all and the
+  // exports go through ids-only / rows-on-demand actions (fetchAllIds / fetchExportRows
+  // below). The fetch effects run only in that mode; client mode leaves them idle and keeps
+  // the original memos.
   const [feedPage, setFeedPage] = useState(initialFeed);       // { rows, total, page, pageSize } | null
-  const [serverFacets, setServerFacets] = useState(facetsProp);
+  // Facets are not server-rendered (the effect below fetches them on mount anyway), so
+  // the rail shows a loading line until the first batch lands.
+  const [serverFacets, setServerFacets] = useState(null);
   const [serverTicker, setServerTicker] = useState(tickerProp);
   const [feedLoading, setFeedLoading] = useState(false);
   const serverMode = serverFeed && feedPage != null;
@@ -91,18 +100,64 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     return () => { alive = false; };
   }, [serverFeed, filters.feed]);
 
+  // ── full feed on demand (server mode) ───────────────────────────────────────
+  // The Competitors, Trends and Pipeline views analyse every ad in the browser. With the
+  // server-side feed on, the page ships only one Fresh Finds page, so the full array is
+  // fetched once, on the first visit to any of those views, and kept for the session -
+  // the pattern the Review/Filtered/Rejected tabs set. Client mode already holds
+  // everything and never fetches.
+  const [fullAds, setFullAds] = useState(null);
+  const [fullLoading, setFullLoading] = useState(false);
+  const [fullError, setFullError] = useState(false);
+  const fullStartedRef = useRef(false);
+  const ensureFullFeed = useCallback(async () => {
+    if (!serverFeed || fullStartedRef.current) return;
+    fullStartedRef.current = true;
+    setFullError(false);
+    setFullLoading(true);
+    try {
+      const r = await loadFullFeed();
+      if (r?.ok) setFullAds(r.ads);
+      else { setFullError(true); fullStartedRef.current = false; }
+    } catch (e) {
+      console.error('[full feed] load failed', e);
+      setFullError(true);
+      fullStartedRef.current = false;
+    }
+    setFullLoading(false);
+  }, [serverFeed]);
+  // Every ad the browser holds right now: the whole feed in client mode, the full array
+  // once fetched (or just the loaded page until then) in server mode.
+  const adsAll = fullAds ?? ads;
+
+  // Control Room's "Held" column: per-domain counts from the database in server mode,
+  // fetched on first open - the browser no longer holds every ad to count.
+  const [heldCounts, setHeldCounts] = useState(null);
+  const heldStartedRef = useRef(false);
+  const loadHeldCounts = useCallback(async () => {
+    if (!serverFeed || heldStartedRef.current) return;
+    heldStartedRef.current = true;
+    try {
+      const r = await loadDomainAdCounts();
+      if (r?.ok) setHeldCounts(r.counts);
+      else heldStartedRef.current = false;
+    } catch { heldStartedRef.current = false; }
+  }, [serverFeed]);
+
   const [selIndex, setSelIndex] = useState(0);
   const [detailId, setDetailId] = useState(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState('');
 
-  // Apply a row transform to the rendered rows in whichever mode is live: client mode edits the
-  // full `ads` array, server mode edits the loaded page (feedPage.rows), so an optimistic change
-  // shows at once either way.
+  // Apply a row transform to the rendered rows in whichever mode is live: client mode edits
+  // the full `ads` array, server mode edits the loaded page (feedPage.rows) and the lazily
+  // fetched full array (fullAds), so an optimistic change shows at once everywhere.
   const patchFeedPage = (fn) => { if (serverFeed) setFeedPage((prev) => (prev ? { ...prev, rows: fn(prev.rows) } : prev)); };
+  const patchFullAds = (fn) => { if (serverFeed) setFullAds((prev) => (prev ? fn(prev) : prev)); };
   const updateLocal = (id, patch) => {
     setAds((prev) => prev.map((a) => (a.ad_archive_id === id ? { ...a, ...patch } : a)));
     patchFeedPage((rows) => rows.map((a) => (a.ad_archive_id === id ? { ...a, ...patch } : a)));
+    patchFullAds((rows) => rows.map((a) => (a.ad_archive_id === id ? { ...a, ...patch } : a)));
   };
   const commit = (id, patch) => { if (!canEdit) return; updateAdWorkflow(id, patch).catch((e) => console.error('save failed', e)); };
   const update = (id, patch) => { if (!canEdit) return; updateLocal(id, patch); commit(id, patch); };
@@ -110,6 +165,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   // ── bulk selection ──────────────────────────────────────────────────────────
   const [selected, setSelected] = useState(() => new Set());
   const toggleSel = (id) => setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const addSel = (ids) => setSelected((prev) => new Set([...prev, ...ids]));
   const setSelection = (ids) => setSelected(new Set(ids));
   const clearSel = () => setSelected(new Set());
   const bulkDelete = async () => {
@@ -117,6 +173,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     const ids = [...selected];
     setAds((prev) => prev.filter((a) => !selected.has(a.ad_archive_id)));
     patchFeedPage((rows) => rows.filter((a) => !selected.has(a.ad_archive_id)));
+    patchFullAds((rows) => rows.filter((a) => !selected.has(a.ad_archive_id)));
     clearSel();
     try { await deleteAds(ids); } catch (e) { console.error(e); }
   };
@@ -125,6 +182,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     const ids = [...selected];
     setAds((prev) => prev.map((a) => (selected.has(a.ad_archive_id) ? { ...a, ...patch } : a)));
     patchFeedPage((rows) => rows.map((a) => (selected.has(a.ad_archive_id) ? { ...a, ...patch } : a)));
+    patchFullAds((rows) => rows.map((a) => (selected.has(a.ad_archive_id) ? { ...a, ...patch } : a)));
     try { await bulkUpdateAds(ids, patch); } catch (e) { console.error(e); }
   };
   // Re-scraping is a scrape, so this one answers to run_scrapes rather than to
@@ -152,6 +210,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   // Keep the local feed in sync when the server sends fresh props (after router.refresh).
   useEffect(() => { setAds(adsProp); }, [adsProp]);
   useEffect(() => { setCounts(secondaryCounts); }, [secondaryCounts]);
+  useEffect(() => { if (tickerProp) setServerTicker(tickerProp); }, [tickerProp]);
 
   // Fetch a secondary tab the first time it is opened, then keep it in memory
   // for the rest of the session. `loaded` is separate from the row arrays so an
@@ -174,12 +233,14 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     setLoadingTab(null);
   }, [loadingTab]);
 
-  // Switching view is the only entry point, so the fetch hangs off it rather
+  // Switching view is the only entry point, so the fetches hang off it rather
   // than off each view's own mount.
   const goView = useCallback((v) => {
     setView(v);
     if (v in loadedRef.current) loadTab(v);
-  }, [loadTab]);
+    if (FULL_FEED_VIEWS.includes(v)) ensureFullFeed();
+    if (v === 'settings') loadHeldCounts();
+  }, [loadTab, ensureFullFeed, loadHeldCounts]);
 
   // After any decision the badge numbers are stale. Re-read just the counts
   // (one cheap query) instead of re-fetching whole tabs.
@@ -314,7 +375,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   // just bloated every haystack and slowed the scan. Article bodies are never shipped.
   const searchIndex = useMemo(() => {
     const m = new Map();
-    for (const a of ads) {
+    for (const a of adsAll) {
       m.set(a.ad_archive_id, [
         a.title, a.page_name, a.domain, a.vertical, a.country, a.language,
         a.creative_language,
@@ -325,7 +386,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
       ].filter(Boolean).join(' ').toLowerCase());
     }
     return m;
-  }, [ads]);
+  }, [adsAll]);
 
   // ── filtering + sorting ────────────────────────────────────────────────────
   const filtered = useMemo(() => {
@@ -411,6 +472,36 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     console.info('[feed paging] page', { table: 'fresh', page: p + 1, pages: pageCount(total, size), pageSize: size, total });
   }, []);
 
+  // The id list behind the header select-all, "select first N" and a no-selection sheet
+  // export: the in-memory filtered list in client mode, one ids-only query in server mode.
+  const fetchAllIds = useCallback(async (limit) => {
+    if (!serverFeed) {
+      const ids = filtered.map((a) => a.ad_archive_id);
+      return limit ? ids.slice(0, limit) : ids;
+    }
+    const r = await loadFeedIds({ filters, dateRange, search: query, sort, dir: sortDir, limit });
+    return r?.ok ? r.ids : [];
+  }, [serverFeed, filtered, filters, dateRange, query, sort, sortDir]);
+
+  // Rows for a CSV download: the selected ids, or everything the current query matches.
+  // Client mode reads its own memory (current sort order first, then any selected rows the
+  // filters no longer show); server mode re-reads from the database with the same
+  // predicate, join and sort as the table. A selection exports whole, current filters or
+  // not: "37 selected" always downloads those 37 rows.
+  const fetchExportRows = useCallback(async (ids) => {
+    if (!serverFeed) {
+      if (!ids) return filtered;
+      const want = new Set(ids);
+      const inView = filtered.filter((a) => want.has(a.ad_archive_id));
+      const seen = new Set(inView.map((a) => a.ad_archive_id));
+      return [...inView, ...ads.filter((a) => want.has(a.ad_archive_id) && !seen.has(a.ad_archive_id))];
+    }
+    const r = ids
+      ? await loadFeedExport({ sort, dir: sortDir, ids })
+      : await loadFeedExport({ filters, dateRange, search: query, sort, dir: sortDir });
+    return r?.ok ? r.rows : [];
+  }, [serverFeed, ads, filtered, filters, dateRange, query, sort, sortDir]);
+
   // Same smart-match, reused by the Competitor and Pipeline views so search is per-page.
   const matchesQuery = (a) => {
     const q = query.trim().toLowerCase();
@@ -430,9 +521,13 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   }[view] || 'Search...';
 
   const openDetail = (id) => { setDetailId(id); setView('detail'); };
+  // The list the detail view's prev/next walks: the loaded page in server mode (stepping
+  // across a page boundary would need a fetch per step), the whole filtered list in
+  // client mode.
+  const detailList = serverMode ? feedRows : filtered;
   const stepDetail = (delta) => {
-    const idx = filtered.findIndex((a) => a.ad_archive_id === detailId);
-    const next = filtered[Math.min(filtered.length - 1, Math.max(0, idx + delta))];
+    const idx = detailList.findIndex((a) => a.ad_archive_id === detailId);
+    const next = detailList[Math.min(detailList.length - 1, Math.max(0, idx + delta))];
     if (next) setDetailId(next.ad_archive_id);
   };
   const toggleFilter = (group, val) =>
@@ -461,16 +556,17 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
       if (view === 'fresh') {
         // j/k walk the visible page and roll over to the neighbor page at the
         // edges, so the keyboard can traverse the whole feed without the mouse.
-        const pages = pageCount(filtered.length, pageSize);
+        // feedRows/feedTotal are the visible rows and true row count in both modes.
+        const pages = pageCount(feedTotal, pageSize);
         if (e.key === 'j' || e.key === 'ArrowDown') {
           e.preventDefault();
-          if (selIndex >= paged.length - 1 && page < pages - 1) goPage(page + 1, filtered.length, pageSize);
-          else setSelIndex((i) => Math.min(paged.length - 1, i + 1));
+          if (selIndex >= feedRows.length - 1 && page < pages - 1) goPage(page + 1, feedTotal, pageSize);
+          else setSelIndex((i) => Math.min(feedRows.length - 1, i + 1));
         } else if (e.key === 'k' || e.key === 'ArrowUp') {
           e.preventDefault();
-          if (selIndex === 0 && page > 0) { goPage(page - 1, filtered.length, pageSize); setSelIndex(pageSize - 1); }
+          if (selIndex === 0 && page > 0) { goPage(page - 1, feedTotal, pageSize); setSelIndex(pageSize - 1); }
           else setSelIndex((i) => Math.max(0, i - 1));
-        } else if (e.key === 'Enter') { const a = paged[selIndex]; if (a) openDetail(a.ad_archive_id); }
+        } else if (e.key === 'Enter') { const a = feedRows[selIndex]; if (a) openDetail(a.ad_archive_id); }
       } else if (view === 'detail') {
         if (e.key === 'j') stepDetail(1);
         else if (e.key === 'k') stepDetail(-1);
@@ -493,7 +589,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
         openPalette={() => { setPaletteOpen(true); setPaletteQuery(''); setTimeout(() => document.getElementById('ai-palette')?.focus(), 30); }}
       />
 
-      <RunBanner status={runStatus} pending={pending} onClick={() => setView('settings')} />
+      <RunBanner status={runStatus} pending={pending} onClick={() => goView('settings')} />
 
       {view === 'fresh' && (
         <FreshFinds
@@ -508,14 +604,15 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
           selIndex={selIndex} setSelIndex={setSelIndex} openDetail={openDetail} lastRunStart={lastRunStart}
           canEdit={canEdit} canExport={canExport} canRefresh={canRun}
-          selected={selected} toggleSel={toggleSel} setSelection={setSelection} clearSel={clearSel} bulkDelete={bulkDelete} bulkSet={bulkSet} bulkRefresh={bulkRefresh}
+          selected={selected} toggleSel={toggleSel} addSel={addSel} setSelection={setSelection} clearSel={clearSel} bulkDelete={bulkDelete} bulkSet={bulkSet} bulkRefresh={bulkRefresh}
+          fetchAllIds={fetchAllIds} fetchExportRows={fetchExportRows}
           exportSaEmail={exportSaEmail} onRefreshMetrics={onRefreshMetrics}
         />
       )}
 
       {view === 'detail' && (
         <Detail
-          ad={ads.find((a) => a.ad_archive_id === detailId) || filtered[0]}
+          ad={feedRows.find((a) => a.ad_archive_id === detailId) || adsAll.find((a) => a.ad_archive_id === detailId) || detailList[0]}
           NOW={NOW}
           back={() => setView('fresh')}
           prev={() => stepDetail(-1)} next={() => stepDetail(1)}
@@ -523,9 +620,21 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
         />
       )}
 
-      {view === 'competitor' && <CompetitorView ads={ads} NOW={NOW} openDetail={openDetail} matchesQuery={matchesQuery} />}
-      {view === 'trends' && <TrendsView ads={ads} NOW={NOW} matchesQuery={matchesQuery} openDetail={openDetail} />}
-      {view === 'pipeline' && <PipelineView ads={ads} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />}
+      {view === 'competitor' && (
+        <LazyTab tab="competitors" loading={fullLoading} failed={fullError} retry={ensureFullFeed} ready={!serverFeed || fullAds != null}>
+          <CompetitorView ads={adsAll} NOW={NOW} openDetail={openDetail} matchesQuery={matchesQuery} />
+        </LazyTab>
+      )}
+      {view === 'trends' && (
+        <LazyTab tab="trends" loading={fullLoading} failed={fullError} retry={ensureFullFeed} ready={!serverFeed || fullAds != null}>
+          <TrendsView ads={adsAll} NOW={NOW} matchesQuery={matchesQuery} openDetail={openDetail} />
+        </LazyTab>
+      )}
+      {view === 'pipeline' && (
+        <LazyTab tab="pipeline" loading={fullLoading} failed={fullError} retry={ensureFullFeed} ready={!serverFeed || fullAds != null}>
+          <PipelineView ads={adsAll} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />
+        </LazyTab>
+      )}
       {view === 'review' && (
         <LazyTab tab="review" loading={loadingTab === 'review'} failed={tabError === 'review'} retry={() => { setTabError(null); loadTab('review'); }} ready={loadedRef.current.review}>
           <ReviewView ads={tabAds.review} NOW={NOW} canEdit={canEdit} query={query} onDecide={onReviewDecide} />
@@ -543,7 +652,8 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
       )}
       {view === 'settings' && (
         <ControlRoom
-          ads={ads} domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds}
+          ads={adsAll} heldCounts={serverFeed ? (heldCounts ?? {}) : null}
+          domains={domains} runs={runs} NOW={NOW} query={query} feeds={feeds}
           canRun={canRun} canManageDomains={canManageDomains}
           runStatus={runStatus} runLogs={runLogs} pending={pending}
           onRunNow={onRunNow} onRunDomains={onRunDomains} onMarkFailed={onMarkFailed} onSeeNewAds={onSeeNewAds} onStop={onStop}
@@ -552,7 +662,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
 
       {paletteOpen && (
         <Palette
-          ads={ads} paletteQuery={paletteQuery} setPaletteQuery={setPaletteQuery}
+          ads={adsAll} paletteQuery={paletteQuery} setPaletteQuery={setPaletteQuery}
           close={() => setPaletteOpen(false)}
           go={(v) => { goView(v); setPaletteOpen(false); }}
           openDetail={(id) => { openDetail(id); setPaletteOpen(false); }}
@@ -716,13 +826,45 @@ const FRESH_COLS = [
 ];
 const FRESH_COLS_LS = 'adintel.cols.freshfinds';
 
-function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = null, serverFacets = null, serverTicker = null, feedLoading = false, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, exportSaEmail, onRefreshMetrics }) {
+function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = null, serverFacets = null, serverTicker = null, feedLoading = false, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, addSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, fetchAllIds, fetchExportRows, exportSaEmail, onRefreshMetrics }) {
+  // Selection serves two masters: bulk edits (edit_ads) and exports (export_data), so
+  // the checkboxes show for either. Each toolbar action still answers to its own gate.
+  const canSelect = canEdit || canExport;
   const selCount = selected ? selected.size : 0;
   const [sheetOpen, setSheetOpen] = useState(false);
-  const filteredIds = filtered.map((a) => a.ad_archive_id);
-  const allSelected = filteredIds.length > 0 && selected && filteredIds.every((id) => selected.has(id));
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [selBusy, setSelBusy] = useState(false);
+  const visibleIds = paged.map((a) => a.ad_archive_id);
+  const allSelected = visibleIds.length > 0 && selected && visibleIds.every((id) => selected.has(id));
   const bulkBtn = s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:#C6C9CE;font-family:${MONO};font-size:10px;padding:4px 9px;cursor:pointer`);
   const [bulkMsg, setBulkMsg] = useState('');
+
+  // Bulk selection in one gesture: this page, the first N of the current view, or every
+  // matching row. Server mode fetches the id list (ids only, so it stays light); client
+  // mode slices its in-memory filtered list. The header checkbox and the caret menu
+  // beside it share these.
+  const selectMany = async (limit) => {
+    if (selBusy) return;
+    setSelBusy(true);
+    try { setSelection(await fetchAllIds(limit)); } catch (e) { console.error('[bulk select] failed', e); }
+    setSelBusy(false);
+  };
+  const selectPage = () => setSelection(visibleIds);
+
+  // Shift-click on a row checkbox selects the range from the last-clicked one, like any
+  // file manager. Indexes are within the visible page, so the anchor resets on paging.
+  const lastCheckRef = useRef(null);
+  useEffect(() => { lastCheckRef.current = null; }, [page]);
+  const onRowCheck = (e, i, id) => {
+    e.stopPropagation();
+    if (e.shiftKey && lastCheckRef.current != null && lastCheckRef.current !== i) {
+      const [lo, hi] = lastCheckRef.current < i ? [lastCheckRef.current, i] : [i, lastCheckRef.current];
+      addSel(paged.slice(lo, hi + 1).map((a) => a.ad_archive_id));
+    } else {
+      toggleSel(id);
+    }
+    lastCheckRef.current = i;
+  };
   // Fresh = seen by the latest run (the scraper re-surfaces every ad Meta
   // still returns, not just never-seen ones), falling back to the last 24h.
   const isFresh = (a) => (lastRunStart ? new Date(a.last_seen_at || a.first_seen_at).getTime() >= lastRunStart : hoursSince(a.last_seen_at || a.first_seen_at, NOW) <= 24);
@@ -863,20 +1005,31 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
     { id: 'vertical', label: 'vertical' },
   ];
 
-  // Download exactly what's on screen (current filters/search/date range) as CSV.
-  const exportCsv = () => {
-    if (!filtered.length) return;
-    // Prepend a UTF-8 BOM (U+FEFF) so Excel opens accented ad copy in the right encoding.
-    const bom = String.fromCharCode(0xFEFF);
-    const blob = new Blob([bom + buildCsv(filtered, NOW)], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `fresh-finds-${new Date(NOW).toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  // Download rows as CSV: the selected rows when a selection is active, everything the
+  // current filters and search match otherwise. Client mode reads from memory; server
+  // mode fetches the rows for the download (fetchExportRows hides the difference).
+  const exportCsv = async () => {
+    if (csvBusy || !(selCount || count)) return;
+    setCsvBusy(true);
+    try {
+      const rows = await fetchExportRows(selCount ? [...selected] : null);
+      if (rows.length) {
+        // Prepend a UTF-8 BOM (U+FEFF) so Excel opens accented ad copy in the right encoding.
+        const bom = String.fromCharCode(0xFEFF);
+        const blob = new Blob([bom + buildCsv(rows, NOW)], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `fresh-finds-${new Date(NOW).toISOString().slice(0, 10)}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      console.error('[csv export] failed', e);
+    }
+    setCsvBusy(false);
   };
 
   return (
@@ -909,7 +1062,14 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
             <span style={s(`font-family:${MONO};font-size:10px;letter-spacing:1.5px;color:#6C7076`)}>FILTERS</span>
             <button onClick={clearFilters} style={s(`background:none;border:none;color:${activeFilterCount ? A : '#5A5E64'};font-family:${MONO};font-size:9.5px;letter-spacing:.5px;cursor:pointer`)}>CLEAR ({activeFilterCount})</button>
           </div>
-          {groups.map((g) => {
+          {serverMode && !serverFacets ? (
+            // Facets ride in after the rows now (they are fetched, not server-rendered),
+            // so the rail says so instead of flashing a stack of empty groups.
+            <div style={s('display:flex;align-items:center;gap:8px;padding:16px 14px')}>
+              <span style={s(`width:7px;height:7px;border-radius:50%;background:${A};animation:freshpulse 1.4s ease-in-out infinite`)} />
+              <span style={s(`font-family:${MONO};font-size:10px;letter-spacing:.5px;color:#8A8E94`)}>LOADING FILTERS...</span>
+            </div>
+          ) : groups.map((g) => {
             const term = (gsearch[g.group] || '').toLowerCase();
             const opts = term ? g.vals.filter((v) => String(v).toLowerCase().includes(term)) : g.vals;
             const searchable = g.vals.length > 6;
@@ -962,21 +1122,35 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
         {/* feed */}
         <div style={s('flex:1;min-width:0;background:#0B0C0E;overflow-x:auto')}>
           <div style={s('display:flex;align-items:center;justify-content:space-between;height:34px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06)')}>
-            {selCount > 0 && canEdit ? (
+            {selCount > 0 && canSelect ? (
               <div style={s('display:flex;align-items:center;gap:10px;width:100%')}>
                 <span style={s(`font-family:${MONO};font-size:11px;color:${A};font-variant-numeric:tabular-nums`)}>{selCount} selected</span>
                 <button onClick={clearSel} style={s(`background:none;border:none;color:#8A8E94;font-family:${MONO};font-size:10px;cursor:pointer`)}>CLEAR</button>
                 <span style={s('color:#2E3136')}>|</span>
-                <button onClick={() => bulkSet({ is_saved: true })} style={bulkBtn}>★ STAR</button>
-                <button onClick={() => bulkSet({ status: 'idea' })} style={bulkBtn}>IDEA</button>
-                <button onClick={() => bulkSet({ status: 'drafting' })} style={bulkBtn}>DRAFTING</button>
-                <button onClick={() => bulkSet({ status: 'published' })} style={bulkBtn}>PUBLISHED</button>
+                {canEdit && (
+                  <>
+                    <button onClick={() => bulkSet({ is_saved: true })} style={bulkBtn}>★ STAR</button>
+                    <button onClick={() => bulkSet({ status: 'idea' })} style={bulkBtn}>IDEA</button>
+                    <button onClick={() => bulkSet({ status: 'drafting' })} style={bulkBtn}>DRAFTING</button>
+                    <button onClick={() => bulkSet({ status: 'published' })} style={bulkBtn}>PUBLISHED</button>
+                  </>
+                )}
                 {canRefresh && (
                   <button onClick={async () => { setBulkMsg('Refreshing...'); const r = await bulkRefresh(); setBulkMsg(r?.dispatched ? ((r.added ? `Tracked ${r.added} new domain(s), then ` : '') + 'dispatched. Ranks update when the scrape finishes.') : r?.reason === 'no-domain' ? 'These ads have no domain to refresh.' : r?.matched ? ((r.added ? `Tracked ${r.added} new domain(s), ` : '') + 'marked due; the runner refreshes on its next tick.') : 'Nothing to refresh.'); }} style={bulkBtn}>&#8635; REFRESH</button>
                 )}
+                <button onClick={exportCsv} disabled={csvBusy} title={`Download the ${fmtInt(selCount)} selected ad(s) as a CSV`} style={bulkBtn}>
+                  {csvBusy ? '↓ BUILDING...' : `↓ CSV (${fmtInt(selCount)})`}
+                </button>
+                {canExport && (
+                  <button onClick={() => setSheetOpen(true)} title={`Send the ${fmtInt(selCount)} selected ad(s) to a Google Sheet`} style={bulkBtn}>
+                    &#8599; SHEET ({fmtInt(selCount)})
+                  </button>
+                )}
                 <div style={s('flex:1;padding:0 12px;min-width:0')}><span style={s('font-size:10px;color:#9CA0A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block')}>{bulkMsg}</span></div>
-                <button onClick={() => { if (confirm(`Delete ${selCount} ad(s)? This removes them from the database.`)) bulkDelete(); }}
-                  style={s(`background:none;border:1px solid rgba(255,120,120,.35);color:#ff8a80;font-family:${MONO};font-size:10px;padding:4px 10px;cursor:pointer`)}>DELETE {selCount}</button>
+                {canEdit && (
+                  <button onClick={() => { if (confirm(`Delete ${selCount} ad(s)? This removes them from the database.`)) bulkDelete(); }}
+                    style={s(`background:none;border:1px solid rgba(255,120,120,.35);color:#ff8a80;font-family:${MONO};font-size:10px;padding:4px 10px;cursor:pointer`)}>DELETE {selCount}</button>
+                )}
               </div>
             ) : (
               <>
@@ -1004,18 +1178,18 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                     ))}
                   </div>
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
-                  <PageSizePicker value={pageSize} onChange={setPageSize} />
+                  <PageSizePicker value={pageSize} onChange={setPageSize} hideAll={serverMode} />
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <ColumnPicker defs={FRESH_COLS} visible={cols} toggle={toggleCol} reset={resetCols} />
                   {canExport && <MetricsRefreshButton onRefresh={onRefreshMetrics} />}
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
-                  <button onClick={exportCsv} disabled={!filtered.length}
-                    title={`Download these ${fmtInt(filtered.length)} ad(s) as a CSV — exactly the rows your filters and search leave showing`}
-                    style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>↓ EXPORT CSV ({fmtInt(filtered.length)})</button>
+                  <button onClick={exportCsv} disabled={!count || csvBusy}
+                    title={`Download these ${fmtInt(count)} ad(s) as a CSV, exactly the rows your filters and search leave showing. Tick rows first to download only those.`}
+                    style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${count ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${count && !csvBusy ? 'pointer' : 'default'}`)}>{csvBusy ? '↓ BUILDING...' : `↓ EXPORT CSV (${fmtInt(count)})`}</button>
                   {canExport && (
-                    <button onClick={() => setSheetOpen(true)} disabled={!filtered.length}
-                      title={`Send these ${fmtInt(filtered.length)} ad(s) to a Google Sheet — exactly the rows your filters and search leave showing`}
-                      style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${filtered.length ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${filtered.length ? 'pointer' : 'default'}`)}>&#8599; EXPORT TO SHEET ({fmtInt(filtered.length)})</button>
+                    <button onClick={() => setSheetOpen(true)} disabled={!count}
+                      title={`Send these ${fmtInt(count)} ad(s) to a Google Sheet, exactly the rows your filters and search leave showing. Tick rows first to send only those.`}
+                      style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${count ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${count ? 'pointer' : 'default'}`)}>&#8599; EXPORT TO SHEET ({fmtInt(count)})</button>
                   )}
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>J</kbd>
@@ -1029,10 +1203,12 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
           </div>
 
           <div style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
-            {canEdit && (
-              <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
-                <span onClick={() => (allSelected ? clearSel() : setSelection(filteredIds))} title={`Select all ${filtered.length} filtered ads (every page)`}
-                  style={s(`width:13px;height:13px;border:1px solid ${allSelected ? A : 'rgba(255,255,255,.25)'};background:${allSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allSelected ? '✓' : ''}</span>
+            {canSelect && (
+              <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center;gap:1px')}>
+                <span onClick={() => (allSelected ? clearSel() : selectMany())} title={`Select all ${fmtInt(count)} matching ads (every page)`}
+                  style={s(`width:13px;height:13px;flex-shrink:0;border:1px solid ${allSelected ? A : 'rgba(255,255,255,.25)'};background:${allSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allSelected ? '✓' : ''}</span>
+                <SelectMenu pageRows={visibleIds.length} total={count} busy={selBusy} hasSelection={selCount > 0}
+                  onPage={selectPage} onFirst={(n) => selectMany(n)} onAll={() => selectMany()} onClear={clearSel} />
               </div>
             )}
             <div style={s(`width:${thumbColW}px;flex-shrink:0`)} />
@@ -1075,8 +1251,9 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
               <div key={a.ad_archive_id} onClick={() => openDetail(a.ad_archive_id)} onMouseEnter={() => setSelIndex(i)}
                 style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:${tableMinW}px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : (sel ? 'rgba(232,163,61,.05)' : 'transparent')};cursor:pointer`)}>
                 <div style={s(`position:absolute;left:0;top:0;bottom:0;width:2px;background:${isSel || sel ? A : (fresh ? 'rgba(232,163,61,.5)' : 'transparent')}`)} />
-                {canEdit && (
-                  <div onClick={(e) => { e.stopPropagation(); toggleSel(a.ad_archive_id); }} style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer')}>
+                {canSelect && (
+                  <div onClick={(e) => onRowCheck(e, i, a.ad_archive_id)} title="Click to select; shift-click to select the range from the last one you ticked"
+                    style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer;user-select:none')}>
                     <span style={s(`width:13px;height:13px;border:1px solid ${isSel ? A : 'rgba(255,255,255,.22)'};background:${isSel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{isSel ? '✓' : ''}</span>
                   </div>
                 )}
@@ -1241,7 +1418,64 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
         </div>
       </div>
       {sheetOpen && (
-        <SheetExportModal filtered={filtered} saEmail={exportSaEmail} onClose={() => setSheetOpen(false)} />
+        <SheetExportModal
+          count={selCount || count}
+          selection={selCount > 0}
+          resolveIds={selCount > 0 ? async () => [...selected] : () => fetchAllIds()}
+          saEmail={exportSaEmail}
+          onClose={() => setSheetOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// The caret beside the header checkbox: select this page, the first N rows of the
+// current view, everything matching, or clear - one gesture instead of ticking rows
+// one by one. Same popover manners as ColumnPicker (click-outside / Escape closes).
+function SelectMenu({ pageRows, total, busy, hasSelection, onPage, onFirst, onAll, onClear }) {
+  const [open, setOpen] = useState(false);
+  const [n, setN] = useState('');
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [open]);
+
+  const item = 'display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;padding:5px 12px;background:transparent;border:none;cursor:pointer;text-align:left;font-size:11.5px;color:#C6C9CE';
+  const num = s(`font-family:${MONO};font-size:10px;color:#5A5E64;font-variant-numeric:tabular-nums`);
+  const firstN = () => {
+    const v = Math.floor(Number(n));
+    if (!Number.isFinite(v) || v < 1) return;
+    onFirst(Math.min(v, total));
+    setOpen(false);
+  };
+  const pick = (fn) => () => { fn(); setOpen(false); };
+  return (
+    <div ref={ref} style={s('position:relative;display:flex;align-items:center')}>
+      <button onClick={() => setOpen((o) => !o)} title="Select rows in bulk: this page, the first N, or everything matching"
+        style={s(`background:none;border:none;color:${open || busy ? A : '#8A8E94'};font-size:8px;cursor:pointer;padding:2px 1px;line-height:1`)}>&#9662;</button>
+      {open && (
+        <div style={s('position:absolute;left:-8px;top:calc(100% + 8px);z-index:60;width:216px;background:#101216;border:1px solid rgba(255,255,255,.14);box-shadow:0 14px 40px rgba(0,0,0,.55);padding:6px 0 8px;text-transform:none;letter-spacing:0')}>
+          <div style={s('padding:4px 12px 7px;font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>{busy ? 'Selecting...' : 'Select'}</div>
+          <button onClick={pick(onPage)} style={s(item)}>This page <span style={num}>{fmtInt(pageRows)}</span></button>
+          <div style={s('display:flex;align-items:center;gap:8px;padding:5px 12px')}>
+            <span style={s('font-size:11.5px;color:#C6C9CE')}>First</span>
+            <input value={n} onChange={(e) => setN(e.target.value.replace(/[^\d]/g, ''))}
+              onKeyDown={(e) => { if (e.key === 'Enter') firstN(); }}
+              placeholder="50" inputMode="numeric" aria-label="How many rows to select from the top"
+              style={s(`flex:1;min-width:0;background:#0B0C0E;border:1px solid rgba(255,255,255,.12);color:#E7E8EA;font-family:${MONO};font-size:11px;padding:3px 7px;outline:none;text-align:right`)} />
+            <button onClick={firstN} disabled={!n}
+              style={s(`background:#101216;border:1px solid ${n ? A : 'rgba(255,255,255,.12)'};color:${n ? A : '#45484D'};font-family:${MONO};font-size:9.5px;letter-spacing:.4px;padding:3px 8px;cursor:${n ? 'pointer' : 'default'}`)}>GO</button>
+          </div>
+          <button onClick={pick(onAll)} style={s(item)}>All matching <span style={num}>{fmtInt(total)}</span></button>
+          {hasSelection && <button onClick={pick(onClear)} style={s(item + ';color:#8A8E94')}>Clear selection</button>}
+        </div>
       )}
     </div>
   );
@@ -1313,13 +1547,15 @@ function loadCols() {
   return [...DEFAULT_SHEET_COLUMN_KEYS];
 }
 
-// Modal: send the current Fresh Finds view to a Google Sheet the user names by id (or
-// pasted URL) + tab, choosing which columns go out. The rows land with an image
-// preview and link, styled for reading; rows already in the tab are skipped. The id,
-// tab, and column choice are remembered in localStorage so a repeat export is nearly
-// field-free. Only the ad ids + column keys are sent; the server re-reads the rows.
+// Modal: send rows to a Google Sheet the user names by id (or pasted URL) + tab,
+// choosing which columns go out - the ticked rows when a selection is active, the
+// whole current view otherwise. The rows land with an image preview and link, styled
+// for reading; rows already in the tab are skipped. The id, tab, and column choice
+// are remembered in localStorage so a repeat export is nearly field-free. Only the ad
+// ids + column keys are sent; the server re-reads the rows. `resolveIds` supplies the
+// id list (it may be a server round trip in server mode), so EXPORT waits for it.
 // Styled to match the AI-draft modal above.
-function SheetExportModal({ filtered, saEmail, onClose }) {
+function SheetExportModal({ count, selection = false, resolveIds, saEmail, onClose }) {
   const ls = (k, d) => { try { return (typeof window !== 'undefined' && window.localStorage.getItem(k)) || d; } catch { return d; } };
   const [sheetId, setSheetId] = useState(() => ls(SHEET_LS_ID, ''));
   const [tab, setTab] = useState(() => ls(SHEET_LS_TAB, 'Fresh Finds'));
@@ -1328,8 +1564,16 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
   const [state, setState] = useState('idle'); // idle | working | done | error
   const [msg, setMsg] = useState('');
   const [sheetUrl, setSheetUrl] = useState('');
-  const count = filtered.length;
+  const [ids, setIds] = useState(null);      // null while resolving
   const adIdOn = cols.includes('ad_id');
+
+  // Resolve the id list once, as of open; the count shown is exact the moment it lands.
+  useEffect(() => {
+    let alive = true;
+    resolveIds().then((x) => { if (alive) setIds(x); }).catch(() => { if (alive) setIds([]); });
+    return () => { alive = false; };
+  }, []);
+  const n = ids ? ids.length : count;
 
   // Remember the column choice and write mode as soon as they change, not only on a
   // successful export.
@@ -1339,15 +1583,16 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
   const toggleCol = (key) => setCols((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]));
 
   const run = async () => {
-    if (state === 'working') return;
+    if (state === 'working' || ids == null) return;
     const id = parseSheetId(sheetId);
     if (!id) { setState('error'); setMsg(SHEET_REASON_MSG['bad-id']); return; }
     if (!tab.trim()) { setState('error'); setMsg(SHEET_REASON_MSG['no-tab']); return; }
     if (!cols.length) { setState('error'); setMsg(SHEET_REASON_MSG['no-columns']); return; }
+    if (!ids.length) { setState('error'); setMsg(SHEET_REASON_MSG['no-rows']); return; }
     setState('working'); setMsg('');
     let r;
     try {
-      r = await exportToSheet({ spreadsheetId: id, tabName: tab.trim(), adIds: filtered.map((a) => a.ad_archive_id), columnKeys: cols, mode });
+      r = await exportToSheet({ spreadsheetId: id, tabName: tab.trim(), adIds: ids, columnKeys: cols, mode });
     } catch (e) {
       setState('error'); setMsg(String(e?.message || e)); return;
     }
@@ -1378,7 +1623,7 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
   const label = s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase;margin-bottom:6px');
   const input = s(`width:100%;background:#0B0C0E;border:1px solid rgba(255,255,255,.09);color:#E7E8EA;font-family:${MONO};font-size:12px;padding:8px 9px;outline:none`);
   const miniBtn = s(`font-family:${MONO};font-size:9px;letter-spacing:.5px;color:#8A8E94;background:none;border:none;cursor:pointer`);
-  const canRun = state !== 'working' && cols.length > 0;
+  const canRun = state !== 'working' && cols.length > 0 && ids != null;
 
   return (
     <div onClick={onClose} style={s('position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;padding:40px;animation:fadein .12s ease-out')}>
@@ -1390,7 +1635,7 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
         <div style={s('padding:18px;display:flex;flex-direction:column;gap:14px;overflow-y:auto')}>
           <div style={s('font-size:11.5px;color:#9CA0A6;line-height:1.5')}>
             {mode === 'replace' ? 'Clears the tab and writes ' : 'Appends '}
-            <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{count}</span> row{count === 1 ? '' : 's'} &times; <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{cols.length}</span> column{cols.length === 1 ? '' : 's'} from the current view (exactly the rows your filters and search leave showing — narrow them first to export a subset), with an image preview and image URL per row. {mode === 'replace' ? 'Whatever is in the tab now is replaced' : (adIdOn ? 'Rows already in the tab (matched by Ad ID) are skipped' : 'Include the Ad ID column to skip rows already in the tab')}, and the tab is created if it does not exist.
+            <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{n}</span> row{n === 1 ? '' : 's'} &times; <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{cols.length}</span> column{cols.length === 1 ? '' : 's'} {selection ? 'from your selection (the rows you ticked, whatever page they sit on)' : 'from the current view (exactly the rows your filters and search leave showing; tick rows first to export only those)'}, with an image preview and image URL per row. {mode === 'replace' ? 'Whatever is in the tab now is replaced' : (adIdOn ? 'Rows already in the tab (matched by Ad ID) are skipped' : 'Include the Ad ID column to skip rows already in the tab')}, and the tab is created if it does not exist.
           </div>
           <div>
             <div style={label}>Sheet ID or URL</div>
@@ -1446,7 +1691,7 @@ function SheetExportModal({ filtered, saEmail, onClose }) {
           <button onClick={onClose} style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:6px 12px;cursor:pointer`)}>CANCEL</button>
           <button onClick={run} disabled={!canRun}
             style={s(`font-family:${MONO};font-size:10px;color:#0B0C0E;background:${A};border:none;padding:6px 14px;cursor:${canRun ? 'pointer' : 'default'};opacity:${canRun ? '1' : '.6'}`)}>
-            {state === 'working' ? 'EXPORTING...' : 'EXPORT'}
+            {state === 'working' ? 'EXPORTING...' : ids == null ? 'COLLECTING ROWS...' : 'EXPORT'}
           </button>
         </div>
       </div>
