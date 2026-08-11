@@ -5,7 +5,8 @@ import { s } from '@/lib/style';
 import { A, MONO, firstUrl, hostOf, pad, relTime, filterReviewAds, reviewDestOf, reviewPageOf } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
-import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
+import ColumnsManager, { useColumnLayout } from '@/components/ColumnsManager';
+import ColumnRow from '@/components/ColumnRow';
 import TableScroll from '@/components/TableScroll';
 import Pager, { PageSizePicker, usePageSize } from '@/components/Pager';
 import { pageSlice, pageRange, pageCount, clampPage } from '@/lib/paging';
@@ -28,7 +29,6 @@ const REJECTED_COLS = [
   { key: 'ad_id',  label: 'Ad Archive ID',     w: 146 },
   { key: 'added',  label: 'Added',             w: 80 },
 ];
-const REJECTED_COLS_LS = 'adintel.cols.rejected';
 
 export default function RejectedView({ ads, NOW, canEdit, query, onRestore }) {
   const [selected, setSelected] = useState(() => new Set());
@@ -52,7 +52,9 @@ export default function RejectedView({ ads, NOW, canEdit, query, onRestore }) {
 
   // 470 covers the structural parts (row padding, select box, Headline's share, the
   // restore button); the rest is the sum of whichever columns are visible.
-  const { visible: cols, toggle: toggleCol, reset: resetCols } = useColumnPrefs(REJECTED_COLS_LS, REJECTED_COLS);
+  const columns = useColumnLayout('rejected');
+  const cols = columns.visible;
+  const orderOf = columns.orderOf;
   const tableMinW = 470 + thumbColW + REJECTED_COLS.reduce((n, c) => n + (cols.has(c.key) ? c.w : 0), 0);
 
   const facetGroups = useMemo(() => {
@@ -201,7 +203,7 @@ export default function RejectedView({ ads, NOW, canEdit, query, onRestore }) {
           <span style={s('color:#2E3136')}>|</span>
           <PageSizePicker value={pageSize} onChange={setPageSize} />
           <span style={s('color:#2E3136')}>|</span>
-          <ColumnPicker defs={REJECTED_COLS} visible={cols} toggle={toggleCol} reset={resetCols} />
+          <ColumnsManager layout={columns} />
           <span style={s('flex:1')} />
           {canEdit && selIds.length > 0 ? (
             <>
@@ -215,72 +217,72 @@ export default function RejectedView({ ads, NOW, canEdit, query, onRestore }) {
         </div>
 
         {/* column header */}
-        <div style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
+        <ColumnRow orderOf={orderOf} style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
           {canEdit && (
-            <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
+            <div key="__checkbox" style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
               <span onClick={() => setSelected(allSelected ? new Set() : new Set(ids))} title="Select all filtered rows"
                 style={s(`width:13px;height:13px;border:1px solid ${allSelected ? A : 'rgba(255,255,255,.25)'};background:${allSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allSelected ? '✓' : ''}</span>
             </div>
           )}
-          <div style={s(`width:${thumbColW}px;flex-shrink:0`)} />
-          {cols.has('page') && <div style={s('width:150px;flex-shrink:0')}>Page</div>}
-          {cols.has('domain') && <div style={s('width:140px;flex-shrink:0')}>Searched Domain</div>}
-          {cols.has('dest') && <div style={s('width:170px;flex-shrink:0')}>Actually Leads To</div>}
-          <div style={s('flex:1;min-width:0')}>Headline</div>
-          {cols.has('ad_id') && <div style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
-          {cols.has('added') && <div style={s('width:80px;flex-shrink:0;text-align:right')}>Added</div>}
-          {canEdit && <div style={s('width:150px;flex-shrink:0;text-align:right')}>Restore</div>}
-        </div>
+          <div key="__thumb" style={s(`width:${thumbColW}px;flex-shrink:0`)} />
+          {cols.has('page') && <div key="page" style={s('width:150px;flex-shrink:0')}>Page</div>}
+          {cols.has('domain') && <div key="domain" style={s('width:140px;flex-shrink:0')}>Searched Domain</div>}
+          {cols.has('dest') && <div key="dest" style={s('width:170px;flex-shrink:0')}>Actually Leads To</div>}
+          <div key="headline" style={s('flex:1;min-width:0')}>Headline</div>
+          {cols.has('ad_id') && <div key="ad_id" style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
+          {cols.has('added') && <div key="added" style={s('width:80px;flex-shrink:0;text-align:right')}>Added</div>}
+          {canEdit && <div key="__decision" style={s('width:150px;flex-shrink:0;text-align:right')}>Restore</div>}
+        </ColumnRow>
 
         {paged.map((a) => {
           const isSel = selected.has(a.ad_archive_id);
           const url = firstUrl(a.link_url);
           const host = hostOf(url);
           return (
-            <div key={a.ad_archive_id}
+            <ColumnRow key={a.ad_archive_id} orderOf={orderOf}
               style={s(`display:flex;align-items:center;min-height:56px;min-width:${tableMinW}px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : 'transparent'}`)}>
               {canEdit && (
-                <div onClick={() => toggle(a.ad_archive_id)} style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer')}>
+                <div key="__checkbox" onClick={() => toggle(a.ad_archive_id)} style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer')}>
                   <span style={s(`width:13px;height:13px;border:1px solid ${isSel ? A : 'rgba(255,255,255,.22)'};background:${isSel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{isSel ? '✓' : ''}</span>
                 </div>
               )}
-              <div style={s(`width:${thumbColW}px;flex-shrink:0;padding-right:12px`)}><Thumb ad={a} size={img.px} fit={img.fit} /></div>
+              <div key="__thumb" style={s(`width:${thumbColW}px;flex-shrink:0;padding-right:12px`)}><Thumb ad={a} size={img.px} fit={img.fit} /></div>
               {cols.has('page') && (
-                <div style={s('width:150px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                <div key="page" style={s('width:150px;flex-shrink:0;padding-right:12px;min-width:0')}>
                   <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.page_name || '(unknown)'}</span>
                 </div>
               )}
               {cols.has('domain') && (
-                <div style={s('width:140px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                <div key="domain" style={s('width:140px;flex-shrink:0;padding-right:12px;min-width:0')}>
                   <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.domain || '-'}</span>
                 </div>
               )}
               {cols.has('dest') && (
-                <div style={s('width:170px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                <div key="dest" style={s('width:170px;flex-shrink:0;padding-right:12px;min-width:0')}>
                   {url
                     ? <a href={url} target="_blank" rel="noreferrer" title={url}
                         style={s(`font-family:${MONO};font-size:11px;color:#D8A05A;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{host || url} ↗</a>
                     : <span style={s(`font-family:${MONO};font-size:11px;color:#45484D`)}>no link</span>}
                 </div>
               )}
-              <div style={s('flex:1;min-width:0;padding-right:16px')}>
+              <div key="headline" style={s('flex:1;min-width:0;padding-right:16px')}>
                 <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
               </div>
               {cols.has('ad_id') && (
-                <CopyCell value={a.ad_archive_id} style={s('width:130px;flex-shrink:0;padding-left:16px;padding-right:12px;min-width:0')}>
+                <CopyCell key="ad_id" value={a.ad_archive_id} style={s('width:130px;flex-shrink:0;padding-left:16px;padding-right:12px;min-width:0')}>
                   <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.ad_archive_id}</span>
                 </CopyCell>
               )}
               {cols.has('added') && (
-                <div style={s(`width:80px;flex-shrink:0;text-align:right;font-family:${MONO};font-size:10.5px;color:#6C7076`)}>{relTime(NOW - new Date(a.first_seen_at).getTime())}</div>
+                <div key="added" style={s(`width:80px;flex-shrink:0;text-align:right;font-family:${MONO};font-size:10.5px;color:#6C7076`)}>{relTime(NOW - new Date(a.first_seen_at).getTime())}</div>
               )}
               {canEdit && (
-                <div style={s('width:150px;flex-shrink:0;display:flex;justify-content:flex-end;gap:6px')}>
+                <div key="__decision" style={s('width:150px;flex-shrink:0;display:flex;justify-content:flex-end;gap:6px')}>
                   <button onClick={() => restore([a.ad_archive_id])} disabled={busy}
                     title="Bring this ad back into Fresh Finds" style={actBtn()}>↩ RESTORE</button>
                 </div>
               )}
-            </div>
+            </ColumnRow>
           );
         })}
 

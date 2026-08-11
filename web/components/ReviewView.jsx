@@ -5,7 +5,8 @@ import { s } from '@/lib/style';
 import { A, MONO, firstUrl, hostOf, pad, relTime, fmtInt, fmtDec, filterReviewAds, reviewDestOf, reviewPageOf } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
-import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
+import ColumnsManager, { useColumnLayout } from '@/components/ColumnsManager';
+import ColumnRow from '@/components/ColumnRow';
 import GeoSplitCell from '@/components/GeoSplitCell';
 import TableScroll from '@/components/TableScroll';
 import Pager, { PageSizePicker, usePageSize } from '@/components/Pager';
@@ -36,7 +37,6 @@ const REVIEW_COLS = [
   { key: 'ad_id',    label: 'Ad Archive ID',      w: 146 },
   { key: 'added',    label: 'Added',              w: 80 },
 ];
-const REVIEW_COLS_LS = 'adintel.cols.review';
 
 export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
   const [selected, setSelected] = useState(() => new Set());
@@ -59,11 +59,13 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
   const img = IMG_SIZES.find((z) => z.key === imgKey) || IMG_SIZES[0];
   const thumbColW = img.px + 12; // image box + the cell's right padding
 
-  // Which columns this table shows, chosen from the COLUMNS picker and
-  // remembered per browser. 504 covers the structural parts (row padding,
-  // select box, Headline's share, decision buttons); the rest is the sum of
-  // whichever columns are actually visible.
-  const { visible: cols, toggle: toggleCol, reset: resetCols } = useColumnPrefs(REVIEW_COLS_LS, REVIEW_COLS);
+  // Which columns this table shows and in what order - hidden/reordered from the
+  // COLUMNS manager and saved as an account preset. 504 covers the structural parts
+  // (row padding, select box, Headline's share, decision buttons); the rest is the
+  // sum of whichever columns are actually visible.
+  const columns = useColumnLayout('review');
+  const cols = columns.visible;
+  const orderOf = columns.orderOf;
   const tableMinW = 504 + thumbColW + REVIEW_COLS.reduce((n, c) => n + (cols.has(c.key) ? c.w : 0), 0);
 
   const facetGroups = useMemo(() => {
@@ -214,7 +216,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
           <span style={s('color:#2E3136')}>|</span>
           <PageSizePicker value={pageSize} onChange={setPageSize} />
           <span style={s('color:#2E3136')}>|</span>
-          <ColumnPicker defs={REVIEW_COLS} visible={cols} toggle={toggleCol} reset={resetCols} />
+          <ColumnsManager layout={columns} />
           <span style={s('flex:1')} />
           {canEdit && selIds.length > 0 ? (
             <>
@@ -229,106 +231,106 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
         </div>
 
         {/* column header */}
-        <div style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
+        <ColumnRow orderOf={orderOf} style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
           {canEdit && (
-            <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
+            <div key="__checkbox" style={s('width:28px;flex-shrink:0;display:flex;align-items:center')}>
               <span onClick={() => setSelected(allSelected ? new Set() : new Set(ids))} title="Select all filtered rows"
                 style={s(`width:13px;height:13px;border:1px solid ${allSelected ? A : 'rgba(255,255,255,.25)'};background:${allSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allSelected ? '✓' : ''}</span>
             </div>
           )}
-          <div style={s(`width:${thumbColW}px;flex-shrink:0`)} />
-          {cols.has('page') && <div style={s('width:150px;flex-shrink:0')}>Page</div>}
-          {cols.has('domain') && <div style={s('width:140px;flex-shrink:0')}>Searched Domain</div>}
-          {cols.has('dest') && <div style={s('width:170px;flex-shrink:0')}>Actually Leads To</div>}
-          <div style={s('flex:1;min-width:0')}>Headline</div>
-          {cols.has('revenue') && <div title="Revenue prediction from the campaign metrics sheet" style={s('width:96px;flex-shrink:0;text-align:right')}>Rev. Predict</div>}
-          {cols.has('clicks') && <div style={s('width:76px;flex-shrink:0;text-align:right')}>Clicks</div>}
-          {cols.has('rpc') && <div title="Revenue per click" style={s('width:60px;flex-shrink:0;text-align:right')}>RPC</div>}
-          {cols.has('geos') && <div title="Revenue share by country from the campaign sheet, e.g. ES-90,MX-10" style={s('width:110px;flex-shrink:0;padding-left:16px')}>GEOS</div>}
-          {cols.has('keywords') && <div style={s('width:170px;flex-shrink:0;padding-left:16px')}>Top Keywords</div>}
-          {cols.has('ad_id') && <div style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
-          {cols.has('added') && <div style={s('width:80px;flex-shrink:0;text-align:right')}>Added</div>}
-          {canEdit && <div style={s('width:170px;flex-shrink:0;text-align:right')}>Decision</div>}
-        </div>
+          <div key="__thumb" style={s(`width:${thumbColW}px;flex-shrink:0`)} />
+          {cols.has('page') && <div key="page" style={s('width:150px;flex-shrink:0')}>Page</div>}
+          {cols.has('domain') && <div key="domain" style={s('width:140px;flex-shrink:0')}>Searched Domain</div>}
+          {cols.has('dest') && <div key="dest" style={s('width:170px;flex-shrink:0')}>Actually Leads To</div>}
+          <div key="headline" style={s('flex:1;min-width:0')}>Headline</div>
+          {cols.has('revenue') && <div key="revenue" title="Revenue prediction from the campaign metrics sheet" style={s('width:96px;flex-shrink:0;text-align:right')}>Rev. Predict</div>}
+          {cols.has('clicks') && <div key="clicks" style={s('width:76px;flex-shrink:0;text-align:right')}>Clicks</div>}
+          {cols.has('rpc') && <div key="rpc" title="Revenue per click" style={s('width:60px;flex-shrink:0;text-align:right')}>RPC</div>}
+          {cols.has('geos') && <div key="geos" title="Revenue share by country from the campaign sheet, e.g. ES-90,MX-10" style={s('width:110px;flex-shrink:0;padding-left:16px')}>GEOS</div>}
+          {cols.has('keywords') && <div key="keywords" style={s('width:170px;flex-shrink:0;padding-left:16px')}>Top Keywords</div>}
+          {cols.has('ad_id') && <div key="ad_id" style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
+          {cols.has('added') && <div key="added" style={s('width:80px;flex-shrink:0;text-align:right')}>Added</div>}
+          {canEdit && <div key="__decision" style={s('width:170px;flex-shrink:0;text-align:right')}>Decision</div>}
+        </ColumnRow>
 
         {paged.map((a) => {
           const isSel = selected.has(a.ad_archive_id);
           const url = firstUrl(a.link_url);
           const host = hostOf(url);
           return (
-            <div key={a.ad_archive_id}
+            <ColumnRow key={a.ad_archive_id} orderOf={orderOf}
               style={s(`display:flex;align-items:center;min-height:56px;min-width:${tableMinW}px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : 'transparent'}`)}>
               {canEdit && (
-                <div onClick={() => toggle(a.ad_archive_id)} style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer')}>
+                <div key="__checkbox" onClick={() => toggle(a.ad_archive_id)} style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer')}>
                   <span style={s(`width:13px;height:13px;border:1px solid ${isSel ? A : 'rgba(255,255,255,.22)'};background:${isSel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{isSel ? '✓' : ''}</span>
                 </div>
               )}
-              <div style={s(`width:${thumbColW}px;flex-shrink:0;padding-right:12px`)}><Thumb ad={a} size={img.px} fit={img.fit} /></div>
+              <div key="__thumb" style={s(`width:${thumbColW}px;flex-shrink:0;padding-right:12px`)}><Thumb ad={a} size={img.px} fit={img.fit} /></div>
               {cols.has('page') && (
-                <div style={s('width:150px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                <div key="page" style={s('width:150px;flex-shrink:0;padding-right:12px;min-width:0')}>
                   <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.page_name || '(unknown)'}</span>
                 </div>
               )}
               {cols.has('domain') && (
-                <div style={s('width:140px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                <div key="domain" style={s('width:140px;flex-shrink:0;padding-right:12px;min-width:0')}>
                   <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.domain || '-'}</span>
                 </div>
               )}
               {cols.has('dest') && (
-                <div style={s('width:170px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                <div key="dest" style={s('width:170px;flex-shrink:0;padding-right:12px;min-width:0')}>
                   {url
                     ? <a href={url} target="_blank" rel="noreferrer" title={url}
                         style={s(`font-family:${MONO};font-size:11px;color:#D8A05A;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{host || url} ↗</a>
                     : <span style={s(`font-family:${MONO};font-size:11px;color:#45484D`)}>no link</span>}
                 </div>
               )}
-              <div style={s('flex:1;min-width:0;padding-right:16px')}>
+              <div key="headline" style={s('flex:1;min-width:0;padding-right:16px')}>
                 <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
               </div>
               {cols.has('revenue') && (
-                <div style={s('width:96px;flex-shrink:0;text-align:right')}>
+                <div key="revenue" style={s('width:96px;flex-shrink:0;text-align:right')}>
                   <span title={a.sheet_revenue != null ? String(a.sheet_revenue) : 'No matching campaign in the metrics sheet'}
                     style={s(`font-family:${MONO};font-size:12px;color:${a.sheet_revenue != null ? '#E7E8EA' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_revenue != null ? fmtInt(a.sheet_revenue) : '-'}</span>
                 </div>
               )}
               {cols.has('clicks') && (
-                <div style={s('width:76px;flex-shrink:0;text-align:right')}>
+                <div key="clicks" style={s('width:76px;flex-shrink:0;text-align:right')}>
                   <span style={s(`font-family:${MONO};font-size:11px;color:${a.sheet_clicks != null ? '#B6B9BE' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_clicks != null ? fmtInt(a.sheet_clicks) : '-'}</span>
                 </div>
               )}
               {cols.has('rpc') && (
-                <div style={s('width:60px;flex-shrink:0;text-align:right')}>
+                <div key="rpc" style={s('width:60px;flex-shrink:0;text-align:right')}>
                   <span title={a.sheet_rpc != null ? String(a.sheet_rpc) : ''}
                     style={s(`font-family:${MONO};font-size:11px;color:${a.sheet_rpc != null ? '#B6B9BE' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_rpc != null ? fmtDec(a.sheet_rpc) : '-'}</span>
                 </div>
               )}
               {cols.has('geos') && (
-                <GeoSplitCell ad={a} style={s('width:110px;flex-shrink:0;padding-left:16px;min-width:0')} />
+                <GeoSplitCell key="geos" ad={a} style={s('width:110px;flex-shrink:0;padding-left:16px;min-width:0')} />
               )}
               {cols.has('keywords') && (
-                <CopyCell value={a.sheet_keywords || ''} style={s('width:170px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                <CopyCell key="keywords" value={a.sheet_keywords || ''} style={s('width:170px;flex-shrink:0;padding-left:16px;min-width:0')}>
                   {a.sheet_keywords
                     ? <span title={a.sheet_keywords} style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.sheet_keywords}</span>
                     : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
                 </CopyCell>
               )}
               {cols.has('ad_id') && (
-                <CopyCell value={a.ad_archive_id} style={s('width:130px;flex-shrink:0;padding-left:16px;padding-right:12px;min-width:0')}>
+                <CopyCell key="ad_id" value={a.ad_archive_id} style={s('width:130px;flex-shrink:0;padding-left:16px;padding-right:12px;min-width:0')}>
                   <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.ad_archive_id}</span>
                 </CopyCell>
               )}
               {cols.has('added') && (
-                <div style={s(`width:80px;flex-shrink:0;text-align:right;font-family:${MONO};font-size:10.5px;color:#6C7076`)}>{relTime(NOW - new Date(a.first_seen_at).getTime())}</div>
+                <div key="added" style={s(`width:80px;flex-shrink:0;text-align:right;font-family:${MONO};font-size:10.5px;color:#6C7076`)}>{relTime(NOW - new Date(a.first_seen_at).getTime())}</div>
               )}
               {canEdit && (
-                <div style={s('width:170px;flex-shrink:0;display:flex;justify-content:flex-end;gap:6px')}>
+                <div key="__decision" style={s('width:170px;flex-shrink:0;display:flex;justify-content:flex-end;gap:6px')}>
                   <button onClick={() => decide([a.ad_archive_id], 'approved')} disabled={busy}
                     title="Add this ad to the feed" style={actBtn('#7BC97E', 'rgba(123,201,126,.35)')}>✓</button>
                   <button onClick={() => decide([a.ad_archive_id], 'rejected')} disabled={busy}
                     title="Reject - moves to the Rejected tab, restorable any time" style={actBtn('#ff8a80', 'rgba(255,120,120,.35)')}>✕</button>
                 </div>
               )}
-            </div>
+            </ColumnRow>
           );
         })}
 

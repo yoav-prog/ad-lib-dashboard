@@ -6,7 +6,8 @@ import { s } from '@/lib/style';
 import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, isPredicto, isVisymo, searchQuery, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, brandLabel, brandColor, BRAND_OPTIONS, rsocTierColor, rsocTierLabel, rsocTierHint, rsocAreaLabel, RSOC_TIER_ORDER, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
-import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
+import ColumnsManager, { useColumnLayout } from '@/components/ColumnsManager';
+import ColumnRow from '@/components/ColumnRow';
 import Pager, { PageSizePicker, usePageSize } from '@/components/Pager';
 import { pageSlice, pageRange, pageCount, clampPage } from '@/lib/paging';
 import GeoSplitCell from '@/components/GeoSplitCell';
@@ -825,7 +826,6 @@ const FRESH_COLS = [
   { key: 'feed',     label: 'Feed',               w: 108 },
   { key: 'ad_id',    label: 'Ad Archive ID',      w: 146 },
 ];
-const FRESH_COLS_LS = 'adintel.cols.freshfinds';
 
 function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = null, serverFacets = null, serverTicker = null, feedLoading = false, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, addSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, fetchAllIds, fetchExportRows, exportSaEmail, onRefreshMetrics }) {
   // Selection serves two masters: bulk edits (edit_ads) and exports (export_data), so
@@ -882,9 +882,12 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
   const img = IMG_SIZES.find((z) => z.key === imgKey) || IMG_SIZES[0];
   const thumbColW = img.px + 12; // image box + the cell's right padding
 
-  // Which columns this table shows, chosen from the COLUMNS picker and
-  // remembered per browser.
-  const { visible: cols, toggle: toggleCol, reset: resetCols } = useColumnPrefs(FRESH_COLS_LS, FRESH_COLS);
+  // Which columns this table shows and in what order - hidden/reordered from the
+  // COLUMNS manager and saved as an account preset. `cols` is the visible set (so the
+  // cell gates below read unchanged); `orderOf` drives the ColumnRow reordering.
+  const columns = useColumnLayout('freshfinds');
+  const cols = columns.visible;
+  const orderOf = columns.orderOf;
 
   // Paging bookkeeping for the toolbar counter and the bottom pager. The row
   // slice itself (`paged`) is computed by the parent, which also owns the
@@ -1181,7 +1184,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <PageSizePicker value={pageSize} onChange={setPageSize} hideAll={serverMode} />
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
-                  <ColumnPicker defs={FRESH_COLS} visible={cols} toggle={toggleCol} reset={resetCols} />
+                  <ColumnsManager layout={columns} />
                   {canExport && <MetricsRefreshButton onRefresh={onRefreshMetrics} />}
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <button onClick={exportCsv} disabled={!count || csvBusy}
@@ -1203,41 +1206,41 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
             )}
           </div>
 
-          <div style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
+          <ColumnRow orderOf={orderOf} style={s(`display:flex;align-items:center;height:26px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${tableMinW}px`)}>
             {canSelect && (
-              <div style={s('width:28px;flex-shrink:0;display:flex;align-items:center;gap:1px')}>
+              <div key="__checkbox" style={s('width:28px;flex-shrink:0;display:flex;align-items:center;gap:1px')}>
                 <span onClick={() => (allSelected ? clearSel() : selectMany())} title={`Select all ${fmtInt(count)} matching ads (every page)`}
                   style={s(`width:13px;height:13px;flex-shrink:0;border:1px solid ${allSelected ? A : 'rgba(255,255,255,.25)'};background:${allSelected ? A : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{allSelected ? '✓' : ''}</span>
                 <SelectMenu pageRows={visibleIds.length} total={count} busy={selBusy} hasSelection={selCount > 0}
                   onPage={selectPage} onFirst={(n) => selectMany(n)} onAll={() => selectMany()} onClear={clearSel} />
               </div>
             )}
-            <div style={s(`width:${thumbColW}px;flex-shrink:0`)} />
-            {cols.has('page') && <div style={s('width:148px;flex-shrink:0')}>Page</div>}
-            {cols.has('domain') && <div style={s('width:132px;flex-shrink:0')}>Domain</div>}
-            {cols.has('brand') && <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>Brand</div>}
-            {cols.has('creative_language') && <div title="Language of the text ON the creative (image / video), not the ad copy" style={s('width:100px;flex-shrink:0;padding-left:16px')}>Creative Lang</div>}
-            {cols.has('rsoc') && <div title="How much policy care this topic/angle would need on Google RSoC. Green = no known restriction on the topic (NOT a guarantee the article you write is safe); Yellow = build with care; Red = restricted vertical or prohibited angle, likely to draw strikes." style={s('width:132px;flex-shrink:0;padding-left:16px')}>Policy</div>}
-            <div style={s('flex:1;min-width:0')}>Headline</div>
-            {cols.has('url') && <div style={s('width:168px;flex-shrink:0')}>URL</div>}
-            {showSlug && <div style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
-            {showQuery && <div title="The searched phrase behind the landing link (Predicto & Visymo feeds)" style={s('width:240px;flex-shrink:0;padding-left:16px')}>Query</div>}
-            {cols.has('revenue') && <div title="Revenue prediction from the campaign metrics sheet" style={s('width:96px;flex-shrink:0;text-align:right')}>Rev. Predict</div>}
-            {cols.has('clicks') && <div style={s('width:76px;flex-shrink:0;text-align:right')}>Clicks</div>}
-            {cols.has('rpc') && <div title="Revenue per click" style={s('width:60px;flex-shrink:0;text-align:right')}>RPC</div>}
-            {cols.has('geos') && <div title="Revenue share by country from the campaign sheet, e.g. ES-90,MX-10" style={s('width:110px;flex-shrink:0;padding-left:16px')}>GEOS</div>}
-            {cols.has('keywords') && <div style={s('width:170px;flex-shrink:0;padding-left:16px')}>Top Keywords</div>}
-            {cols.has('format') && <div style={s('width:62px;flex-shrink:0;text-align:center')}>Format</div>}
-            {cols.has('rank') && <div style={s('width:46px;flex-shrink:0;text-align:right')}>Rank</div>}
-            {cols.has('added') && <div style={s('width:68px;flex-shrink:0;text-align:right')}>Added</div>}
-            {cols.has('updated') && <div style={s('width:66px;flex-shrink:0;text-align:right')}>Updated</div>}
-            {cols.has('days') && <div style={s('width:70px;flex-shrink:0;text-align:right')}>Days Run</div>}
-            {cols.has('vertical') && <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>}
-            {cols.has('country') && <div style={s('width:58px;flex-shrink:0;text-align:center')}>Country</div>}
-            {cols.has('language') && <div style={s('width:74px;flex-shrink:0;padding-left:16px')}>Language</div>}
-            {cols.has('feed') && <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>Feed</div>}
-            {cols.has('ad_id') && <div style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
-          </div>
+            <div key="__thumb" style={s(`width:${thumbColW}px;flex-shrink:0`)} />
+            {cols.has('page') && <div key="page" style={s('width:148px;flex-shrink:0')}>Page</div>}
+            {cols.has('domain') && <div key="domain" style={s('width:132px;flex-shrink:0')}>Domain</div>}
+            {cols.has('brand') && <div key="brand" style={s('width:96px;flex-shrink:0;padding-left:16px')}>Brand</div>}
+            {cols.has('creative_language') && <div key="creative_language" title="Language of the text ON the creative (image / video), not the ad copy" style={s('width:100px;flex-shrink:0;padding-left:16px')}>Creative Lang</div>}
+            {cols.has('rsoc') && <div key="rsoc" title="How much policy care this topic/angle would need on Google RSoC. Green = no known restriction on the topic (NOT a guarantee the article you write is safe); Yellow = build with care; Red = restricted vertical or prohibited angle, likely to draw strikes." style={s('width:132px;flex-shrink:0;padding-left:16px')}>Policy</div>}
+            <div key="headline" style={s('flex:1;min-width:0')}>Headline</div>
+            {cols.has('url') && <div key="url" style={s('width:168px;flex-shrink:0')}>URL</div>}
+            {showSlug && <div key="slug" style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
+            {showQuery && <div key="query" title="The searched phrase behind the landing link (Predicto & Visymo feeds)" style={s('width:240px;flex-shrink:0;padding-left:16px')}>Query</div>}
+            {cols.has('revenue') && <div key="revenue" title="Revenue prediction from the campaign metrics sheet" style={s('width:96px;flex-shrink:0;text-align:right')}>Rev. Predict</div>}
+            {cols.has('clicks') && <div key="clicks" style={s('width:76px;flex-shrink:0;text-align:right')}>Clicks</div>}
+            {cols.has('rpc') && <div key="rpc" title="Revenue per click" style={s('width:60px;flex-shrink:0;text-align:right')}>RPC</div>}
+            {cols.has('geos') && <div key="geos" title="Revenue share by country from the campaign sheet, e.g. ES-90,MX-10" style={s('width:110px;flex-shrink:0;padding-left:16px')}>GEOS</div>}
+            {cols.has('keywords') && <div key="keywords" style={s('width:170px;flex-shrink:0;padding-left:16px')}>Top Keywords</div>}
+            {cols.has('format') && <div key="format" style={s('width:62px;flex-shrink:0;text-align:center')}>Format</div>}
+            {cols.has('rank') && <div key="rank" style={s('width:46px;flex-shrink:0;text-align:right')}>Rank</div>}
+            {cols.has('added') && <div key="added" style={s('width:68px;flex-shrink:0;text-align:right')}>Added</div>}
+            {cols.has('updated') && <div key="updated" style={s('width:66px;flex-shrink:0;text-align:right')}>Updated</div>}
+            {cols.has('days') && <div key="days" style={s('width:70px;flex-shrink:0;text-align:right')}>Days Run</div>}
+            {cols.has('vertical') && <div key="vertical" style={s('width:92px;flex-shrink:0;padding-left:16px')}>Vertical</div>}
+            {cols.has('country') && <div key="country" style={s('width:58px;flex-shrink:0;text-align:center')}>Country</div>}
+            {cols.has('language') && <div key="language" style={s('width:74px;flex-shrink:0;padding-left:16px')}>Language</div>}
+            {cols.has('feed') && <div key="feed" style={s('width:92px;flex-shrink:0;padding-left:16px')}>Feed</div>}
+            {cols.has('ad_id') && <div key="ad_id" style={s('width:130px;flex-shrink:0;padding-left:16px')}>Ad Archive ID</div>}
+          </ColumnRow>
 
           {paged.map((a, i) => {
             const days = daysRunning(a, NOW);
@@ -1249,41 +1252,41 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
             const slug = showSlug ? tarzoSlug(a) : '';
             const query = showQuery ? searchQuery(a) : '';
             return (
-              <div key={a.ad_archive_id} onClick={() => openDetail(a.ad_archive_id)} onMouseEnter={() => setSelIndex(i)}
+              <ColumnRow key={a.ad_archive_id} orderOf={orderOf} onClick={() => openDetail(a.ad_archive_id)} onMouseEnter={() => setSelIndex(i)}
                 style={s(`position:relative;display:flex;align-items:center;min-height:56px;min-width:${tableMinW}px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.045);background:${isSel ? 'rgba(232,163,61,.09)' : (sel ? 'rgba(232,163,61,.05)' : 'transparent')};cursor:pointer`)}>
-                <div style={s(`position:absolute;left:0;top:0;bottom:0;width:2px;background:${isSel || sel ? A : (fresh ? 'rgba(232,163,61,.5)' : 'transparent')}`)} />
+                <div key="__accent" style={s(`position:absolute;left:0;top:0;bottom:0;width:2px;background:${isSel || sel ? A : (fresh ? 'rgba(232,163,61,.5)' : 'transparent')}`)} />
                 {canSelect && (
-                  <div onClick={(e) => onRowCheck(e, i, a.ad_archive_id)} title="Click to select; shift-click to select the range from the last one you ticked"
+                  <div key="__checkbox" onClick={(e) => onRowCheck(e, i, a.ad_archive_id)} title="Click to select; shift-click to select the range from the last one you ticked"
                     style={s('width:28px;flex-shrink:0;display:flex;align-items:center;cursor:pointer;user-select:none')}>
                     <span style={s(`width:13px;height:13px;border:1px solid ${isSel ? A : 'rgba(255,255,255,.22)'};background:${isSel ? A : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:9px;color:#0B0C0E;line-height:1`)}>{isSel ? '✓' : ''}</span>
                   </div>
                 )}
-                <div style={s(`width:${thumbColW}px;flex-shrink:0;padding-right:12px`)}><Thumb ad={a} size={img.px} fit={img.fit} /></div>
+                <div key="__thumb" style={s(`width:${thumbColW}px;flex-shrink:0;padding-right:12px`)}><Thumb ad={a} size={img.px} fit={img.fit} /></div>
                 {cols.has('page') && (
-                  <CopyCell value={a.page_name} style={s('width:148px;flex-shrink:0;padding-right:12px;min-width:0;display:flex;align-items:center;gap:6px')}>
+                  <CopyCell key="page" value={a.page_name} style={s('width:148px;flex-shrink:0;padding-right:12px;min-width:0;display:flex;align-items:center;gap:6px')}>
                     {fresh && <span style={s('width:6px;height:6px;border-radius:50%;background:#E8A33D;flex-shrink:0;animation:freshpulse 2.4s ease-in-out infinite')} />}
                     <span style={s('font-size:12.5px;color:#E7E8EA;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{a.page_name || '(unknown)'}</span>
                   </CopyCell>
                 )}
                 {cols.has('domain') && (
-                  <CopyCell value={a.domain} style={s('width:132px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                  <CopyCell key="domain" value={a.domain} style={s('width:132px;flex-shrink:0;padding-right:12px;min-width:0')}>
                     <span style={s(`font-family:${MONO};font-size:11px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.domain || '-'}</span>
                   </CopyCell>
                 )}
                 {cols.has('brand') && (
-                  <div style={s('width:96px;flex-shrink:0;padding-left:16px')}>
+                  <div key="brand" style={s('width:96px;flex-shrink:0;padding-left:16px')}>
                     {a.brand
                       ? <span style={s(`display:inline-block;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:${brandColor(a.brand)};border:1px solid ${brandColor(a.brand)}55;padding:2px 6px;white-space:nowrap`)}>{brandLabel(a.brand)}</span>
                       : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
                   </div>
                 )}
                 {cols.has('creative_language') && (
-                  <div style={s('width:100px;flex-shrink:0;padding-left:16px')} title={a.creative_language || (a.creative_language === '' ? 'No text on the creative' : '')}>
+                  <div key="creative_language" style={s('width:100px;flex-shrink:0;padding-left:16px')} title={a.creative_language || (a.creative_language === '' ? 'No text on the creative' : '')}>
                     <span style={s(`font-family:${MONO};font-size:11px;color:${a.creative_language ? '#B6B9BE' : '#45484D'}`)}>{langCode(a.creative_language) || '-'}</span>
                   </div>
                 )}
                 {cols.has('rsoc') && (
-                  <div style={s('width:132px;flex-shrink:0;padding-left:16px;min-width:0')}
+                  <div key="rsoc" style={s('width:132px;flex-shrink:0;padding-left:16px;min-width:0')}
                     title={a.rsoc_tier
                       ? `${rsocTierLabel(a.rsoc_tier)} - ${rsocAreaLabel(a.rsoc_policy_area)}${a.rsoc_reason ? ': ' + a.rsoc_reason : ''}\n\n${rsocTierHint(a.rsoc_tier)}`
                       : 'Not yet classified for RSoC policy'}>
@@ -1295,11 +1298,11 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                       : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
                   </div>
                 )}
-                <CopyCell value={a.title || a.caption || a.body_text || ''} style={s('flex:1;min-width:0;padding-right:16px')}>
+                <CopyCell key="headline" value={a.title || a.caption || a.body_text || ''} style={s('flex:1;min-width:0;padding-right:16px')}>
                   <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
                 </CopyCell>
                 {cols.has('url') && (
-                  <CopyCell value={url} style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>
+                  <CopyCell key="url" value={url} style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>
                     {url
                       ? <a href={url} target="_blank" rel="noreferrer" title={url} onClick={(e) => e.stopPropagation()}
                           style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
@@ -1310,100 +1313,100 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                   </CopyCell>
                 )}
                 {showSlug && (
-                  <CopyCell value={slug} style={s('width:150px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                  <CopyCell key="slug" value={slug} style={s('width:150px;flex-shrink:0;padding-left:16px;min-width:0')}>
                     {slug
                       ? <span title={slug} style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{slug}</span>
                       : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
                   </CopyCell>
                 )}
                 {showQuery && (
-                  <CopyCell value={query} style={s('width:240px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                  <CopyCell key="query" value={query} style={s('width:240px;flex-shrink:0;padding-left:16px;min-width:0')}>
                     {query
                       ? <span title={query} style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{query}</span>
                       : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
                   </CopyCell>
                 )}
                 {cols.has('revenue') && (
-                  <div style={s('width:96px;flex-shrink:0;text-align:right')}>
+                  <div key="revenue" style={s('width:96px;flex-shrink:0;text-align:right')}>
                     <span title={a.sheet_revenue != null ? String(a.sheet_revenue) : 'No matching campaign in the metrics sheet'}
                       style={s(`font-family:${MONO};font-size:12px;color:${a.sheet_revenue != null ? '#E7E8EA' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_revenue != null ? fmtInt(a.sheet_revenue) : '-'}</span>
                   </div>
                 )}
                 {cols.has('clicks') && (
-                  <div style={s('width:76px;flex-shrink:0;text-align:right')}>
+                  <div key="clicks" style={s('width:76px;flex-shrink:0;text-align:right')}>
                     <span style={s(`font-family:${MONO};font-size:11px;color:${a.sheet_clicks != null ? '#B6B9BE' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_clicks != null ? fmtInt(a.sheet_clicks) : '-'}</span>
                   </div>
                 )}
                 {cols.has('rpc') && (
-                  <div style={s('width:60px;flex-shrink:0;text-align:right')}>
+                  <div key="rpc" style={s('width:60px;flex-shrink:0;text-align:right')}>
                     <span title={a.sheet_rpc != null ? String(a.sheet_rpc) : ''}
                       style={s(`font-family:${MONO};font-size:11px;color:${a.sheet_rpc != null ? '#B6B9BE' : '#45484D'};font-variant-numeric:tabular-nums`)}>{a.sheet_rpc != null ? fmtDec(a.sheet_rpc) : '-'}</span>
                   </div>
                 )}
                 {cols.has('geos') && (
-                  <GeoSplitCell ad={a} style={s('width:110px;flex-shrink:0;padding-left:16px;min-width:0')} />
+                  <GeoSplitCell key="geos" ad={a} style={s('width:110px;flex-shrink:0;padding-left:16px;min-width:0')} />
                 )}
                 {cols.has('keywords') && (
-                  <CopyCell value={a.sheet_keywords || ''} style={s('width:170px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                  <CopyCell key="keywords" value={a.sheet_keywords || ''} style={s('width:170px;flex-shrink:0;padding-left:16px;min-width:0')}>
                     {a.sheet_keywords
                       ? <span title={a.sheet_keywords} style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.sheet_keywords}</span>
                       : <span style={s('font-size:10.5px;color:#45484D')}>-</span>}
                   </CopyCell>
                 )}
                 {cols.has('format') && (
-                  <div style={s('width:62px;flex-shrink:0;display:flex;justify-content:center')}>
+                  <div key="format" style={s('width:62px;flex-shrink:0;display:flex;justify-content:center')}>
                     <span style={s(`font-family:${MONO};font-size:9.5px;letter-spacing:.5px;color:${vid ? '#C6C9CE' : '#8A8E94'};border:1px solid rgba(255,255,255,.14);padding:2px 6px`)}>{a.display_format || '-'}</span>
                   </div>
                 )}
                 {cols.has('rank') && (
-                  <div style={s('width:46px;flex-shrink:0;text-align:right')}>
+                  <div key="rank" style={s('width:46px;flex-shrink:0;text-align:right')}>
                     <span style={s(`font-family:${MONO};font-size:12.5px;color:${a.rank != null && a.rank <= 3 ? A : '#B6B9BE'};font-variant-numeric:tabular-nums`)}>{a.rank != null ? a.rank : '-'}</span>
                   </div>
                 )}
                 {cols.has('added') && (
-                  <div style={s('width:68px;flex-shrink:0;text-align:right')}>
+                  <div key="added" style={s('width:68px;flex-shrink:0;text-align:right')}>
                     <span title={a.first_seen_at || ''} style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{fmtDate(a.first_seen_at)}</span>
                   </div>
                 )}
                 {cols.has('updated') && (
-                  <div style={s('width:66px;flex-shrink:0;text-align:right')}>
+                  <div key="updated" style={s('width:66px;flex-shrink:0;text-align:right')}>
                     <span title={a.last_seen_at || ''} style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;font-variant-numeric:tabular-nums`)}>{a.last_seen_at ? relTime(NOW - new Date(a.last_seen_at).getTime()) : '-'}</span>
                   </div>
                 )}
                 {cols.has('days') && (
-                  <div style={s('width:70px;flex-shrink:0;text-align:right')}>
+                  <div key="days" style={s('width:70px;flex-shrink:0;text-align:right')}>
                     {days >= 60 && <span title="Proven winner" style={s(`color:${A};font-size:10px;margin-right:3px`)}>★</span>}<span style={s(`font-family:${MONO};font-size:14px;color:${days >= 60 ? A : (days > 45 ? '#E7E8EA' : '#B6B9BE')};font-variant-numeric:tabular-nums`)}>{days}</span>
                     <span style={s('font-size:9px;color:#5A5E64;margin-left:2px')}>d</span>
                     <div style={s('height:2px;margin-top:4px;background:rgba(255,255,255,.06)')}><div style={s(`height:100%;width:${Math.round((days / maxDays) * 100)}%;background:${days > 45 ? '#8A8E94' : 'rgba(255,255,255,.22)'}`)} /></div>
                   </div>
                 )}
                 {cols.has('vertical') && (
-                  <CopyCell value={a.vertical} style={s('width:92px;flex-shrink:0;padding-left:16px')}>
+                  <CopyCell key="vertical" value={a.vertical} style={s('width:92px;flex-shrink:0;padding-left:16px')}>
                     <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.vertical || '-'}</span>
                   </CopyCell>
                 )}
                 {cols.has('country') && (
-                  <div style={s('width:58px;flex-shrink:0;text-align:center')}>
+                  <div key="country" style={s('width:58px;flex-shrink:0;text-align:center')}>
                     <div style={s(`font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{a.country || '-'}</div>
                     <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)} title={a.language || ''}>{langCode(a.language)}</div>
                   </div>
                 )}
                 {cols.has('language') && (
-                  <div style={s('width:74px;flex-shrink:0;padding-left:16px')} title={a.language || ''}>
+                  <div key="language" style={s('width:74px;flex-shrink:0;padding-left:16px')} title={a.language || ''}>
                     <span style={s(`font-family:${MONO};font-size:11px;color:${a.language ? '#B6B9BE' : '#45484D'}`)}>{langCode(a.language) || '-'}</span>
                   </div>
                 )}
                 {cols.has('feed') && (
-                  <div style={s('width:92px;flex-shrink:0;padding-left:16px')}>
+                  <div key="feed" style={s('width:92px;flex-shrink:0;padding-left:16px')}>
                     <span style={s('font-size:10.5px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{a.feed || '-'}</span>
                   </div>
                 )}
                 {cols.has('ad_id') && (
-                  <CopyCell value={a.ad_archive_id} style={s('width:130px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                  <CopyCell key="ad_id" value={a.ad_archive_id} style={s('width:130px;flex-shrink:0;padding-left:16px;min-width:0')}>
                     <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{a.ad_archive_id}</span>
                   </CopyCell>
                 )}
-              </div>
+              </ColumnRow>
             );
           })}
 
