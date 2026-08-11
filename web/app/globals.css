@@ -53,3 +53,78 @@ input::placeholder, textarea::placeholder { color: #4A4E54; }
 .cpcell:hover .cpbtn { opacity: 1; pointer-events: auto; }
 .cpbtn:hover { color: #E8A33D; border-color: rgba(232, 163, 61, .5); background: #23262B; }
 .cpbtn.cpbtn-done { opacity: 1; pointer-events: auto; color: #7BB06F; border-color: rgba(123, 176, 111, .55); }
+
+/* Table horizontal-scroll controls (see components/TableScroll.jsx).
+   A wide table gets two synced scrollbar strips - one pinned under the top nav,
+   one pinned to the bottom of the viewport - so the horizontal scrollbar is always
+   in reach instead of buried at the far bottom of a tall table. The strips drive
+   the same scrollLeft as the real content; the content's own scrollbar is hidden so
+   there are never three competing bars. */
+.tscroll-root { position: relative; }
+.tscroll-viewport { overflow-x: auto; overflow-y: visible; }
+.tscroll-viewport::-webkit-scrollbar { height: 0; width: 0; }        /* hide the buried native bar */
+.tscroll-viewport { scrollbar-width: none; }
+
+.tscroll-barwrap { position: sticky; z-index: 37; height: 14px; background: #0B0C0E; }
+.tscroll-barwrap-top { border-bottom: 1px solid rgba(255, 255, 255, .06); }
+.tscroll-barwrap-bottom { bottom: 0; border-top: 1px solid rgba(255, 255, 255, .07); box-shadow: 0 -6px 16px rgba(0, 0, 0, .35); }
+.tscroll-bar { overflow-x: auto; overflow-y: hidden; height: 14px; }
+.tscroll-bar-spacer { height: 1px; }
+.tscroll-bar::-webkit-scrollbar { height: 9px; }
+.tscroll-bar::-webkit-scrollbar-track { background: transparent; }
+.tscroll-bar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .16); border: 2px solid #0B0C0E; border-radius: 6px; }
+.tscroll-bar:hover::-webkit-scrollbar-thumb { background: rgba(232, 163, 61, .5); }
+
+/* Hover-reveal edge chevrons (nudge left / right) and the vertical jump stack. */
+.tscroll-nudge {
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  width: 26px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(11, 12, 14, .95), rgba(11, 12, 14, .55));
+  border: none;
+  color: #B6B9BE;
+  cursor: pointer;
+  font-size: 11px;
+  transition: opacity .12s ease, color .12s ease;
+}
+.tscroll-nudge-right { transform: scaleX(-1); }        /* mirror the same gradient + glyph */
+.tscroll-root:hover .tscroll-nudge { opacity: 1; pointer-events: auto; }
+.tscroll-nudge:hover { color: #E8A33D; }
+
+.tscroll-jump {
+  position: fixed;
+  right: 18px;
+  bottom: 34px;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .14s ease;
+}
+.tscroll-root:hover .tscroll-jump { opacity: 1; pointer-events: auto; }
+.tscroll-jump button {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #16181C;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 50%;
+  color: #C6C9CE;
+  cursor: pointer;
+  font-size: 13px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .5);
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.tscroll-jump button:hover { color: #E8A33D; border-color: rgba(232, 163, 61, .5); background: #1E2126; }

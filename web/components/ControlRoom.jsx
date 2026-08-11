@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, relTime, pad } from '@/lib/ui';
 import { addDomain, updateDomain, deleteDomain, bulkUpdateDomains, deleteDomains, addFeed } from '@/app/actions';
+import TableScroll from '@/components/TableScroll';
 
 // Two independent permissions land here, and they are genuinely separate jobs:
 // starting and stopping scrapes (canRun) versus editing what gets tracked
@@ -245,7 +246,7 @@ export default function ControlRoom({
   const bulkSep = 'color:#2E3136';
 
   return (
-    <div style={s('max-width:1160px')}>
+    <TableScroll label="controlroom" style={s('max-width:1160px')}>
       <div style={s('display:flex;align-items:center;gap:12px;height:44px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06)')}>
         <span style={s(`font-family:${MONO};font-size:12px;letter-spacing:1px;color:#E7E8EA`)}>CONTROL ROOM</span>
         {!canSelect && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:2px 7px`)}>VIEWER · READ-ONLY</span>}
@@ -509,7 +510,7 @@ export default function ControlRoom({
       </div>
 
       <RunHistory runs={runs} canEdit={canRun} NOW={NOW} />
-    </div>
+    </TableScroll>
   );
 }
 

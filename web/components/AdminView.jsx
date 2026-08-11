@@ -6,6 +6,7 @@ import { s } from '@/lib/style';
 import { A, MONO, relTime } from '@/lib/ui';
 import { CAPABILITIES, ROLE_META, ROLE_DEFAULTS, FIXED_ADMIN_ONLY, resolveCapabilities } from '@/lib/capabilities';
 import { inviteUser, resendInvite, updateUser, setUserDisabled, removeUser, unlinkGoogle } from '@/app/admin/actions';
+import TableScroll from '@/components/TableScroll';
 
 const PANEL = 'background:#0D0E11;border:1px solid rgba(255,255,255,.09)';
 const LABEL = 'font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase';
@@ -105,7 +106,7 @@ export default function AdminView({ users: initialUsers, events, domain, mailPro
         <InviteForm domain={domain} busy={busy === 'invite'} onSubmit={(data) => run('invite', () => inviteUser(data))} />
 
         {/* people */}
-        <div style={s(`${PANEL};margin-top:20px`)}>
+        <TableScroll label="admin-users" style={s(`${PANEL};margin-top:20px`)}>
           <div style={s('display:flex;align-items:center;justify-content:space-between;height:36px;padding:0 14px;border-bottom:1px solid rgba(255,255,255,.06)')}>
             <span style={s(`font-family:${MONO};font-size:10px;letter-spacing:1.5px;color:#6C7076`)}>PEOPLE</span>
             <span style={s(`font-family:${MONO};font-size:10px;color:#5A5E64`)}>{users.length}</span>
@@ -203,7 +204,7 @@ export default function AdminView({ users: initialUsers, events, domain, mailPro
           {!users.length && (
             <div style={s('padding:18px 14px;font-size:12px;color:#6C7076')}>Nobody yet. Invite someone above.</div>
           )}
-        </div>
+        </TableScroll>
 
         <ActivityLog events={events} />
       </div>
