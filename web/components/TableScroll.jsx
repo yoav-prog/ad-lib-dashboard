@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { needsScroll, pageStep, clampScrollLeft } from '@/lib/tablescroll';
+import { needsScroll, pageStep, clampScrollLeft, edgeTarget } from '@/lib/tablescroll';
 
 // A horizontal-scroll shell for the dashboard's wide tables. The tables are taller
 // than the screen and scroll the WINDOW vertically, so a table's own horizontal
@@ -77,6 +77,13 @@ export default function TableScroll({ children, style, className = '', topOffset
     view.scrollTo({ left: target, behavior: 'smooth' });
   };
 
+  // Jump the whole way to the first (dir<0) or last (dir>0) column.
+  const toEdge = (dir) => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.scrollTo({ left: edgeTarget(dir, view.scrollWidth, view.clientWidth), behavior: 'smooth' });
+  };
+
   const toTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
   const toBottom = () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
 
@@ -86,10 +93,14 @@ export default function TableScroll({ children, style, className = '', topOffset
       <div ref={ref} className="tscroll-bar" onScroll={(e) => syncFrom(e.currentTarget)} aria-hidden="true">
         <div className="tscroll-bar-spacer" style={{ width: `${width}px` }} />
       </div>
-      <button type="button" className="tscroll-nudge tscroll-nudge-left" style={{ left: 0 }} tabIndex={-1}
-        title="Scroll left" onClick={() => nudge(-1)}>&#8249;</button>
-      <button type="button" className="tscroll-nudge tscroll-nudge-right" style={{ right: 0 }} tabIndex={-1}
-        title="Scroll right" onClick={() => nudge(1)}>&#8249;</button>
+      <div className="tscroll-edge tscroll-edge-left">
+        <button type="button" className="tscroll-edgebtn" tabIndex={-1} title="Jump to first column" onClick={() => toEdge(-1)}>&#171;</button>
+        <button type="button" className="tscroll-edgebtn" tabIndex={-1} title="Scroll left" onClick={() => nudge(-1)}>&#8249;</button>
+      </div>
+      <div className="tscroll-edge tscroll-edge-right">
+        <button type="button" className="tscroll-edgebtn" tabIndex={-1} title="Scroll right" onClick={() => nudge(1)}>&#8250;</button>
+        <button type="button" className="tscroll-edgebtn" tabIndex={-1} title="Jump to last column" onClick={() => toEdge(1)}>&#187;</button>
+      </div>
     </div>
   );
 

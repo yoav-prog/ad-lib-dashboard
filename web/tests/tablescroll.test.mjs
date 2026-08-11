@@ -3,7 +3,7 @@
 // browser-only and covered by manual QA, not here.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { needsScroll, pageStep, clampScrollLeft } from '../lib/tablescroll.js';
+import { needsScroll, pageStep, clampScrollLeft, edgeTarget } from '../lib/tablescroll.js';
 
 test('needsScroll: content wider than the viewport wants scrollbars', () => {
   assert.equal(needsScroll(1400, 900), true);
@@ -30,4 +30,10 @@ test('clampScrollLeft: never negative, never past the end', () => {
 
 test('clampScrollLeft: a table that fits has a single valid offset of 0', () => {
   assert.equal(clampScrollLeft(120, 800, 900), 0);
+});
+
+test('edgeTarget: left goes to 0, right goes to the max scrollable distance', () => {
+  assert.equal(edgeTarget(-1, 1400, 900), 0);
+  assert.equal(edgeTarget(1, 1400, 900), 500);
+  assert.equal(edgeTarget(1, 800, 900), 0); // fits: nothing to scroll
 });
