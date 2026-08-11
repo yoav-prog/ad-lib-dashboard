@@ -75,29 +75,41 @@ input::placeholder, textarea::placeholder { color: #4A4E54; }
 .tscroll-bar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .16); border: 2px solid #0B0C0E; border-radius: 6px; }
 .tscroll-bar:hover::-webkit-scrollbar-thumb { background: rgba(232, 163, 61, .5); }
 
-/* Hover-reveal edge chevrons (nudge left / right) and the vertical jump stack. */
-.tscroll-nudge {
+/* Hover-reveal edge controls on each scrollbar strip: at each end, a jump-to-edge
+   button (all the way to the first / last column) sits outermost, with a page-nudge
+   button just inboard. Plus the vertical back-to-top / jump-to-bottom stack below. */
+.tscroll-edge {
   position: absolute;
   top: 0;
   z-index: 1;
-  width: 26px;
+  height: 14px;
+  display: flex;
+  align-items: stretch;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s ease;
+}
+.tscroll-edge-left { left: 0; }
+.tscroll-edge-right { right: 0; }
+.tscroll-root:hover .tscroll-edge { opacity: 1; pointer-events: auto; }
+.tscroll-edgebtn {
+  width: 22px;
   height: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  opacity: 0;
-  pointer-events: none;
-  background: linear-gradient(90deg, rgba(11, 12, 14, .95), rgba(11, 12, 14, .55));
   border: none;
-  color: #B6B9BE;
+  background: rgba(18, 20, 24, .94);
+  color: #9CA0A6;
   cursor: pointer;
-  font-size: 11px;
-  transition: opacity .12s ease, color .12s ease;
+  font-size: 12px;
+  line-height: 1;
+  transition: color .12s ease, background .12s ease;
 }
-.tscroll-nudge-right { transform: scaleX(-1); }        /* mirror the same gradient + glyph */
-.tscroll-root:hover .tscroll-nudge { opacity: 1; pointer-events: auto; }
-.tscroll-nudge:hover { color: #E8A33D; }
+.tscroll-edgebtn:hover { color: #E8A33D; background: #1E2126; }
+.tscroll-edge-left .tscroll-edgebtn:first-child { box-shadow: 6px 0 10px rgba(11, 12, 14, .8); }
+.tscroll-edge-right .tscroll-edgebtn:last-child { box-shadow: -6px 0 10px rgba(11, 12, 14, .8); }
 
 .tscroll-jump {
   position: fixed;

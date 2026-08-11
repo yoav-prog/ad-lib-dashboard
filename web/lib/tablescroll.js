@@ -20,6 +20,13 @@ export function pageStep(clientWidth, factor = 0.85) {
   return Math.max(120, Math.round(w * factor));
 }
 
+// The scroll offset that lands the table on its first (dir < 0) or last (dir > 0)
+// column: 0, or the maximum scrollable distance. Never negative when the table fits.
+export function edgeTarget(dir, scrollWidth, clientWidth) {
+  if (dir < 0) return 0;
+  return Math.max(0, Number(scrollWidth) - Number(clientWidth));
+}
+
 // Keep a target scroll offset inside the legal range [0, maxScrollLeft]. Guards the
 // chevron nudges from driving scrollLeft negative or past the end (browsers clamp
 // anyway, but clamping here keeps the synced bars in exact agreement).
