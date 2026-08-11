@@ -7,6 +7,7 @@ import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
 import GeoSplitCell from '@/components/GeoSplitCell';
+import TableScroll from '@/components/TableScroll';
 import Pager, { PageSizePicker, usePageSize } from '@/components/Pager';
 import { pageSlice, pageRange, pageCount, clampPage } from '@/lib/paging';
 
@@ -188,7 +189,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
       </div>
 
       {/* queue */}
-      <div style={s('flex:1;min-width:0;background:#0B0C0E;overflow-x:auto')}>
+      <TableScroll label="review" style={s('flex:1;min-width:0;background:#0B0C0E')}>
         {/* header strip: counts, sort, bulk actions */}
         <div style={s(`display:flex;align-items:center;gap:12px;height:40px;padding:0 16px;background:#0D0E11;border-bottom:1px solid rgba(255,255,255,.09);min-width:${tableMinW}px`)}>
           <span style={s(`font-family:${MONO};font-size:11.5px;color:#E7E8EA;font-variant-numeric:tabular-nums`)}>
@@ -343,7 +344,7 @@ export default function ReviewView({ ads, NOW, canEdit, query, onDecide }) {
             {!ads.length && <div style={s('font-size:11px;color:#5A5E64;margin-top:6px')}>Ads whose destination does not match their searched domain will show up here after each scrape.</div>}
           </div>
         )}
-      </div>
+      </TableScroll>
     </div>
   );
 }

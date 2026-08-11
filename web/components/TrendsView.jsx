@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, hoursSince, pad } from '@/lib/ui';
+import TableScroll from '@/components/TableScroll';
 
 // Aggregates the current ads into "what competitors are pushing": verticals
 // ranked by recent activity, with how many competitors are in each and who.
@@ -33,6 +34,7 @@ export default function TrendsView({ ads, NOW, matchesQuery = () => true, openDe
         <span style={s(`font-family:${MONO};font-size:10.5px;color:#5A5E64`)}>what competitors are pushing &middot; sorted by fresh activity</span>
       </div>
 
+      <TableScroll label="trends">
       <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:900px')}>
         <div style={s('width:230px;flex-shrink:0')}>Vertical</div>
         <div style={s('flex:1;min-width:0')}>Activity</div>
@@ -67,6 +69,7 @@ export default function TrendsView({ ads, NOW, matchesQuery = () => true, openDe
       {rows.length === 0 && (
         <div style={s('padding:60px 24px;text-align:center;color:#5A5E64;font-size:13px')}>No data yet. Run a scrape to see trends.</div>
       )}
+      </TableScroll>
     </div>
   );
 }

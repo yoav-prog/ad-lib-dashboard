@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, daysRunning, hoursSince, isVideo, pad } from '@/lib/ui';
+import TableScroll from '@/components/TableScroll';
 
 export default function CompetitorView({ ads, NOW, openDetail, matchesQuery = () => true }) {
   const domains = useMemo(() => {
@@ -63,6 +64,7 @@ export default function CompetitorView({ ads, NOW, openDetail, matchesQuery = ()
         ))}
       </div>
 
+      <TableScroll label="competitor">
       <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:760px')}>
         <div style={s('width:52px')} />
         <div style={s('flex:1')}>Headline</div>
@@ -93,6 +95,7 @@ export default function CompetitorView({ ads, NOW, openDetail, matchesQuery = ()
       {list.length === 0 && (
         <div style={s('padding:40px 24px;text-align:center;color:#5A5E64;font-size:12px')}>No ads match your search for this competitor.</div>
       )}
+      </TableScroll>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { A, MONO, firstUrl, hostOf, pad, relTime, filterFlaggedAds, contentFlagL
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
+import TableScroll from '@/components/TableScroll';
 import Pager, { PageSizePicker, usePageSize } from '@/components/Pager';
 import { pageSlice, pageRange, pageCount, clampPage } from '@/lib/paging';
 
@@ -177,7 +178,7 @@ export default function FilteredView({ ads, NOW, canEdit, query, onClear }) {
       </div>
 
       {/* queue */}
-      <div style={s('flex:1;min-width:0;background:#0B0C0E;overflow-x:auto')}>
+      <TableScroll label="filtered" style={s('flex:1;min-width:0;background:#0B0C0E')}>
         {/* header strip: counts, sort, bulk action */}
         <div style={s(`display:flex;align-items:center;gap:12px;height:40px;padding:0 16px;background:#0D0E11;border-bottom:1px solid rgba(255,255,255,.09);min-width:${tableMinW}px`)}>
           <span style={s(`font-family:${MONO};font-size:11.5px;color:#E7E8EA;font-variant-numeric:tabular-nums`)}>
@@ -301,7 +302,7 @@ export default function FilteredView({ ads, NOW, canEdit, query, onClear }) {
             {!ads.length && <div style={s('font-size:11px;color:#5A5E64;margin-top:6px')}>Competitor ads that match a prohibited content topic are hidden from the feed and listed here after each scrape.</div>}
           </div>
         )}
-      </div>
+      </TableScroll>
     </div>
   );
 }

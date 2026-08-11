@@ -10,6 +10,7 @@ import ColumnPicker, { useColumnPrefs } from '@/components/ColumnPicker';
 import Pager, { PageSizePicker, usePageSize } from '@/components/Pager';
 import { pageSlice, pageRange, pageCount, clampPage } from '@/lib/paging';
 import GeoSplitCell from '@/components/GeoSplitCell';
+import TableScroll from '@/components/TableScroll';
 import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
@@ -1120,7 +1121,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
         </div>
 
         {/* feed */}
-        <div style={s('flex:1;min-width:0;background:#0B0C0E;overflow-x:auto')}>
+        <TableScroll label="freshfinds" style={s('flex:1;min-width:0;background:#0B0C0E')}>
           <div style={s('display:flex;align-items:center;justify-content:space-between;height:34px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06)')}>
             {selCount > 0 && canSelect ? (
               <div style={s('display:flex;align-items:center;gap:10px;width:100%')}>
@@ -1415,7 +1416,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
           {count === 0 && (
             <div style={s('padding:60px 16px;text-align:center;color:#5A5E64;font-size:13px')}>No ads match. Run a scrape or clear filters.</div>
           )}
-        </div>
+        </TableScroll>
       </div>
       {sheetOpen && (
         <SheetExportModal
