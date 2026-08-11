@@ -78,6 +78,24 @@ export const COLUMN_CATALOGS = {
 export const PRESET_NAME_MAX = 60;
 export const PRESETS_PER_TABLE_MAX = 20;
 
+// Build an orderOf(key) for a resolved column order, used by ColumnRow to place each
+// cell via CSS `order`. Structural sentinels get fixed slots at the far edges so they
+// never interleave with data columns: the accent bar, checkbox, thumbnail and
+// category pin to the left; the decision / restore controls pin to the right. Data
+// columns take their index in `order`. A null key (an unkeyed child) keeps its source
+// position; an unknown data key sits just before the decision column.
+export const COLUMN_SENTINELS = { __accent: -400, __checkbox: -300, __thumb: -200, __category: -100, __decision: 100000 };
+
+export function makeOrderOf(order) {
+  const index = new Map(order.map((k, i) => [k, i]));
+  return (key) => {
+    if (key == null) return undefined;
+    if (key in COLUMN_SENTINELS) return COLUMN_SENTINELS[key];
+    const i = index.get(key);
+    return i == null ? 90000 : i;
+  };
+}
+
 export const catalogFor = (tableKey) => COLUMN_CATALOGS[tableKey] || null;
 export const catalogKeys = (catalog) => catalog.map((c) => c.key);
 // The columns a user may hide: everything except the pinned Headline and the

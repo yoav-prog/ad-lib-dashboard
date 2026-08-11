@@ -12,9 +12,8 @@ import { CSS } from '@dnd-kit/utilities';
 import { s } from '@/lib/style';
 import { A, MONO } from '@/lib/ui';
 import {
-  catalogFor, resolveLayout, hideableKeys, serializeLayout, defaultLayout, migrateLegacyHidden,
+  catalogFor, resolveLayout, hideableKeys, serializeLayout, defaultLayout, migrateLegacyHidden, makeOrderOf,
 } from '@/lib/columns';
-import { makeOrderOf } from '@/components/ColumnRow';
 import { listColumnPresets, saveColumnPreset, deleteColumnPreset, setDefaultColumnPreset } from '@/app/preset-actions';
 
 // Per-table column state: order, visibility, and named presets that live on the
@@ -78,16 +77,16 @@ export function useColumnLayout(tableKey) {
   const visible = useMemo(() => new Set(resolved.order.filter((k) => !resolved.hidden.has(k))), [resolved]);
   const orderOf = useMemo(() => makeOrderOf(resolved.order), [resolved]);
 
-  // Every layout edit writes the working layout to the cache and detaches it from any
-  // active preset (so the manager can offer "Save" on a tweaked preset).
-  const commit = useCallback((updater, keepActive = false) => {
+  // Every layout edit writes the working layout to the cache. The active preset stays
+  // selected; the `dirty` flag below then drives the "Save" affordance so a tweak to a
+  // loaded preset can be written back in one click (rather than silently detaching).
+  const commit = useCallback((updater) => {
     setLayout((prev) => {
       const next = typeof updater === 'function' ? updater(resolveLayout(catalog, prev)) : updater;
       const serialized = serializeLayout(catalog, next.order, new Set(next.hidden));
       writeCache(serialized);
       return serialized;
     });
-    if (!keepActive) setActiveId(null);
   }, [catalog, writeCache]);
 
   const toggle = useCallback((key) => {
@@ -106,7 +105,9 @@ export function useColumnLayout(tableKey) {
   }, [commit]);
 
   const showAll = useCallback(() => commit((cur) => ({ order: cur.order, hidden: [] })), [commit]);
-  const reset = useCallback(() => { commit(defaultLayout(catalog)); console.info('[columns layout] reset', { tableKey }); }, [catalog, commit, tableKey]);
+  // Reset goes back to the catalog default and steps off any active preset - it is an
+  // explicit "start over", not an edit of the loaded preset.
+  const reset = useCallback(() => { commit(defaultLayout(catalog)); setActiveId(null); console.info('[columns layout] reset', { tableKey }); }, [catalog, commit, tableKey]);
 
   const refresh = useCallback(async () => {
     try {
