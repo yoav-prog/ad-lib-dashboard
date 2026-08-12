@@ -80,6 +80,7 @@ export default async function Page() {
       caps={caps}
       me={{ email: user.email, name: user.name }}
       exportSaEmail={caps.export_data ? (process.env.GCS_CLIENT_EMAIL ?? null) : null}
+      articlesConfigured={Boolean(process.env.ARTICLES_DATABASE_URL)}
     />
   );
 }
