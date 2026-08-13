@@ -8,7 +8,7 @@
 import { useEffect, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, langCode, rankLinks, parseSheetId } from '@/lib/ui';
-import { searchOurLinks } from '@/app/actions';
+import { searchOurLinks, searchSisterLinks } from '@/app/actions';
 
 export const LS_DOMAIN = 'adintel.kit.ourdomain';
 export const LS_NETWORK = 'adintel.kit.ournetwork';
@@ -66,7 +66,7 @@ export function Empty({ children }) {
 // Assign one of our links to a subject (a Meta ad or an RSOC comp row). `subject` carries
 // { title, language, country, vertical } for matching/display; `onChoose(link)` persists the
 // pick (the caller wires the right action) and returns { ok, reason }.
-export function AssignPanel({ subject, ourDomains = [], ourNetworks = [], onClose, onChoose }) {
+export function AssignPanel({ subject, competitorUrl = '', ourDomains = [], ourNetworks = [], onClose, onChoose }) {
   const [domain, setDomain] = useState(() => {
     const last = ls(LS_DOMAIN, '');
     if (last && ourDomains.some((d) => d.domain === last)) return last;
@@ -76,11 +76,23 @@ export function AssignPanel({ subject, ourDomains = [], ourNetworks = [], onClos
   const [matchAd, setMatchAd] = useState(true);
   const [search, setSearch] = useState('');
   const [links, setLinks] = useState(null);
+  const [sisters, setSisters] = useState(null);   // exact sister-family links for competitorUrl
   const [err, setErr] = useState('');
   const [busyUrl, setBusyUrl] = useState('');
 
   const adLang = langCode(subject.language || subject.creative_language);
   const adCountry = subject.country || '';
+
+  // Exact sister articles for this competitor's URL (if we ever cloned it), refreshed when
+  // the network filter changes. Shown pinned above the normal domain search.
+  useEffect(() => {
+    if (!competitorUrl) { setSisters(null); return; }
+    let alive = true;
+    searchSisterLinks({ competitorUrl, network: network || null })
+      .then((r) => { if (alive) setSisters(r?.ok ? r.links : []); })
+      .catch((e) => { console.error('[kit sisters] load failed', e); if (alive) setSisters([]); });
+    return () => { alive = false; };
+  }, [competitorUrl, network]);
 
   useEffect(() => {
     if (!domain) { setLinks([]); return; }
@@ -151,6 +163,28 @@ export function AssignPanel({ subject, ourDomains = [], ourNetworks = [], onClos
           <input type="checkbox" checked={matchAd} onChange={(e) => setMatchAd(e.target.checked)} />
           Match language and country ({adLang || '?'} / {adCountry || '?'})
         </label>
+
+        {sisters && sisters.length > 0 && (
+          <div>
+            <div style={s(`display:flex;align-items:center;gap:8px;font-size:9.5px;letter-spacing:1.2px;color:${A};text-transform:uppercase;margin-bottom:6px`)}>
+              &#9733; Sister articles (exact match) <span style={s('color:#6C7076')}>{sisters.length}</span>
+            </div>
+            <div style={s('border:1px solid rgba(232,163,61,.35);background:rgba(232,163,61,.05);max-height:26vh;overflow-y:auto')}>
+              {sisters.map((l) => (
+                <div key={l.url} onClick={() => choose(l)}
+                  style={s(`display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.045);cursor:${busyUrl ? 'default' : 'pointer'};opacity:${busyUrl && busyUrl !== l.url ? '.5' : '1'}`)}>
+                  <div style={s('flex:1;min-width:0')}>
+                    <span style={s('font-size:12px;color:#E7E8EA;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{l.headline || shortUrl(l.url)}</span>
+                    <span style={s(`font-family:${MONO};font-size:10px;color:#6C7076;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block`)}>{shortUrl(l.url)}</span>
+                  </div>
+                  <span style={s(`font-family:${MONO};font-size:9.5px;color:#8A8E94`)}>{[l.network, l.language, l.country].filter(Boolean).join('/')}</span>
+                  <span style={s(`font-family:${MONO};font-size:9px;color:${A};border:1px solid rgba(232,163,61,.5);padding:1px 5px`)}>SISTER</span>
+                  <span style={s(`font-family:${MONO};font-size:9.5px;color:${busyUrl === l.url ? A : '#5A5E64'}`)}>{busyUrl === l.url ? 'SAVING...' : 'PICK'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {err && <div style={s('font-size:11.5px;color:#ff8a80')}>{err}</div>}
 

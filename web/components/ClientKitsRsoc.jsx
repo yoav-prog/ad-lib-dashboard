@@ -10,7 +10,7 @@ import { A, MONO, fmtDec, compToSubject, COMP_KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
 import SelectMenu from '@/components/SelectMenu';
 import { AssignPanel, ExportModal, Empty, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON } from '@/components/kit-shared';
-import { loadCompFacets, loadCompRows, loadCompAssignments, assignOurLinkToComp, unassignFromComp, bulkAssignToComp, exportCompKitToSheet } from '@/app/actions';
+import { loadCompFacets, loadCompRows, loadCompAssignments, assignOurLinkToComp, unassignFromComp, bulkAssignToComp, bulkAssignSisters, exportCompKitToSheet } from '@/app/actions';
 
 export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ourNetworks = [] }) {
   const [facets, setFacets] = useState(null);      // { networks, verticals, geos } | null
@@ -100,8 +100,10 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
   // Select the first n rows (or all when n is omitted) - powers the shared SelectMenu.
   const selectMany = (n) => setSelected(new Set((n ? rowList.slice(0, n) : rowList).map((r) => r.id)));
 
+  const [sistersBusy, setSistersBusy] = useState(false);
+
   const runBulk = async () => {
-    if (bulkBusy || !bulkDomain || !selected.size) return;
+    if (bulkBusy || sistersBusy || !bulkDomain || !selected.size) return;
     setBulkBusy(true); setBulkMsg('');
     const orderedIds = rowList.map((r) => r.id).filter((id) => selected.has(id));   // revenue order
     try {
@@ -117,6 +119,25 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
       } else setBulkMsg(REASON[r?.reason] || 'Bulk assign failed.');
     } catch (e) { console.error('[kit comp bulk] failed', e); setBulkMsg('Bulk assign failed.'); }
     setBulkBusy(false);
+  };
+
+  // Assign the exact sister article to each selected comp row that has one.
+  const runBulkSisters = async () => {
+    if (bulkBusy || sistersBusy || !selected.size) return;
+    setSistersBusy(true); setBulkMsg('');
+    const orderedIds = rowList.map((r) => r.id).filter((id) => selected.has(id));
+    try {
+      const r = await bulkAssignSisters({ source: 'rsoc', ids: orderedIds, network: bulkNetwork || null });
+      if (r?.ok) {
+        setAssignments((p) => ({ ...p, ...r.assigned }));
+        const parts = [`Assigned ${r.matched} sister${r.matched === 1 ? '' : 's'}`];
+        if (r.alreadyHad) parts.push(`${r.alreadyHad} already had a link`);
+        if (r.noSister?.length) parts.push(`${r.noSister.length} had no sister`);
+        setBulkMsg(parts.join(' · ') + '.');
+        setSelected(new Set());
+      } else setBulkMsg(REASON[r?.reason] || 'Assign sisters failed.');
+    } catch (e) { console.error('[kit comp sisters bulk] failed', e); setBulkMsg('Assign sisters failed.'); }
+    setSistersBusy(false);
   };
 
   const sel = s(`background:#101216;border:1px solid rgba(255,255,255,.14);color:#E7E8EA;font-family:${MONO};font-size:11px;padding:5px 8px;outline:none`);
@@ -166,9 +187,14 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
               <label style={s('display:flex;align-items:center;gap:6px;font-size:11px;color:#9CA0A6;cursor:pointer')}>
                 <input type="checkbox" checked={bulkMatch} onChange={(e) => setBulkMatch(e.target.checked)} /> match language
               </label>
-              <button onClick={runBulk} disabled={bulkBusy || !bulkDomain}
-                style={s(`font-family:${MONO};font-size:10px;letter-spacing:.4px;color:#0B0C0E;background:${A};border:none;padding:7px 14px;cursor:${bulkBusy || !bulkDomain ? 'default' : 'pointer'};opacity:${bulkBusy || !bulkDomain ? '.6' : '1'}`)}>
+              <button onClick={runBulk} disabled={bulkBusy || sistersBusy || !bulkDomain}
+                style={s(`font-family:${MONO};font-size:10px;letter-spacing:.4px;color:#0B0C0E;background:${A};border:none;padding:7px 14px;cursor:${bulkBusy || sistersBusy || !bulkDomain ? 'default' : 'pointer'};opacity:${bulkBusy || sistersBusy || !bulkDomain ? '.6' : '1'}`)}>
                 {bulkBusy ? 'ASSIGNING...' : 'ASSIGN TO DOMAIN'}
+              </button>
+              <button onClick={runBulkSisters} disabled={bulkBusy || sistersBusy}
+                title="Assign the exact sister article to each selected row that has one"
+                style={s(`font-family:${MONO};font-size:10px;letter-spacing:.4px;color:${A};background:rgba(232,163,61,.1);border:1px solid rgba(232,163,61,.5);padding:6px 12px;cursor:${bulkBusy || sistersBusy ? 'default' : 'pointer'};opacity:${bulkBusy || sistersBusy ? '.6' : '1'}`)}>
+                {sistersBusy ? 'ASSIGNING...' : '★ ASSIGN SISTERS'}
               </button>
               <button onClick={() => setSelected(new Set())} style={miniBtn('#8A8E94')}>CLEAR</button>
             </>
@@ -216,6 +242,7 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
       {assignFor && (
         <AssignPanel
           subject={{ ...compToSubject(assignFor), title: assignFor.adtitle }}
+          competitorUrl={assignFor.url || ''}
           ourDomains={ourDomains || []} ourNetworks={ourNetworks}
           onClose={() => setAssignFor(null)}
           onChoose={async (link) => {
@@ -264,7 +291,10 @@ function CompRow({ row, canBuild, assignment, selected = false, onToggle, onAssi
           : <div style={s('width:40px;height:40px;background:#0F1113;border:1px dashed rgba(255,255,255,.1)')} />}
       </div>
       <div style={s('flex:1;padding-right:16px;min-width:0')}>
-        <span style={s('font-size:12.5px;color:#C6C9CE;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{row.adtitle || '(no title)'}</span>
+        <span style={s('font-size:12.5px;color:#C6C9CE;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>
+          {row.has_sister && <span title="We have a sister article for this competitor" style={s(`font-family:${MONO};font-size:8.5px;letter-spacing:.4px;color:${A};border:1px solid rgba(232,163,61,.5);padding:1px 4px;margin-right:6px`)}>&#9733; SISTER</span>}
+          {row.adtitle || '(no title)'}
+        </span>
         <span style={s(`font-family:${MONO};font-size:10px;color:#6C7076;margin-top:3px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>
           {row.network || '?'} &middot; {row.vertical || 'no vertical'} &middot; {row.geo || '?'}{row.top_keywords ? ` · ${row.top_keywords}` : ''}
         </span>

@@ -601,6 +601,17 @@ export async function getAssignmentsByCompIds(compIds) {
   return byComp;
 }
 
+// Which of the given our-link URLs are already assigned (to any ad or comp row). Used by
+// the sister flow, whose candidate links span domains, so the per-domain helper below does
+// not fit - availability there is checked against this explicit URL set instead.
+export async function getTakenOurUrls(urls) {
+  const clean = [...new Set((Array.isArray(urls) ? urls : []).map(String).filter(Boolean))];
+  if (!clean.length) return [];
+  const sql = getSql();
+  const rows = await sql`select our_url from link_assignments where our_url = any(${clean})`;
+  return rows.map((r) => r.our_url);
+}
+
 // The our-link URLs already handed out on a given domain, so the articles-DB search can
 // exclude them and only ever offer links that are still available. Scoped to one domain
 // keeps the excluded array small even as the ledger grows.

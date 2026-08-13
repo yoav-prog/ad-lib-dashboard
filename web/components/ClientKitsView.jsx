@@ -15,7 +15,7 @@ import ClientKitsRsoc from '@/components/ClientKitsRsoc';
 import ClientKitsSaved from '@/components/ClientKitsSaved';
 import SelectMenu from '@/components/SelectMenu';
 import { AssignPanel, ExportModal, Empty, Mono, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON } from '@/components/kit-shared';
-import { loadOurDomains, loadOurNetworks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, exportKitToSheet } from '@/app/actions';
+import { loadOurDomains, loadOurNetworks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, bulkAssignSisters, exportKitToSheet } from '@/app/actions';
 
 export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuery = () => true, notConfigured = false }) {
   const [source, setSource] = useState('meta');   // 'meta' | 'rsoc'
@@ -113,8 +113,10 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
   // Select the first n rows (or all when n is omitted) - powers the shared SelectMenu.
   const selectMany = (n) => setSelected(new Set((n ? list.slice(0, n) : list).map((a) => a.ad_archive_id)));
 
+  const [sistersBusy, setSistersBusy] = useState(false);
+
   const runBulk = async () => {
-    if (bulkBusy || !bulkDomain || !selected.size) return;
+    if (bulkBusy || sistersBusy || !bulkDomain || !selected.size) return;
     setBulkBusy(true); setBulkMsg('');
     const orderedIds = list.map((a) => a.ad_archive_id).filter((id) => selected.has(id));
     try {
@@ -130,6 +132,26 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
       } else setBulkMsg(REASON[r?.reason] || 'Bulk assign failed.');
     } catch (e) { console.error('[kit bulk] failed', e); setBulkMsg('Bulk assign failed.'); }
     setBulkBusy(false);
+  };
+
+  // Assign the exact sister article to each selected ad that has one (ignores the domain
+  // picker - a sister lives on whatever domain we published it on).
+  const runBulkSisters = async () => {
+    if (bulkBusy || sistersBusy || !selected.size) return;
+    setSistersBusy(true); setBulkMsg('');
+    const orderedIds = list.map((a) => a.ad_archive_id).filter((id) => selected.has(id));
+    try {
+      const r = await bulkAssignSisters({ source: 'meta', ids: orderedIds, network: bulkNetwork || null });
+      if (r?.ok) {
+        setAssignments((p) => ({ ...p, ...r.assigned }));
+        const parts = [`Assigned ${r.matched} sister${r.matched === 1 ? '' : 's'}`];
+        if (r.alreadyHad) parts.push(`${r.alreadyHad} already had a link`);
+        if (r.noSister?.length) parts.push(`${r.noSister.length} had no sister`);
+        setBulkMsg(parts.join(' · ') + '.');
+        setSelected(new Set());
+      } else setBulkMsg(REASON[r?.reason] || 'Assign sisters failed.');
+    } catch (e) { console.error('[kit sisters bulk] failed', e); setBulkMsg('Assign sisters failed.'); }
+    setSistersBusy(false);
   };
 
   const toggle = <SourceToggle source={source} setSource={setSource} />;
@@ -205,9 +227,14 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
               <label style={s('display:flex;align-items:center;gap:6px;font-size:11px;color:#9CA0A6;cursor:pointer')}>
                 <input type="checkbox" checked={bulkMatch} onChange={(e) => setBulkMatch(e.target.checked)} /> match language
               </label>
-              <button onClick={runBulk} disabled={bulkBusy || !bulkDomain}
-                style={s(`font-family:${MONO};font-size:10px;letter-spacing:.4px;color:#0B0C0E;background:${A};border:none;padding:7px 14px;cursor:${bulkBusy || !bulkDomain ? 'default' : 'pointer'};opacity:${bulkBusy || !bulkDomain ? '.6' : '1'}`)}>
+              <button onClick={runBulk} disabled={bulkBusy || sistersBusy || !bulkDomain}
+                style={s(`font-family:${MONO};font-size:10px;letter-spacing:.4px;color:#0B0C0E;background:${A};border:none;padding:7px 14px;cursor:${bulkBusy || sistersBusy || !bulkDomain ? 'default' : 'pointer'};opacity:${bulkBusy || sistersBusy || !bulkDomain ? '.6' : '1'}`)}>
                 {bulkBusy ? 'ASSIGNING...' : 'ASSIGN TO DOMAIN'}
+              </button>
+              <button onClick={runBulkSisters} disabled={bulkBusy || sistersBusy}
+                title="Assign the exact sister article to each selected ad that has one"
+                style={s(`font-family:${MONO};font-size:10px;letter-spacing:.4px;color:${A};background:rgba(232,163,61,.1);border:1px solid rgba(232,163,61,.5);padding:6px 12px;cursor:${bulkBusy || sistersBusy ? 'default' : 'pointer'};opacity:${bulkBusy || sistersBusy ? '.6' : '1'}`)}>
+                {sistersBusy ? 'ASSIGNING...' : '★ ASSIGN SISTERS'}
               </button>
               <button onClick={() => setSelected(new Set())} style={miniBtn('#8A8E94')}>CLEAR</button>
             </>
@@ -253,6 +280,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
       {assignFor && (
         <AssignPanel
           subject={{ title: assignFor.title || assignFor.caption || assignFor.body_text, language: assignFor.creative_language || assignFor.language, country: assignFor.country, vertical: assignFor.vertical }}
+          competitorUrl={assignFor.resolved_url || assignFor.link_url || ''}
           ourDomains={ourDomains || []} ourNetworks={ourNetworks}
           onClose={() => setAssignFor(null)}
           onChoose={async (link) => {

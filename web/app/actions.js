@@ -3,11 +3,11 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getThumbnailsByHosts } from '@/lib/queries';
+import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getTakenOurUrls, getThumbnailsByHosts } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
-import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, articlesConfigured } from '@/lib/articles';
+import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, articlesConfigured } from '@/lib/articles';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url', 'brand'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
@@ -846,9 +846,14 @@ export async function loadCompRows({ network, vertical, geo, search } = {}) {
     let thumbs = {};
     try { thumbs = hosts.length ? await getThumbnailsByHosts(hosts) : {}; }
     catch (e) { console.warn('[kit comp thumbs] lookup failed (rows still returned)', String(e.message || e)); }
-    const withThumbs = rows.map((r) => ({ ...r, thumb: thumbs[hostOf(r.url)] || null }));
-    console.info('[kit comp rows]', { returned: withThumbs.length, thumbs: Object.keys(thumbs).length });
-    return { ok: true, rows: withThumbs };
+    // Flag rows that have an exact sister family (we cloned this competitor's article), so the
+    // UI can badge them and offer the precise "assign sister" path.
+    let sisterUrls = new Set();
+    try { sisterUrls = new Set(await getSisterFamilyUrls(rows.map((r) => r.url))); }
+    catch (e) { console.warn('[kit comp sisters] flag lookup failed', String(e.message || e)); }
+    const enriched = rows.map((r) => ({ ...r, thumb: thumbs[hostOf(r.url)] || null, has_sister: sisterUrls.has(r.url) }));
+    console.info('[kit comp rows]', { returned: enriched.length, thumbs: Object.keys(thumbs).length, sisters: sisterUrls.size });
+    return { ok: true, rows: enriched };
   } catch (e) {
     console.error('[kit comp rows] failed', e);
     return { ok: false, reason: 'error', message: String(e.message || e) };
@@ -1048,5 +1053,100 @@ export async function exportCompKitToSheet({ spreadsheetId, tabName, compRowIds,
     return { ok: true, saEmail, sheetUrl: `https://docs.google.com/spreadsheets/d/${id}`, ...result };
   } catch (e) {
     return { ok: false, reason: e.code === 'PERMISSION' ? 'permission' : 'error', message: String(e.message || e), saEmail };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLIENT KITS - sister-family matching (article_lineage)
+// ═══════════════════════════════════════════════════════════════════════════════
+// The precise match: a competitor URL we have cloned has a sister family, and our articles
+// in that family are the exact sister versions. Works for both sources (the competitor URL
+// is a comp row's url or a Meta ad's resolved_url).
+
+// Our available sister links for one competitor URL, ranked (family order), taken removed.
+export async function searchSisterLinks({ competitorUrl, network } = {}) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
+  const url = String(competitorUrl || '').trim();
+  if (!url) return { ok: true, links: [] };
+  try {
+    const map = await getSisterLinksForUrls([url], network || null);
+    const cand = map[url] || [];
+    if (!cand.length) return { ok: true, links: [] };
+    const taken = new Set(await getTakenOurUrls(cand.map((l) => l.url)));
+    // Cap what the panel shows - a sister family can be thousands of articles.
+    return { ok: true, links: cand.filter((l) => !taken.has(l.url)).slice(0, 200) };
+  } catch (e) {
+    console.error('[kit sisters] search failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
+}
+
+// Bulk-assign the sister article to each selected row (Meta ads or RSOC comp rows). For each
+// target still without a link, pick an available sister of its competitor URL (network-
+// filtered), never repeating one. Ignores the domain picker on purpose - a sister lives on
+// whatever domain we published it. Reports rows that already had a link or have no sister.
+export async function bulkAssignSisters({ source, ids, network } = {}) {
+  await requireCapability('export_data');
+  if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
+  const src = source === 'rsoc' ? 'rsoc' : 'meta';
+  const clean = src === 'rsoc'
+    ? [...new Set((Array.isArray(ids) ? ids : []).map((x) => Math.trunc(Number(x))).filter((n) => Number.isFinite(n)))].slice(0, 200)
+    : [...new Set((Array.isArray(ids) ? ids : []).map(String))].slice(0, 200);
+  if (!clean.length) return { ok: false, reason: 'no-rows' };
+  const by = (await getCurrentUser())?.email || null;
+
+  try {
+    let subjects;
+    let existing;
+    if (src === 'rsoc') {
+      const rows = await getCompRowsByIds(clean);
+      subjects = rows.map((r) => ({ ref: r.id, url: r.url }));
+      existing = await getAssignmentsByCompIds(clean);
+    } else {
+      const rows = await getAdsByIds(clean);
+      subjects = rows.map((a) => ({ ref: a.ad_archive_id, url: a.resolved_url || a.link_url }));
+      existing = await getAssignmentsByAdIds(clean);
+    }
+    const alreadyHad = subjects.filter((sub) => existing[sub.ref]).length;
+    const targets = subjects.filter((sub) => !existing[sub.ref] && sub.url);
+    if (!targets.length) return { ok: true, assigned: {}, matched: 0, noSister: [], alreadyHad };
+
+    const sisterMap = await getSisterLinksForUrls(targets.map((sub) => sub.url), network || null);
+    const takenSet = new Set(await getTakenOurUrls(Object.values(sisterMap).flat().map((l) => l.url)));
+    const used = new Set(takenSet);
+    const toInsert = [];
+    const noSister = [];
+    for (const sub of targets) {
+      const pick = (sisterMap[sub.url] || []).find((l) => !used.has(l.url));
+      if (pick) { used.add(pick.url); toInsert.push({ ref: sub.ref, link: pick }); }
+      else noSister.push(sub.ref);
+    }
+    if (!toInsert.length) return { ok: true, assigned: {}, matched: 0, noSister, alreadyHad };
+
+    const sql = getSql();
+    await sql.begin(async (tx) => {
+      for (const { ref, link } of toInsert) {
+        const artId = Number.isFinite(Number(link.id)) ? Math.trunc(Number(link.id)) : null;
+        if (src === 'rsoc') {
+          await tx`insert into link_assignments (comp_row_id, source, our_url, our_domain, our_headline, our_article_id, assigned_by)
+                   values (${ref}, 'rsoc', ${link.url}, ${link.domain}, ${link.headline || null}, ${artId}, ${by})
+                   on conflict (our_url) do nothing`;
+        } else {
+          await tx`insert into link_assignments (ad_archive_id, source, our_url, our_domain, our_headline, our_article_id, assigned_by)
+                   values (${ref}, 'meta', ${link.url}, ${link.domain}, ${link.headline || null}, ${artId}, ${by})
+                   on conflict (our_url) do nothing`;
+        }
+      }
+    });
+    const refs = toInsert.map((t) => t.ref);
+    const fresh = src === 'rsoc' ? await getAssignmentsByCompIds(refs) : await getAssignmentsByAdIds(refs);
+    console.info('[kit sisters bulk]', { source: src, targets: targets.length, matched: Object.keys(fresh).length, noSister: noSister.length, alreadyHad });
+    revalidatePath('/');
+    return { ok: true, assigned: fresh, matched: Object.keys(fresh).length, noSister, alreadyHad };
+  } catch (e) {
+    console.error('[kit sisters bulk] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
   }
 }
