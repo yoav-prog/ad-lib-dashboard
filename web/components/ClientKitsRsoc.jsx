@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, fmtDec, compToSubject, COMP_KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
+import SelectMenu from '@/components/SelectMenu';
 import { AssignPanel, ExportModal, Empty, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON } from '@/components/kit-shared';
 import { loadCompFacets, loadCompRows, loadCompAssignments, assignOurLinkToComp, unassignFromComp, bulkAssignToComp, exportCompKitToSheet } from '@/app/actions';
 
@@ -96,6 +97,8 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
 
   const allSelected = rowList.length > 0 && rowList.every((r) => selected.has(r.id));
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(rowList.map((r) => r.id)));
+  // Select the first n rows (or all when n is omitted) - powers the shared SelectMenu.
+  const selectMany = (n) => setSelected(new Set((n ? rowList.slice(0, n) : rowList).map((r) => r.id)));
 
   const runBulk = async () => {
     if (bulkBusy || !bulkDomain || !selected.size) return;
@@ -178,12 +181,15 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
 
       {/* Rows */}
       <TableScroll label="clientkits-rsoc">
-        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1080px')}>
+        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1150px')}>
           {canBuild && (
-            <div style={s('width:30px;display:flex;align-items:center')}>
+            <div style={s('width:52px;display:flex;align-items:center;gap:3px')}>
               <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all" style={s('cursor:pointer')} />
+              <SelectMenu pageRows={rowList.length} total={rowList.length} busy={false} hasSelection={selected.size > 0}
+                onPage={() => selectMany()} onFirst={(n) => selectMany(n)} onAll={() => selectMany()} onClear={() => setSelected(new Set())} />
             </div>
           )}
+          <div style={s('width:48px')}>Ad</div>
           <div style={s('flex:1')}>Competitor (RSOC)</div>
           <div style={s('width:90px;text-align:right')}>Revenue</div>
           <div style={s('width:60px;text-align:right')}>RPC</div>
@@ -246,12 +252,17 @@ function CompRow({ row, canBuild, assignment, selected = false, onToggle, onAssi
   };
 
   return (
-    <div style={s(`display:flex;align-items:center;min-height:64px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:1080px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
+    <div style={s(`display:flex;align-items:center;min-height:64px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:1150px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
       {canBuild && (
-        <div style={s('width:30px;display:flex;align-items:center')}>
+        <div style={s('width:52px;display:flex;align-items:center')}>
           <input type="checkbox" checked={selected} onChange={() => {}} onClick={(e) => onToggle?.(e.shiftKey)} style={s('cursor:pointer')} />
         </div>
       )}
+      <div style={s('width:48px')} title={row.thumb ? 'Matching Meta creative (by landing host)' : 'No matching Meta creative'}>
+        {row.thumb
+          ? <img src={row.thumb} alt="" style={s('width:40px;height:40px;object-fit:cover;background:#141619;border:1px solid rgba(255,255,255,.08)')} />
+          : <div style={s('width:40px;height:40px;background:#0F1113;border:1px dashed rgba(255,255,255,.1)')} />}
+      </div>
       <div style={s('flex:1;padding-right:16px;min-width:0')}>
         <span style={s('font-size:12.5px;color:#C6C9CE;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{row.adtitle || '(no title)'}</span>
         <span style={s(`font-family:${MONO};font-size:10px;color:#6C7076;margin-top:3px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>
