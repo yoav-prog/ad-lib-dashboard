@@ -9,14 +9,13 @@ import { s } from '@/lib/style';
 import { A, MONO, fmtDec, compToSubject, dedupeBy, COMP_KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
 import SelectMenu from '@/components/SelectMenu';
+import FilterRail from '@/components/FilterRail';
 import { AssignPanel, ExportModal, Empty, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON, IMG_SIZES, ImageSizeToggle } from '@/components/kit-shared';
 import { loadCompFacets, loadCompRows, loadCompAssignments, assignOurLinkToComp, unassignFromComp, bulkAssignToComp, bulkAssignSisters, exportCompKitToSheet } from '@/app/actions';
 
 export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ourNetworks = [] }) {
   const [facets, setFacets] = useState(null);      // { networks, verticals, geos } | null
-  const [fNetwork, setFNetwork] = useState('');
-  const [fVertical, setFVertical] = useState('');
-  const [fGeo, setFGeo] = useState('');
+  const [f, setF] = useState({ network: [], vertical: [], geo: [] });   // multi-select facets
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [rows, setRows] = useState(null);          // null=loading, []=none
@@ -41,15 +40,34 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
   // Debounce the free-text search.
   useEffect(() => { const t = setTimeout(() => setSearch(searchInput), 250); return () => clearTimeout(t); }, [searchInput]);
 
-  // Rows whenever a filter changes.
+  // Rows whenever a filter changes (facets are multi-select, filtered server-side).
   useEffect(() => {
     let alive = true;
     setRows(null); setRowsErr('');
-    loadCompRows({ network: fNetwork || null, vertical: fVertical || null, geo: fGeo || null, search: search || null })
+    loadCompRows({ network: f.network, vertical: f.vertical, geo: f.geo, search: search || null })
       .then((r) => { if (!alive) return; if (r?.ok) setRows(r.rows); else { setRows([]); setRowsErr(REASON[r?.reason] || 'Could not load competitor rows.'); } })
       .catch((e) => { console.error('[kit comp rows] failed', e); if (alive) { setRows([]); setRowsErr('Could not load competitor rows.'); } });
     return () => { alive = false; };
-  }, [fNetwork, fVertical, fGeo, search]);
+  }, [f, search]);
+
+  const onToggle = useCallback((group, val) => {
+    setF((prev) => {
+      const cur = prev[group] || [];
+      return { ...prev, [group]: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val] };
+    });
+  }, []);
+  const clearFilters = useCallback(() => setF({ network: [], vertical: [], geo: [] }), []);
+
+  // Facet groups for the rail, from the (our-domains-excluded) comp facets.
+  const groups = useMemo(() => {
+    if (!facets) return [];
+    const mk = (group, title, list) => ({ group, title, vals: list.map((x) => x.value), count: (v) => (list.find((x) => x.value === v)?.total || 0) });
+    return [
+      mk('network', 'Competitor network', facets.networks || []),
+      mk('vertical', 'Vertical', facets.verticals || []),
+      mk('geo', 'Geo', facets.geos || []),
+    ];
+  }, [facets]);
 
   // Assignments for the loaded rows.
   const idsKey = (rows || []).map((r) => r.id).join(',');
@@ -77,7 +95,7 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMsg, setBulkMsg] = useState('');
 
-  useEffect(() => { setSelected(new Set()); lastIdxRef.current = -1; setBulkMsg(''); }, [fNetwork, fVertical, fGeo, search]);
+  useEffect(() => { setSelected(new Set()); lastIdxRef.current = -1; setBulkMsg(''); }, [f, search]);
   useEffect(() => {
     if (!ourDomains || !ourDomains.length || bulkDomain) return;
     const last = ls(LS_DOMAIN, '');
@@ -152,20 +170,8 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
 
   return (
     <div>
-      {/* Filter bar */}
+      {/* Filter bar (facets moved to the left rail below) */}
       <div style={s('display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:56px;padding:10px 24px;background:#0D0E11;border-bottom:1px solid rgba(255,255,255,.09)')}>
-        <select value={fNetwork} onChange={(e) => setFNetwork(e.target.value)} style={sel}>
-          <option value="">All competitor networks</option>
-          {(facets?.networks || []).map((n) => <option key={n.value} value={n.value}>{n.value} ({n.total})</option>)}
-        </select>
-        <select value={fVertical} onChange={(e) => setFVertical(e.target.value)} style={sel}>
-          <option value="">All verticals</option>
-          {(facets?.verticals || []).map((v) => <option key={v.value} value={v.value}>{v.value} ({v.total})</option>)}
-        </select>
-        <select value={fGeo} onChange={(e) => setFGeo(e.target.value)} style={sel}>
-          <option value="">All geos</option>
-          {(facets?.geos || []).map((g) => <option key={g.value} value={g.value}>{g.value} ({g.total})</option>)}
-        </select>
         <input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Search headline / keyword"
           style={s(`flex:1;min-width:180px;background:#0B0C0E;border:1px solid rgba(255,255,255,.1);color:#E7E8EA;font-family:${MONO};font-size:12px;padding:6px 9px;outline:none`)} />
         <ImageSizeToggle value={imgKey} onChange={setImgKey} />
@@ -217,8 +223,10 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
         </div>
       )}
 
-      {/* Rows */}
-      <TableScroll label="clientkits-rsoc">
+      {/* Rail + rows */}
+      <div style={s('display:flex;align-items:stretch')}>
+      <FilterRail groups={groups} filters={f} onToggle={onToggle} onClear={clearFilters} loading={!facets} />
+      <TableScroll label="clientkits-rsoc" style={s('flex:1;min-width:0')}>
         <div style={s(`display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${rowMinW}px`)}>
           {canBuild && (
             <div style={s('width:52px;display:flex;align-items:center;gap:3px')}>
@@ -252,6 +260,7 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
           />
         ))}
       </TableScroll>
+      </div>
 
       {assignFor && (
         <AssignPanel
@@ -272,7 +281,7 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
           title="EXPORT RSOC KIT TO GOOGLE SHEET"
           count={assignedIds.length}
           columnMeta={COMP_KIT_COLUMN_META}
-          defaultTab={`RSOC Kit${fVertical ? ` - ${fVertical}` : ''}`}
+          defaultTab={`RSOC Kit${f.vertical.length === 1 ? ` - ${f.vertical[0]}` : ''}`}
           onExport={({ spreadsheetId, tabName, columnKeys, mode }) => exportCompKitToSheet({ spreadsheetId, tabName, compRowIds: assignedIds, columnKeys, mode })}
           onClose={() => setExportOpen(false)}
         />

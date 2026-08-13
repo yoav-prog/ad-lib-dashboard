@@ -14,6 +14,7 @@ import TableScroll from '@/components/TableScroll';
 import ClientKitsRsoc from '@/components/ClientKitsRsoc';
 import ClientKitsSaved from '@/components/ClientKitsSaved';
 import SelectMenu from '@/components/SelectMenu';
+import FilterRail from '@/components/FilterRail';
 import { AssignPanel, ExportModal, Empty, Mono, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON, IMG_SIZES, ImageSizeToggle } from '@/components/kit-shared';
 import { loadOurDomains, loadOurNetworks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, bulkAssignSisters, exportKitToSheet } from '@/app/actions';
 
@@ -33,16 +34,50 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
   const img = IMG_SIZES.find((z) => z.key === imgKey) || IMG_SIZES[0];
   const rowMinW = 1090 + img.px;   // table min-width grows with the thumbnail
 
-  // The competitor's ads, winners first (revenue, then longevity), search-filtered, and -
-  // when uniqueOnly is on - collapsed so each identical creative appears once (the revenue
-  // sort means the highest-earning instance is the one kept).
+  // Faceted filtering (like Fresh Finds): multi-select vertical / country / language /
+  // format + a Days-running range, computed over this competitor's ads.
+  const [f, setF] = useState({ vertical: [], country: [], language: [], format: [] });
+  const [daysMin, setDaysMin] = useState('');
+  const [daysMax, setDaysMax] = useState('');
+  const onToggle = useCallback((g, v) => setF((p) => { const c = p[g] || []; return { ...p, [g]: c.includes(v) ? c.filter((x) => x !== v) : [...c, v] }; }), []);
+  const clearFilters = useCallback(() => { setF({ vertical: [], country: [], language: [], format: [] }); setDaysMin(''); setDaysMax(''); }, []);
+  useEffect(() => { setF({ vertical: [], country: [], language: [], format: [] }); setDaysMin(''); setDaysMax(''); }, [active]);
+
+  const fmtOf = (a) => a.display_format || (isVideo(a) ? 'VIDEO' : 'IMAGE');
+  const langOf = (a) => langCode(a.creative_language || a.language) || '';
+  const domAds = useMemo(() => ads.filter((a) => a.domain === active), [ads, active]);
+
+  const groups = useMemo(() => {
+    const facet = (get) => { const m = new Map(); for (const a of domAds) { const v = get(a); if (v) m.set(v, (m.get(v) || 0) + 1); } return m; };
+    const mk = (group, title, m) => ({ group, title, vals: [...m.keys()].sort((x, y) => m.get(y) - m.get(x)), count: (v) => m.get(v) || 0 });
+    return [
+      mk('vertical', 'Vertical', facet((a) => a.vertical)),
+      mk('country', 'Country', facet((a) => a.country)),
+      mk('language', 'Language', facet(langOf)),
+      mk('format', 'Format', facet(fmtOf)),
+    ];
+  }, [domAds]);
+
+  // The competitor's ads, winners first (revenue, then longevity), search + facet filtered,
+  // and - when uniqueOnly is on - collapsed so each identical creative appears once.
   const list = useMemo(() => {
     const rev = (a) => (a.sheet_revenue == null || a.sheet_revenue === '' ? -1 : Number(a.sheet_revenue));
-    const sorted = ads
-      .filter((a) => a.domain === active && matchesQuery(a))
-      .sort((x, y) => rev(y) - rev(x) || daysRunning(y, NOW) - daysRunning(x, NOW));
+    const dmin = daysMin === '' ? null : Number(daysMin);
+    const dmax = daysMax === '' ? null : Number(daysMax);
+    const ok = (a) => {
+      if (!matchesQuery(a)) return false;
+      if (f.vertical.length && !f.vertical.includes(a.vertical)) return false;
+      if (f.country.length && !f.country.includes(a.country)) return false;
+      if (f.language.length && !f.language.includes(langOf(a))) return false;
+      if (f.format.length && !f.format.includes(fmtOf(a))) return false;
+      const d = daysRunning(a, NOW);
+      if (dmin != null && d < dmin) return false;
+      if (dmax != null && d > dmax) return false;
+      return true;
+    };
+    const sorted = domAds.filter(ok).sort((x, y) => rev(y) - rev(x) || daysRunning(y, NOW) - daysRunning(x, NOW));
     return uniqueOnly ? dedupeBy(sorted, creativeKey) : sorted;
-  }, [ads, active, matchesQuery, NOW, uniqueOnly]);
+  }, [domAds, matchesQuery, NOW, uniqueOnly, f, daysMin, daysMax]);
 
   // assignments: ad_archive_id -> { our_url, our_domain, our_headline, ... }
   const [assignments, setAssignments] = useState({});
@@ -261,8 +296,12 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
         </div>
       )}
 
-      {/* Column head + rows */}
-      <TableScroll label="clientkits">
+      {/* Rail + rows */}
+      <div style={s('display:flex;align-items:stretch')}>
+      <FilterRail groups={groups} filters={f} onToggle={onToggle}
+        ranges={[{ key: 'days', title: 'Days Running', min: daysMin, max: daysMax, onMin: setDaysMin, onMax: setDaysMax }]}
+        onClear={clearFilters} />
+      <TableScroll label="clientkits" style={s('flex:1;min-width:0')}>
         <div style={s(`display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${rowMinW}px`)}>
           {canBuild && (
             <div style={s('width:52px;display:flex;align-items:center;gap:3px')}>
@@ -292,9 +331,10 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
           />
         ))}
         {list.length === 0 && (
-          <div style={s('padding:40px 24px;text-align:center;color:#5A5E64;font-size:12px')}>No ads match your search for this competitor.</div>
+          <div style={s('padding:40px 24px;text-align:center;color:#5A5E64;font-size:12px')}>No ads match your filters for this competitor.</div>
         )}
       </TableScroll>
+      </div>
 
       {assignFor && (
         <AssignPanel

@@ -155,10 +155,15 @@ export async function getCompFacets() {
 
 // Competitor rows on real http(s) landings, our own domains excluded, filtered by
 // competitor network / vertical / geo / free-text, highest revenue first, capped.
+// network / vertical / geo accept a single value or an array (multi-select from the rail).
 export async function searchCompRows({ network, vertical, geo, search, limit = 200 } = {}) {
   const cap = Math.min(500, Math.max(1, Number(limit) || 200));
   const s = String(search || '').trim();
   const like = s ? `%${s}%` : null;
+  const arr = (v) => (Array.isArray(v) ? v : v ? [v] : []).map(String).filter(Boolean);
+  const nets = arr(network).map((x) => x.toLowerCase());
+  const verts = arr(vertical);
+  const geos = arr(geo).map((x) => x.toUpperCase());
   const sql = getArticlesSql();
   const notOurs = notOursSql(sql);
   const rows = await sql`
@@ -166,15 +171,15 @@ export async function searchCompRows({ network, vertical, geo, search, limit = 2
     from ref_comp_rows
     where url like 'http%'
       and ${notOurs}
-      ${network ? sql`and lower(network) = ${String(network).toLowerCase()}` : sql``}
-      ${vertical ? sql`and vertical = ${String(vertical)}` : sql``}
-      ${geo ? sql`and upper(geo) = ${String(geo).toUpperCase()}` : sql``}
+      ${nets.length ? sql`and lower(network) = any(${nets})` : sql``}
+      ${verts.length ? sql`and vertical = any(${verts})` : sql``}
+      ${geos.length ? sql`and upper(geo) = any(${geos})` : sql``}
       ${like ? sql`and (adtitle ilike ${like} or top_keywords::text ilike ${like})` : sql``}
     order by revenue desc nulls last, id desc
     limit ${cap}
   `;
   console.info('[articles db] comp rows searched', {
-    network: network || null, vertical: vertical || null, geo: geo || null, search: s || null, returned: rows.length,
+    networks: nets.length, verticals: verts.length, geos: geos.length, search: s || null, returned: rows.length,
   });
   return rows.map(mapCompRow);
 }
