@@ -42,7 +42,7 @@ export async function listOurDomains() {
   const rows = await sql`
     select domain, count(*)::int as total
     from articles
-    where domain is not null and url like 'http%'
+    where domain is not null and url like 'http%' and is_external = false
     group by domain
     order by total desc, domain asc
   `;
@@ -64,7 +64,7 @@ export async function listOurNetworks() {
   const rows = await sql`
     select network, count(*)::int as total
     from articles
-    where network is not null and network <> '' and url like 'http%'
+    where network is not null and network <> '' and url like 'http%' and is_external = false
     group by network
     order by total desc, network asc
   `;
@@ -92,6 +92,7 @@ export async function searchOurLinks({ domain, network, language, country, searc
     from articles
     where domain = ${dom}
       and url like 'http%'
+      and is_external = false
       ${net ? sql`and lower(network) = ${net.toLowerCase()}` : sql``}
       ${language ? sql`and lower(language) = ${String(language).toLowerCase()}` : sql``}
       ${country ? sql`and upper(country) = ${String(country).toUpperCase()}` : sql``}
@@ -117,4 +118,95 @@ export async function searchOurLinks({ domain, network, language, country, searc
     keyword: r.keyword,
     published_at: r.published_at ? new Date(r.published_at).toISOString() : null,
   }));
+}
+
+// ── RSOC competitor rows (ref_comp_rows) ───────────────────────────────────────
+// The competitor intelligence Maya's workflow actually uses: network / vertical / geo /
+// adtitle / revenue / RPC / keywords. It shares the articles DB with our own links, so we
+// exclude any competitor row that lives on one of OUR domains right in SQL (the sheet's
+// "Exclude Aporia" step) - a row's host is pulled from its url and checked against the set
+// of our article domains. Both facets and search apply the same exclusion so counts match.
+// notOursSql builds that condition as a raw sql`` fragment (no user input), the same way
+// lib/queries.js composes its conditional clauses. "Ours" is articles.is_external = false
+// (our own ~46 domains); external=true rows are competitor domains and must NOT be treated
+// as ours, so the exclusion set is is_external=false domains only.
+const notOursSql = (sql) => sql`lower(regexp_replace(substring(url from '://([^/]+)'), '^www\\.', '')) not in (select distinct lower(domain) from articles where is_external = false and domain is not null)`;
+const compFacetsCache = createTtlCache(10 * 60 * 1000);
+
+export async function getCompFacets() {
+  const hit = compFacetsCache.peek();
+  if (hit) return hit.value;
+  const sql = getArticlesSql();
+  const notOurs = notOursSql(sql);
+  const [networks, verticals, geos] = await Promise.all([
+    sql`select network as v, count(*)::int as n from ref_comp_rows where url like 'http%' and ${notOurs} and network is not null group by network order by n desc`,
+    sql`select vertical as v, count(*)::int as n from ref_comp_rows where url like 'http%' and ${notOurs} and vertical is not null group by vertical order by n desc limit 100`,
+    sql`select geo as v, count(*)::int as n from ref_comp_rows where url like 'http%' and ${notOurs} and geo is not null group by geo order by n desc`,
+  ]);
+  const out = {
+    networks: networks.map((r) => ({ value: r.v, total: r.n })),
+    verticals: verticals.map((r) => ({ value: r.v, total: r.n })),
+    geos: geos.map((r) => ({ value: r.v, total: r.n })),
+  };
+  compFacetsCache.fill(out);
+  console.info('[articles db] comp facets', { networks: out.networks.length, verticals: out.verticals.length, geos: out.geos.length });
+  return out;
+}
+
+// Competitor rows on real http(s) landings, our own domains excluded, filtered by
+// competitor network / vertical / geo / free-text, highest revenue first, capped.
+export async function searchCompRows({ network, vertical, geo, search, limit = 200 } = {}) {
+  const cap = Math.min(500, Math.max(1, Number(limit) || 200));
+  const s = String(search || '').trim();
+  const like = s ? `%${s}%` : null;
+  const sql = getArticlesSql();
+  const notOurs = notOursSql(sql);
+  const rows = await sql`
+    select id, network, adtitle, url, revenue, clicks, rpc, top_keywords, vertical, geo
+    from ref_comp_rows
+    where url like 'http%'
+      and ${notOurs}
+      ${network ? sql`and lower(network) = ${String(network).toLowerCase()}` : sql``}
+      ${vertical ? sql`and vertical = ${String(vertical)}` : sql``}
+      ${geo ? sql`and upper(geo) = ${String(geo).toUpperCase()}` : sql``}
+      ${like ? sql`and (adtitle ilike ${like} or top_keywords::text ilike ${like})` : sql``}
+    order by revenue desc nulls last, id desc
+    limit ${cap}
+  `;
+  console.info('[articles db] comp rows searched', {
+    network: network || null, vertical: vertical || null, geo: geo || null, search: s || null, returned: rows.length,
+  });
+  return rows.map(mapCompRow);
+}
+
+function mapCompRow(r) {
+  return {
+    id: r.id,
+    network: r.network,
+    adtitle: r.adtitle,
+    url: r.url,
+    revenue: r.revenue != null ? Number(r.revenue) : null,
+    clicks: r.clicks != null ? Number(r.clicks) : null,
+    rpc: r.rpc != null ? Number(r.rpc) : null,
+    top_keywords: Array.isArray(r.top_keywords) ? r.top_keywords.join(', ') : (r.top_keywords == null ? '' : String(r.top_keywords)),
+    vertical: r.vertical,
+    geo: r.geo,
+  };
+}
+
+// Comp rows by id, server-authoritative, for bulk assign and export (so matching and the
+// exported values never trust client-sent fields). Preserves the given id order.
+export async function getCompRowsByIds(ids) {
+  const clean = (Array.isArray(ids) ? ids : [])
+    .map((x) => Math.trunc(Number(x)))
+    .filter((n) => Number.isFinite(n));
+  if (!clean.length) return [];
+  const uniq = [...new Set(clean)];
+  const sql = getArticlesSql();
+  const rows = await sql`
+    select id, network, adtitle, url, revenue, clicks, rpc, top_keywords, vertical, geo
+    from ref_comp_rows where id = any(${uniq})
+  `;
+  const byId = new Map(rows.map((r) => [r.id, mapCompRow(r)]));
+  return uniq.map((id) => byId.get(id)).filter(Boolean);
 }

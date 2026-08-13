@@ -571,6 +571,36 @@ export async function getAssignmentsByAdIds(adIds) {
   return byAd;
 }
 
+// Client Kits (RSOC source): the our-link assignment for each of the given competitor
+// comp rows (ref_comp_rows ids), keyed by comp_row_id. Same shape as the Meta version.
+export async function getAssignmentsByCompIds(compIds) {
+  const clean = (Array.isArray(compIds) ? compIds : [])
+    .map((x) => Math.trunc(Number(x)))
+    .filter((n) => Number.isFinite(n));
+  if (!clean.length) return {};
+  const ids = [...new Set(clean)];
+  const sql = getSql();
+  const rows = await sql`
+    select comp_row_id, our_url, our_domain, our_headline, our_article_id, assigned_by, assigned_at
+    from link_assignments
+    where comp_row_id = any(${ids})
+    order by assigned_at asc
+  `;
+  const byComp = {};
+  for (const r of rows) {
+    byComp[r.comp_row_id] = {
+      comp_row_id: r.comp_row_id,
+      our_url: r.our_url,
+      our_domain: r.our_domain,
+      our_headline: r.our_headline,
+      our_article_id: r.our_article_id,
+      assigned_by: r.assigned_by,
+      assigned_at: iso(r.assigned_at),
+    };
+  }
+  return byComp;
+}
+
 // The our-link URLs already handed out on a given domain, so the articles-DB search can
 // exclude them and only ever offer links that are still available. Scoped to one domain
 // keeps the excluded array small even as the ledger grows.

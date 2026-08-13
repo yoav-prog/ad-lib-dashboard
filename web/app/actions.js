@@ -3,11 +3,11 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignedUrlsForDomain } from '@/lib/queries';
+import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
-import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment } from '@/lib/ui';
+import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
-import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, articlesConfigured } from '@/lib/articles';
+import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, articlesConfigured } from '@/lib/articles';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url', 'brand'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
@@ -807,6 +807,183 @@ export async function exportKitToSheet({ spreadsheetId, tabName, adIds, columnKe
   try {
     const result = await writeToSheet({ spreadsheetId: id, tabName: tab, columns, rows, mode: writeMode }, Date.now());
     console.info('[kit export]', { rows: rows.length, tab, mode: writeMode });
+    return { ok: true, saEmail, sheetUrl: `https://docs.google.com/spreadsheets/d/${id}`, ...result };
+  } catch (e) {
+    return { ok: false, reason: e.code === 'PERMISSION' ? 'permission' : 'error', message: String(e.message || e), saEmail };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLIENT KITS - RSOC competitor source (ref_comp_rows)
+// ═══════════════════════════════════════════════════════════════════════════════
+// The competitor data Maya's workflow actually uses: RSOC rows (network/vertical/geo/
+// adtitle/revenue/RPC/keywords), our own domains excluded. Assignments key on comp_row_id
+// (source='rsoc'); global link availability (unique our_url) is shared with the Meta source.
+
+export async function loadCompFacets() {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
+  try {
+    return { ok: true, facets: await getCompFacets() };
+  } catch (e) {
+    console.error('[kit comp facets] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
+}
+
+export async function loadCompRows({ network, vertical, geo, search } = {}) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
+  try {
+    const rows = await searchCompRows({
+      network: network || null, vertical: vertical || null, geo: geo || null, search: search || null, limit: 200,
+    });
+    return { ok: true, rows };
+  } catch (e) {
+    console.error('[kit comp rows] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
+}
+
+export async function loadCompAssignments(compRowIds) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  if (!Array.isArray(compRowIds) || !compRowIds.length) return { ok: true, assignments: {} };
+  return { ok: true, assignments: await getAssignmentsByCompIds(compRowIds.slice(0, 2000)) };
+}
+
+// Assign our link to one RSOC comp row (replaces any prior assignment for that row).
+export async function assignOurLinkToComp({ compRowId, url, domain, headline, articleId } = {}) {
+  await requireCapability('export_data');
+  const cid = Math.trunc(Number(compRowId));
+  const u = String(url || '').trim();
+  const dom = String(domain || '').trim().slice(0, 255);
+  if (!Number.isFinite(cid)) return { ok: false, reason: 'no-ad' };
+  if (!KIT_URL_RE.test(u) || u.length > 2048) return { ok: false, reason: 'bad-url' };
+  if (!dom) return { ok: false, reason: 'no-domain' };
+  const head = headline ? String(headline).slice(0, 500) : null;
+  const artId = Number.isFinite(Number(articleId)) ? Math.trunc(Number(articleId)) : null;
+  const by = (await getCurrentUser())?.email || null;
+  const sql = getSql();
+  try {
+    await sql.begin(async (tx) => {
+      await tx`delete from link_assignments where comp_row_id = ${cid}`;
+      await tx`
+        insert into link_assignments (comp_row_id, source, our_url, our_domain, our_headline, our_article_id, assigned_by)
+        values (${cid}, 'rsoc', ${u}, ${dom}, ${head}, ${artId}, ${by})
+      `;
+    });
+  } catch (e) {
+    if (e.code === '23505' || String(e.message || e).toLowerCase().includes('unique')) {
+      console.warn('[kit comp assign] link already taken', { compRowId: cid, domain: dom });
+      return { ok: false, reason: 'taken' };
+    }
+    console.error('[kit comp assign] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
+  console.info('[kit comp assign]', { compRowId: cid, domain: dom, articleId: artId });
+  revalidatePath('/');
+  return { ok: true };
+}
+
+export async function unassignFromComp({ compRowId } = {}) {
+  await requireCapability('export_data');
+  const cid = Math.trunc(Number(compRowId));
+  if (!Number.isFinite(cid)) return { ok: false, reason: 'no-ad' };
+  const sql = getSql();
+  const rows = await sql`delete from link_assignments where comp_row_id = ${cid} returning our_url`;
+  console.info('[kit comp unassign]', { compRowId: cid, removed: rows.length });
+  revalidatePath('/');
+  return { ok: true, removed: rows.length };
+}
+
+// Bulk-assign our links to many RSOC comp rows. Comp rows are re-read server-side by id, so
+// matching (via geo->language) and the persisted values never trust client fields. Highest-
+// revenue rows should be sent first so they pick the best links.
+export async function bulkAssignToComp({ compRowIds, domain, network, matchByAd = true } = {}) {
+  await requireCapability('export_data');
+  if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
+  const dom = String(domain || '').trim();
+  if (!dom) return { ok: false, reason: 'no-domain' };
+  const ids = [...new Set((Array.isArray(compRowIds) ? compRowIds : []).map((x) => Math.trunc(Number(x))).filter((n) => Number.isFinite(n)))].slice(0, 200);
+  if (!ids.length) return { ok: false, reason: 'no-rows' };
+  const by = (await getCurrentUser())?.email || null;
+
+  try {
+    const [rows, existing, taken] = await Promise.all([
+      getCompRowsByIds(ids),          // server-authoritative, in the given (revenue) order
+      getAssignmentsByCompIds(ids),
+      getAssignedUrlsForDomain(dom),
+    ]);
+    const targets = rows.filter((r) => !existing[r.id]);
+    const alreadyHad = rows.length - targets.length;
+    if (!targets.length) return { ok: true, assigned: {}, matched: 0, noLink: [], alreadyHad };
+
+    // Adapt comp rows to the { language, country, vertical } shape the matcher understands.
+    const subjects = targets.map((r) => ({ ...compToSubject(r), _compId: r.id }));
+    const pool = await searchArticleLinks({ domain: dom, network: network || null, excludeUrls: taken, limit: 1000 });
+    const { assigned, unassigned } = planBulkAssignment(subjects, pool, { taken, requireLangMatch: matchByAd });
+    if (!assigned.length) {
+      return { ok: true, assigned: {}, matched: 0, noLink: unassigned.map((a) => a._compId), alreadyHad };
+    }
+
+    const sql = getSql();
+    await sql.begin(async (tx) => {
+      for (const { ad, link } of assigned) {
+        await tx`
+          insert into link_assignments (comp_row_id, source, our_url, our_domain, our_headline, our_article_id, assigned_by)
+          values (${ad._compId}, 'rsoc', ${link.url}, ${link.domain || dom}, ${link.headline || null},
+                  ${Number.isFinite(Number(link.id)) ? Math.trunc(Number(link.id)) : null}, ${by})
+          on conflict (our_url) do nothing
+        `;
+      }
+    });
+    const fresh = await getAssignmentsByCompIds(assigned.map(({ ad }) => ad._compId));
+    console.info('[kit comp bulk]', { domain: dom, network: network || null, targets: targets.length, matched: Object.keys(fresh).length, noLink: unassigned.length, alreadyHad });
+    revalidatePath('/');
+    return { ok: true, assigned: fresh, matched: Object.keys(fresh).length, noLink: unassigned.map((a) => a._compId), alreadyHad };
+  } catch (e) {
+    console.error('[kit comp bulk] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
+}
+
+// Export an RSOC client kit: each competitor comp row beside OUR assigned link, the
+// competitor's own URL omitted by construction (COMP_KIT_COLUMNS). Only rows that HAVE an
+// assignment are written.
+export async function exportCompKitToSheet({ spreadsheetId, tabName, compRowIds, columnKeys, mode } = {}) {
+  await requireCapability('export_data');
+  const id = String(spreadsheetId || '').trim();
+  const tab = String(tabName || '').trim();
+  const saEmail = serviceAccountEmail();
+  if (!SHEET_ID_RE.test(id)) return { ok: false, reason: 'bad-id', saEmail };
+  if (!tab) return { ok: false, reason: 'no-tab', saEmail };
+  if (!Array.isArray(compRowIds) || !compRowIds.length) return { ok: false, reason: 'no-rows', saEmail };
+  if (!sheetsConfigured()) return { ok: false, reason: 'not-configured', saEmail };
+
+  const allowed = new Set(DEFAULT_COMP_KIT_COLUMN_KEYS);
+  const keys = Array.isArray(columnKeys) ? columnKeys.filter((k) => allowed.has(k)) : [];
+  if (Array.isArray(columnKeys) && !keys.length) return { ok: false, reason: 'no-columns', saEmail };
+  const writeMode = mode === 'replace' ? 'replace' : 'append';
+
+  const ids = [...new Set(compRowIds.map((x) => Math.trunc(Number(x))).filter((n) => Number.isFinite(n)))];
+  const rows0 = await getCompRowsByIds(ids);
+  if (!rows0.length) return { ok: false, reason: 'no-rows', saEmail };
+  const assignments = await getAssignmentsByCompIds(ids);
+  const joined = rows0
+    .map((r) => {
+      const asg = assignments[r.id];
+      return asg ? { ...r, our_url: asg.our_url, our_domain: asg.our_domain, our_headline: asg.our_headline } : null;
+    })
+    .filter(Boolean);
+  if (!joined.length) return { ok: false, reason: 'no-assignments', saEmail };
+
+  const { columns, rows } = buildSheetData(joined, Date.now(), keys.length ? keys : DEFAULT_COMP_KIT_COLUMN_KEYS, COMP_KIT_COLUMNS);
+  try {
+    const result = await writeToSheet({ spreadsheetId: id, tabName: tab, columns, rows, mode: writeMode }, Date.now());
+    console.info('[kit comp export]', { rows: rows.length, tab, mode: writeMode });
     return { ok: true, saEmail, sheetUrl: `https://docs.google.com/spreadsheets/d/${id}`, ...result };
   } catch (e) {
     return { ok: false, reason: e.code === 'PERMISSION' ? 'permission' : 'error', message: String(e.message || e), saEmail };
