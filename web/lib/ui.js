@@ -369,6 +369,27 @@ export function availableLinks(links, assignedUrls) {
   return (links || []).filter((l) => !taken.has(String(l.url)));
 }
 
+// Plan a bulk assignment: give each ad its best available link from a shared pool, never
+// handing the same link to two ads in the batch. Pure, so the greedy allocation is
+// testable without a DB. `taken` seeds URLs already used elsewhere (globally assigned on
+// the domain). With `requireLangMatch` (the default), an ad is only given a link in its
+// own language - country and vertical still rank within that - so a fast "assign to this
+// domain" never pairs an English ad with a French article. Ads left with no eligible link
+// come back in `unassigned` rather than being forced a mismatch.
+export function planBulkAssignment(ads, links, { taken = [], requireLangMatch = true } = {}) {
+  const used = new Set((taken || []).map(String));
+  const assigned = [];
+  const unassigned = [];
+  for (const ad of ads || []) {
+    const adLang = langCode(ad.creative_language || ad.language);
+    const pool = (links || []).filter((l) => !used.has(String(l.url)) && (!requireLangMatch || (adLang && langCode(l.language) === adLang)));
+    const pick = rankLinks(ad, pool)[0];
+    if (pick) { used.add(String(pick.url)); assigned.push({ ad, link: pick }); }
+    else unassigned.push(ad);
+  }
+  return { assigned, unassigned };
+}
+
 const cellText = (c, a, now) => { const v = c.get(a, now); return v == null ? '' : String(v); };
 
 // Build a CSV string from ad rows. Uses the same catalog as the Sheet, minus the

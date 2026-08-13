@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
 import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignedUrlsForDomain } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
-import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS } from '@/lib/ui';
+import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
 import { listOurDomains, searchOurLinks as searchArticleLinks, articlesConfigured } from '@/lib/articles';
 
@@ -685,6 +685,62 @@ export async function assignOurLink({ adId, url, domain, headline, articleId } =
   console.info('[kit assign]', { adId: ad, domain: dom, articleId: artId });
   revalidatePath('/');
   return { ok: true };
+}
+
+// Assign our links to many competitor ads at once: for each SELECTED ad still without an
+// assignment, pick the best available link on the chosen domain, never repeating a link
+// within the batch. Ads that already have a link are left untouched; ads with no eligible
+// link on that domain are reported so the UI can say so. Capped so one click can't fan out
+// unbounded work. Returns the assignments that landed (same shape as loadKitAssignments)
+// for an in-place UI update.
+export async function bulkAssignOurLinks({ adIds, domain, matchByAd = true } = {}) {
+  await requireCapability('export_data');
+  if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
+  const dom = String(domain || '').trim();
+  if (!dom) return { ok: false, reason: 'no-domain' };
+  if (!Array.isArray(adIds) || !adIds.length) return { ok: false, reason: 'no-rows' };
+  const ids = [...new Set(adIds.map(String))].slice(0, 200);
+  const by = (await getCurrentUser())?.email || null;
+
+  try {
+    const [ads, existing, taken] = await Promise.all([
+      getAdsByIds(ids),                    // preserves the caller's order, so top rows pick first
+      getAssignmentsByAdIds(ids),
+      getAssignedUrlsForDomain(dom),
+    ]);
+    const targets = ads.filter((a) => !existing[a.ad_archive_id]);
+    const alreadyHad = ads.length - targets.length;
+    if (!targets.length) return { ok: true, assigned: {}, matched: 0, noLink: [], alreadyHad };
+
+    // One generous pool for the domain; the pure planner ranks per-ad and keeps links
+    // distinct, so an English ad gets an English link and no two ads share one.
+    const pool = await searchArticleLinks({ domain: dom, excludeUrls: taken, limit: 1000 });
+    const { assigned, unassigned } = planBulkAssignment(targets, pool, { taken, requireLangMatch: matchByAd });
+    if (!assigned.length) {
+      return { ok: true, assigned: {}, matched: 0, noLink: unassigned.map((a) => a.ad_archive_id), alreadyHad };
+    }
+
+    const sql = getSql();
+    await sql.begin(async (tx) => {
+      for (const { ad, link } of assigned) {
+        await tx`
+          insert into link_assignments (ad_archive_id, our_url, our_domain, our_headline, our_article_id, assigned_by)
+          values (${ad.ad_archive_id}, ${link.url}, ${link.domain || dom}, ${link.headline || null},
+                  ${Number.isFinite(Number(link.id)) ? Math.trunc(Number(link.id)) : null}, ${by})
+          on conflict (our_url) do nothing
+        `;
+      }
+    });
+
+    // Re-read to reflect exactly what landed (a concurrent grab could skip one via on-conflict).
+    const fresh = await getAssignmentsByAdIds(assigned.map(({ ad }) => ad.ad_archive_id));
+    console.info('[kit bulk assign]', { domain: dom, requested: ids.length, targets: targets.length, matched: Object.keys(fresh).length, noLink: unassigned.length, alreadyHad });
+    revalidatePath('/');
+    return { ok: true, assigned: fresh, matched: Object.keys(fresh).length, noLink: unassigned.map((a) => a.ad_archive_id), alreadyHad };
+  } catch (e) {
+    console.error('[kit bulk assign] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
 }
 
 // Remove a competitor ad's our-link assignment, freeing that link back to available.

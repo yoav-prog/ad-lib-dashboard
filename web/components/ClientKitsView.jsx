@@ -5,11 +5,11 @@
 // competitor's. Our links come from the read-only articles DB (via server actions);
 // which link is taken is remembered in the adintel DB. The export writes the creative +
 // our link with the competitor's own URL columns dropped by construction (KIT_COLUMNS).
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, thumbOf, isVideo, daysRunning, fmtDec, langCode, rankLinks, parseSheetId, KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
-import { loadOurDomains, searchOurLinks, loadKitAssignments, assignOurLink, unassignOurLink, exportKitToSheet } from '@/app/actions';
+import { loadOurDomains, searchOurLinks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, exportKitToSheet } from '@/app/actions';
 
 const LS_DOMAIN = 'adintel.kit.ourdomain';
 const LS_SHEET_ID = 'adintel.kit.sheetid';
@@ -73,6 +73,61 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
 
   const assignedIds = useMemo(() => list.map((a) => a.ad_archive_id).filter((id) => assignments[id]), [list, assignments]);
 
+  // ── multi-select + bulk assign ──────────────────────────────────────────────
+  const [selected, setSelected] = useState(() => new Set());
+  const lastIdxRef = useRef(-1);
+  const [bulkDomain, setBulkDomain] = useState('');
+  const [bulkMatch, setBulkMatch] = useState(true);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMsg, setBulkMsg] = useState('');
+
+  // Switching competitor starts a fresh selection (ids from one list never carry over).
+  useEffect(() => { setSelected(new Set()); lastIdxRef.current = -1; setBulkMsg(''); }, [active]);
+
+  // Default the bulk domain once our domains load (remembering the last one used).
+  useEffect(() => {
+    if (!ourDomains || !ourDomains.length || bulkDomain) return;
+    const last = ls(LS_DOMAIN, '');
+    setBulkDomain(last && ourDomains.some((d) => d.domain === last) ? last : ourDomains[0].domain);
+  }, [ourDomains, bulkDomain]);
+
+  const toggleSel = useCallback((id, shift) => {
+    const idx = list.findIndex((a) => a.ad_archive_id === id);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (shift && lastIdxRef.current >= 0 && idx >= 0) {
+        const [lo, hi] = [lastIdxRef.current, idx].sort((x, y) => x - y);
+        const add = !prev.has(id);   // extend using the state the clicked row is moving to
+        for (let i = lo; i <= hi; i++) { const rid = list[i].ad_archive_id; if (add) next.add(rid); else next.delete(rid); }
+      } else if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    lastIdxRef.current = idx;
+  }, [list]);
+
+  const allSelected = list.length > 0 && list.every((a) => selected.has(a.ad_archive_id));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(list.map((a) => a.ad_archive_id)));
+
+  const runBulk = async () => {
+    if (bulkBusy || !bulkDomain || !selected.size) return;
+    setBulkBusy(true); setBulkMsg('');
+    // Send ids in the on-screen (revenue) order so top earners get first pick of links.
+    const orderedIds = list.map((a) => a.ad_archive_id).filter((id) => selected.has(id));
+    try {
+      const r = await bulkAssignOurLinks({ adIds: orderedIds, domain: bulkDomain, matchByAd: bulkMatch });
+      if (r?.ok) {
+        setAssignments((p) => ({ ...p, ...r.assigned }));
+        setLs(LS_DOMAIN, bulkDomain);
+        const parts = [`Assigned ${r.matched}`];
+        if (r.alreadyHad) parts.push(`${r.alreadyHad} already had a link`);
+        if (r.noLink?.length) parts.push(`${r.noLink.length} had no ${bulkMatch ? 'matching ' : ''}link on ${bulkDomain}`);
+        setBulkMsg(parts.join(' · ') + '.');
+        setSelected(new Set());
+      } else setBulkMsg(REASON[r?.reason] || 'Bulk assign failed.');
+    } catch (e) { console.error('[kit bulk] failed', e); setBulkMsg('Bulk assign failed.'); }
+    setBulkBusy(false);
+  };
+
   if (notConfigured) {
     return (
       <Empty>
@@ -115,9 +170,42 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
         )}
       </div>
 
+      {/* Bulk-assign bar: appears when rows are selected (or a result is waiting to be read) */}
+      {canBuild && (selected.size > 0 || bulkMsg) && (
+        <div style={s('display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 24px;background:#12100B;border-bottom:1px solid rgba(232,163,61,.25)')}>
+          {selected.size > 0 ? (
+            <>
+              <span style={s(`font-family:${MONO};font-size:11px;color:${A};font-variant-numeric:tabular-nums`)}>{selected.size} selected</span>
+              <span style={s('font-size:11px;color:#8A8E94')}>assign each to</span>
+              <select value={bulkDomain} onChange={(e) => setBulkDomain(e.target.value)}
+                style={s(`background:#101216;border:1px solid rgba(255,255,255,.14);color:#E7E8EA;font-family:${MONO};font-size:11px;padding:5px 8px;outline:none`)}>
+                {ourDomains == null && <option value="">loading domains...</option>}
+                {(ourDomains || []).map((d) => <option key={d.domain} value={d.domain}>{d.domain} ({d.total})</option>)}
+              </select>
+              <label style={s('display:flex;align-items:center;gap:6px;font-size:11px;color:#9CA0A6;cursor:pointer')}>
+                <input type="checkbox" checked={bulkMatch} onChange={(e) => setBulkMatch(e.target.checked)} /> match language
+              </label>
+              <button onClick={runBulk} disabled={bulkBusy || !bulkDomain}
+                style={s(`font-family:${MONO};font-size:10px;letter-spacing:.4px;color:#0B0C0E;background:${A};border:none;padding:7px 14px;cursor:${bulkBusy || !bulkDomain ? 'default' : 'pointer'};opacity:${bulkBusy || !bulkDomain ? '.6' : '1'}`)}>
+                {bulkBusy ? 'ASSIGNING...' : 'ASSIGN TO DOMAIN'}
+              </button>
+              <button onClick={() => setSelected(new Set())} style={miniBtn('#8A8E94')}>CLEAR</button>
+            </>
+          ) : (
+            <button onClick={() => setBulkMsg('')} style={miniBtn('#8A8E94')}>DISMISS</button>
+          )}
+          {bulkMsg && <span style={s('font-size:11px;color:#86C99A')}>{bulkMsg}</span>}
+        </div>
+      )}
+
       {/* Column head */}
       <TableScroll label="clientkits">
-        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:980px')}>
+        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1010px')}>
+          {canBuild && (
+            <div style={s('width:30px;display:flex;align-items:center')}>
+              <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all in this list" style={s('cursor:pointer')} />
+            </div>
+          )}
           <div style={s('width:64px')} />
           <div style={s('flex:1')}>Competitor Creative</div>
           <div style={s('width:70px;text-align:right')}>Days</div>
@@ -129,6 +217,8 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
           <KitRow
             key={a.ad_archive_id} ad={a} NOW={NOW} canBuild={canBuild}
             assignment={assignments[a.ad_archive_id]}
+            selected={selected.has(a.ad_archive_id)}
+            onToggle={(shift) => toggleSel(a.ad_archive_id, shift)}
             onAssignClick={() => setAssignFor(a)}
             onUnassign={onUnassigned}
           />
@@ -157,7 +247,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
 }
 
 // ── one competitor ad, with its our-link cell ─────────────────────────────────
-function KitRow({ ad, NOW, canBuild, assignment, onAssignClick, onUnassign }) {
+function KitRow({ ad, NOW, canBuild, assignment, selected = false, onToggle, onAssignClick, onUnassign }) {
   const [busy, setBusy] = useState(false);
   const days = daysRunning(ad, NOW);
   const thumb = thumbOf(ad);
@@ -173,7 +263,13 @@ function KitRow({ ad, NOW, canBuild, assignment, onAssignClick, onUnassign }) {
   };
 
   return (
-    <div style={s('display:flex;align-items:center;min-height:70px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:980px')}>
+    <div style={s(`display:flex;align-items:center;min-height:70px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:1010px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
+      {canBuild && (
+        <div style={s('width:30px;display:flex;align-items:center')}>
+          <input type="checkbox" checked={selected} onChange={() => {}}
+            onClick={(e) => onToggle?.(e.shiftKey)} style={s('cursor:pointer')} />
+        </div>
+      )}
       <div style={s('width:64px')}>
         {thumb
           ? <img src={thumb} alt="" style={s('width:48px;height:48px;object-fit:cover;background:#141619;border:1px solid rgba(255,255,255,.08)')} />

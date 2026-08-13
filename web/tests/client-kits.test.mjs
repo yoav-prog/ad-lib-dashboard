@@ -4,7 +4,7 @@
 // what link a client sees, so they are pinned here rather than trusted to review.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreLink, rankLinks, availableLinks, buildSheetData, KIT_COLUMNS, KIT_COLUMN_META, DEFAULT_KIT_COLUMN_KEYS } from '../lib/ui.js';
+import { scoreLink, rankLinks, availableLinks, planBulkAssignment, buildSheetData, KIT_COLUMNS, KIT_COLUMN_META, DEFAULT_KIT_COLUMN_KEYS } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 7, 13);
 
@@ -57,6 +57,64 @@ test('KIT_COLUMNS never leaks a competitor URL and always carries our link', () 
   for (const need of ['Our Domain', 'Our Link', 'Our Headline']) assert.ok(headers.includes(need), `KIT must include ${need}`);
   // Ad ID stays, so the append-mode sheet dedupe still works.
   assert.ok(headers.includes('Ad ID'));
+});
+
+test('planBulkAssignment gives each ad a distinct link, best match first', () => {
+  const ads = [
+    { ad_archive_id: 'x', creative_language: 'en', country: 'US', vertical: 'Home & Garden' },
+    { ad_archive_id: 'y', creative_language: 'en', country: 'US', vertical: 'Home & Garden' },
+  ];
+  const links = [
+    { id: 1, url: 'https://d.com/1', language: 'en', country: 'US', vertical: 'Home & Garden', published_at: '2026-08-10' },
+    { id: 2, url: 'https://d.com/2', language: 'en', country: 'US', vertical: 'Home & Garden', published_at: '2026-08-09' },
+  ];
+  const { assigned, unassigned } = planBulkAssignment(ads, links, {});
+  assert.equal(assigned.length, 2);
+  assert.equal(unassigned.length, 0);
+  const urls = assigned.map((a) => a.link.url);
+  assert.equal(new Set(urls).size, 2, 'no two ads may share a link');
+});
+
+test('planBulkAssignment with requireLangMatch skips ads that have no same-language link', () => {
+  const ads = [
+    { ad_archive_id: 'en1', creative_language: 'en', country: 'US' },
+    { ad_archive_id: 'de1', creative_language: 'de', country: 'DE' },
+  ];
+  const links = [{ id: 1, url: 'https://d.com/en', language: 'en', country: 'US', published_at: '2026-08-10' }];
+  const { assigned, unassigned } = planBulkAssignment(ads, links, { requireLangMatch: true });
+  assert.deepEqual(assigned.map((a) => a.ad.ad_archive_id), ['en1']);
+  assert.deepEqual(unassigned.map((a) => a.ad_archive_id), ['de1']);
+});
+
+test('planBulkAssignment without requireLangMatch will use any language', () => {
+  const ads = [{ ad_archive_id: 'de1', creative_language: 'de', country: 'DE' }];
+  const links = [{ id: 1, url: 'https://d.com/en', language: 'en', country: 'US', published_at: '2026-08-10' }];
+  const { assigned } = planBulkAssignment(ads, links, { requireLangMatch: false });
+  assert.equal(assigned.length, 1);
+});
+
+test('planBulkAssignment excludes already-taken URLs', () => {
+  const ads = [{ ad_archive_id: 'x', creative_language: 'en', country: 'US' }];
+  const links = [{ id: 1, url: 'https://d.com/1', language: 'en', country: 'US', published_at: '2026-08-10' }];
+  const { assigned, unassigned } = planBulkAssignment(ads, links, { taken: ['https://d.com/1'] });
+  assert.equal(assigned.length, 0);
+  assert.equal(unassigned.length, 1);
+});
+
+test('planBulkAssignment gives the top earner first pick when links are scarce', () => {
+  // Two en/US ads, but only one en/US link and one en/DE link. Order = priority.
+  const ads = [
+    { ad_archive_id: 'top', creative_language: 'en', country: 'US' },
+    { ad_archive_id: 'next', creative_language: 'en', country: 'US' },
+  ];
+  const links = [
+    { id: 1, url: 'https://d.com/us', language: 'en', country: 'US', published_at: '2026-08-10' },
+    { id: 2, url: 'https://d.com/de', language: 'en', country: 'DE', published_at: '2026-08-10' },
+  ];
+  const { assigned } = planBulkAssignment(ads, links, { requireLangMatch: true });
+  const byAd = Object.fromEntries(assigned.map((a) => [a.ad.ad_archive_id, a.link.url]));
+  assert.equal(byAd.top, 'https://d.com/us', 'the first ad gets the best (country-matching) link');
+  assert.equal(byAd.next, 'https://d.com/de');
 });
 
 test('buildSheetData(KIT_COLUMNS) populates our-link cells from the joined ad', () => {
