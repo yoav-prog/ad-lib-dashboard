@@ -12,6 +12,7 @@ import { s } from '@/lib/style';
 import { A, MONO, thumbOf, isVideo, daysRunning, fmtDec, langCode, KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
 import ClientKitsRsoc from '@/components/ClientKitsRsoc';
+import ClientKitsSaved from '@/components/ClientKitsSaved';
 import SelectMenu from '@/components/SelectMenu';
 import { AssignPanel, ExportModal, Empty, Mono, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON } from '@/components/kit-shared';
 import { loadOurDomains, loadOurNetworks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, exportKitToSheet } from '@/app/actions';
@@ -142,6 +143,9 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
         </Empty>
       </div>
     );
+  }
+  if (source === 'saved') {
+    return <div>{toggle}<ClientKitsSaved canBuild={canBuild} /></div>;
   }
   if (source === 'rsoc') {
     return <div>{toggle}<ClientKitsRsoc canBuild={canBuild} ourDomains={ourDomains} ourNetworks={ourNetworks} /></div>;
@@ -287,6 +291,7 @@ function SourceToggle({ source, setSource }) {
       <div style={s('display:flex;gap:1px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08)')}>
         {opt('meta', 'Meta Ads')}
         {opt('rsoc', 'RSOC')}
+        {opt('saved', 'My Assignments')}
       </div>
     </div>
   );

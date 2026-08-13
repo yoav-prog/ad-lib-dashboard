@@ -14,10 +14,29 @@ const perfect = { id: 1, url: 'https://mytips.com/a', headline: 'Heat pumps', do
 const langOnly = { id: 2, url: 'https://mytips.com/b', headline: 'Cars', domain: 'mytips.com', language: 'en', country: 'DE', vertical: 'Autos', category: null, published_at: '2026-08-11T00:00:00Z' };
 const noMatch = { id: 3, url: 'https://mytips.com/c', headline: 'Nada', domain: 'mytips.com', language: 'de', country: 'DE', vertical: 'Finance', category: null, published_at: '2026-08-12T00:00:00Z' };
 
-test('scoreLink weights language and country over vertical', () => {
-  assert.equal(scoreLink(ad, perfect), 5 + 3 + 2);       // lang + country + vertical
+test('scoreLink weights language and country over vertical (exact vertical = 4)', () => {
+  assert.equal(scoreLink(ad, perfect), 5 + 3 + 4);       // lang + country + exact vertical
   assert.equal(scoreLink(ad, langOnly), 5);              // language only
   assert.equal(scoreLink(ad, noMatch), 0);               // nothing matches
+});
+
+test('scoreLink grades vertical: exact (4) beats partial token overlap (2)', () => {
+  const a2 = { creative_language: 'en', country: 'US', vertical: 'Dental Implants' };
+  const exact = { language: 'en', country: 'US', vertical: 'Dental Implants' };
+  const partial = { language: 'en', country: 'US', vertical: 'Dental Care' };   // shares "dental"
+  const none = { language: 'en', country: 'US', vertical: 'Finance' };
+  assert.equal(scoreLink(a2, exact), 5 + 3 + 4);
+  assert.equal(scoreLink(a2, partial), 5 + 3 + 2);
+  assert.equal(scoreLink(a2, none), 5 + 3);
+});
+
+test('scoreLink adds a +1 topic tiebreak when headlines share a meaningful word', () => {
+  // No vertical on any side, so only lang + country (+ the topic tiebreak) count.
+  const a2 = { creative_language: 'en', country: 'US', title: 'Best mortgage rates today' };
+  const onTopic = { language: 'en', country: 'US', headline: 'Compare mortgage lenders' };
+  const offTopic = { language: 'en', country: 'US', headline: 'Cheap car cover' };
+  assert.equal(scoreLink(a2, onTopic), 5 + 3 + 1);   // "mortgage" shared
+  assert.equal(scoreLink(a2, offTopic), 5 + 3);      // no shared >=4-char word
 });
 
 test('scoreLink is null-safe', () => {
@@ -140,7 +159,7 @@ test('compToSubject prefers the URL language, then geo, and carries geo/vertical
 test('a comp subject matches our links via the shared scorer', () => {
   const subject = compToSubject({ url: 'https://x.com/en/articles/x', geo: 'US', vertical: 'Massage' });
   const link = { url: 'https://d.com/1', language: 'en', country: 'US', vertical: 'Massage', published_at: '2026-08-10' };
-  assert.equal(scoreLink(subject, link), 5 + 3 + 2);
+  assert.equal(scoreLink(subject, link), 5 + 3 + 4);   // exact vertical match
 });
 
 test('COMP_KIT_COLUMNS omits the competitor URL and carries our link', () => {

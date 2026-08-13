@@ -862,6 +862,59 @@ export async function loadCompAssignments(compRowIds) {
   return { ok: true, assignments: await getAssignmentsByCompIds(compRowIds.slice(0, 2000)) };
 }
 
+// Every link assignment (both sources), newest first, each enriched with the competitor it
+// points at - the Meta ad's headline/creative or the RSOC comp row's title/network/vertical
+// /geo. This is the "where did everything I chose go" view. Read-only, signed-in. A subject
+// that was since deleted still shows the saved link, marked so.
+export async function loadAllAssignments() {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  const sql = getSql();
+  const rows = await sql`
+    select ad_archive_id, comp_row_id, source, our_url, our_domain, our_headline, assigned_by, assigned_at
+    from link_assignments
+    order by assigned_at desc nulls last
+    limit 2000
+  `;
+  const adIds = rows.filter((r) => r.ad_archive_id).map((r) => r.ad_archive_id);
+  const compIds = rows.filter((r) => r.comp_row_id != null).map((r) => r.comp_row_id);
+  const [ads, comps] = await Promise.all([
+    adIds.length ? getAdsByIds(adIds) : [],
+    compIds.length && articlesConfigured() ? getCompRowsByIds(compIds) : [],
+  ]);
+  const adById = new Map(ads.map((a) => [a.ad_archive_id, a]));
+  const compById = new Map(comps.map((c) => [c.id, c]));
+
+  const items = rows.map((r) => {
+    const base = {
+      source: r.source || (r.comp_row_id != null ? 'rsoc' : 'meta'),
+      our_url: r.our_url,
+      our_domain: r.our_domain,
+      our_headline: r.our_headline,
+      assigned_by: r.assigned_by,
+      assigned_at: r.assigned_at ? new Date(r.assigned_at).toISOString() : null,
+    };
+    if (r.ad_archive_id) {
+      const a = adById.get(r.ad_archive_id);
+      return {
+        ...base, ref: r.ad_archive_id,
+        subject: a ? (a.title || a.caption || a.body_text || '(untitled ad)') : '(ad removed)',
+        subjectMeta: a ? [a.domain, a.country, a.vertical].filter(Boolean).join(' · ') : '',
+        thumb: a ? (a.original_image_urls?.[0] || a.video_preview_url || null) : null,
+      };
+    }
+    const c = compById.get(r.comp_row_id);
+    return {
+      ...base, ref: r.comp_row_id,
+      subject: c ? (c.adtitle || '(untitled)') : '(row removed)',
+      subjectMeta: c ? [c.network, c.vertical, c.geo].filter(Boolean).join(' · ') : '',
+      thumb: null,
+    };
+  });
+  console.info('[kit saved] loaded', { total: items.length, meta: adIds.length, rsoc: compIds.length });
+  return { ok: true, items };
+}
+
 // Assign our link to one RSOC comp row (replaces any prior assignment for that row).
 export async function assignOurLinkToComp({ compRowId, url, domain, headline, articleId } = {}) {
   await requireCapability('export_data');

@@ -9,6 +9,12 @@ uplift-*.json
 # Data exports (the taxonomy lives in the DB after seeding)
 *.csv
 
+# Local working spreadsheets (large, data-heavy; not source)
+*.xlsx
+
+# Local standalone uploader script (kept out of the repo by request)
+outbrain-uploaderrr.py
+
 # Leaked pre-edit copy of the scraper (still holds old hardcoded keys - delete it)
 facebookadscraperapify2026-v2 (1).py
 
