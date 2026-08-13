@@ -225,7 +225,7 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
 
       {/* Rail + rows */}
       <div style={s('display:flex;align-items:stretch')}>
-      <FilterRail groups={groups} filters={f} onToggle={onToggle} onClear={clearFilters} loading={!facets} />
+      <FilterRail groups={groups} filters={f} onToggle={onToggle} onClear={clearFilters} loading={!facets} sticky stickyTop={44} />
       <TableScroll label="clientkits-rsoc" style={s('flex:1;min-width:0')}>
         <div style={s(`display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${rowMinW}px`)}>
           {canBuild && (
