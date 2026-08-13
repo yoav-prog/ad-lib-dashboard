@@ -472,10 +472,12 @@ export function compToSubject(row) {
 // by construction (client-safe), the competitor's data columns come first, our link after.
 // Reads a comp row joined with our_domain / our_url / our_headline (like KIT_COLUMNS).
 export const COMP_KIT_COLUMNS = [
+  { key: 'comp_image',   header: 'Competitor Image',   kind: 'image', get: (r) => r.thumb,                                   width: 130, align: 'CENTER', wrap: false },
   { key: 'network',      header: 'Competitor Network', kind: 'text', get: (r) => r.network,                                  width: 140, align: 'LEFT',   wrap: false },
   { key: 'vertical',     header: 'Vertical',           kind: 'text', get: (r) => r.vertical,                                 width: 140, align: 'LEFT',   wrap: false },
   { key: 'geo',          header: 'Geo',                kind: 'text', get: (r) => r.geo,                                      width: 60,  align: 'CENTER', wrap: false },
   { key: 'adtitle',      header: 'Competitor Headline', kind: 'text', get: (r) => r.adtitle,                                 width: 320, align: 'LEFT',   wrap: true  },
+  { key: 'comp_desc',    header: 'Competitor Description', kind: 'text', get: (r) => r.meta_body,                            width: 320, align: 'LEFT',   wrap: true  },
   { key: 'revenue',      header: 'Revenue',            kind: 'text', get: (r) => fmtDec(r.revenue),                          width: 100, align: 'RIGHT',  wrap: false },
   { key: 'clicks',       header: 'Clicks',             kind: 'text', get: (r) => (r.clicks != null ? r.clicks : ''),         width: 80,  align: 'RIGHT',  wrap: false },
   { key: 'rpc',          header: 'RPC',                kind: 'text', get: (r) => fmtDec(r.rpc),                              width: 70,  align: 'RIGHT',  wrap: false },

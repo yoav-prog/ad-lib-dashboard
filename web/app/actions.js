@@ -3,7 +3,7 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getTakenOurUrls, getThumbnailsByHosts } from '@/lib/queries';
+import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getTakenOurUrls, getMetaCreativesByHosts } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
@@ -840,19 +840,23 @@ export async function loadCompRows({ network, vertical, geo, search } = {}) {
     const rows = await searchCompRows({
       network: network || null, vertical: vertical || null, geo: geo || null, search: search || null, limit: 200,
     });
-    // Best-effort: attach a Meta creative to each comp row whose landing host also appears in
-    // the adintel ads (a coarse host match, ~1/3 of rows; the rest simply have no thumbnail).
+    // Best-effort: attach a Meta creative (image + description) to each comp row whose landing
+    // host also appears in the adintel ads (a coarse host match, ~1/3 of rows; the rest keep
+    // just their title). Gives the RSOC deliverable the image + description Meta ads carry.
     const hosts = [...new Set(rows.map((r) => hostOf(r.url)).filter(Boolean))];
-    let thumbs = {};
-    try { thumbs = hosts.length ? await getThumbnailsByHosts(hosts) : {}; }
-    catch (e) { console.warn('[kit comp thumbs] lookup failed (rows still returned)', String(e.message || e)); }
+    let creatives = {};
+    try { creatives = hosts.length ? await getMetaCreativesByHosts(hosts) : {}; }
+    catch (e) { console.warn('[kit comp creative] lookup failed (rows still returned)', String(e.message || e)); }
     // Flag rows that have an exact sister family (we cloned this competitor's article), so the
     // UI can badge them and offer the precise "assign sister" path.
     let sisterUrls = new Set();
     try { sisterUrls = new Set(await getSisterFamilyUrls(rows.map((r) => r.url))); }
     catch (e) { console.warn('[kit comp sisters] flag lookup failed', String(e.message || e)); }
-    const enriched = rows.map((r) => ({ ...r, thumb: thumbs[hostOf(r.url)] || null, has_sister: sisterUrls.has(r.url) }));
-    console.info('[kit comp rows]', { returned: enriched.length, thumbs: Object.keys(thumbs).length, sisters: sisterUrls.size });
+    const enriched = rows.map((r) => {
+      const c = creatives[hostOf(r.url)];
+      return { ...r, thumb: c?.thumb || null, meta_body: c?.body || null, has_sister: sisterUrls.has(r.url) };
+    });
+    console.info('[kit comp rows]', { returned: enriched.length, creatives: Object.keys(creatives).length, sisters: sisterUrls.size });
     return { ok: true, rows: enriched };
   } catch (e) {
     console.error('[kit comp rows] failed', e);
@@ -1038,13 +1042,21 @@ export async function exportCompKitToSheet({ spreadsheetId, tabName, compRowIds,
   const rows0 = await getCompRowsByIds(ids);
   if (!rows0.length) return { ok: false, reason: 'no-rows', saEmail };
   const assignments = await getAssignmentsByCompIds(ids);
-  const joined = rows0
+  let joined = rows0
     .map((r) => {
       const asg = assignments[r.id];
       return asg ? { ...r, our_url: asg.our_url, our_domain: asg.our_domain, our_headline: asg.our_headline } : null;
     })
     .filter(Boolean);
   if (!joined.length) return { ok: false, reason: 'no-assignments', saEmail };
+
+  // Enrich with the matched Meta creative (image + description) so the exported kit carries
+  // the competitor image and description where one exists, same as the on-screen RSOC view.
+  try {
+    const hosts = [...new Set(joined.map((r) => hostOf(r.url)).filter(Boolean))];
+    const creatives = hosts.length ? await getMetaCreativesByHosts(hosts) : {};
+    joined = joined.map((r) => { const c = creatives[hostOf(r.url)]; return { ...r, thumb: c?.thumb || null, meta_body: c?.body || null }; });
+  } catch (e) { console.warn('[kit comp export creative] lookup failed', String(e.message || e)); }
 
   const { columns, rows } = buildSheetData(joined, Date.now(), keys.length ? keys : DEFAULT_COMP_KIT_COLUMN_KEYS, COMP_KIT_COLUMNS);
   try {
