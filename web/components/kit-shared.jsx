@@ -36,6 +36,28 @@ export const REASON = {
 
 export const Mono = ({ children }) => <span style={s(`font-family:${MONO};color:#C6C9CE`)}>{children}</span>;
 
+// Thumbnail size, same S/M/L set Fresh Finds uses (small crop, medium/large shown whole),
+// so these text-heavy creatives can be enlarged to actually read them.
+export const IMG_SIZES = [
+  { key: 's', label: 'S', px: 48, fit: 'cover' },
+  { key: 'm', label: 'M', px: 120, fit: 'contain' },
+  { key: 'l', label: 'L', px: 220, fit: 'contain' },
+];
+
+export function ImageSizeToggle({ value, onChange }) {
+  return (
+    <div style={s('display:flex;align-items:center;gap:6px')} title="Preview image size">
+      <span style={s('font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase')}>Image</span>
+      <div style={s('display:flex;gap:1px;background:rgba(255,255,255,.08)')}>
+        {IMG_SIZES.map((z) => (
+          <button key={z.key} onClick={() => onChange(z.key)}
+            style={s(`font-family:${MONO};font-size:10px;padding:4px 9px;border:none;cursor:pointer;background:${value === z.key ? A : '#0D0E11'};color:${value === z.key ? '#0B0C0E' : '#8A8E94'}`)}>{z.label}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function Overlay({ onClose, width, children }) {
   return (
     <div onClick={onClose} style={s('position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;padding:40px;animation:fadein .12s ease-out')}>

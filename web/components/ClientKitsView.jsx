@@ -14,7 +14,7 @@ import TableScroll from '@/components/TableScroll';
 import ClientKitsRsoc from '@/components/ClientKitsRsoc';
 import ClientKitsSaved from '@/components/ClientKitsSaved';
 import SelectMenu from '@/components/SelectMenu';
-import { AssignPanel, ExportModal, Empty, Mono, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON } from '@/components/kit-shared';
+import { AssignPanel, ExportModal, Empty, Mono, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON, IMG_SIZES, ImageSizeToggle } from '@/components/kit-shared';
 import { loadOurDomains, loadOurNetworks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, bulkAssignSisters, exportKitToSheet } from '@/app/actions';
 
 export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuery = () => true, notConfigured = false, feedReady = true, feedLoading = false, feedError = false, retryFeed }) {
@@ -29,6 +29,9 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
   const [dom, setDom] = useState(domains[0] || '');
   const active = dom || domains[0] || '';
   const [uniqueOnly, setUniqueOnly] = useState(true);   // collapse identical creatives (Maya's default)
+  const [imgKey, setImgKey] = useState('s');
+  const img = IMG_SIZES.find((z) => z.key === imgKey) || IMG_SIZES[0];
+  const rowMinW = 1090 + img.px;   // table min-width grows with the thumbnail
 
   // The competitor's ads, winners first (revenue, then longevity), search-filtered, and -
   // when uniqueOnly is on - collapsed so each identical creative appears once (the revenue
@@ -208,6 +211,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
           </div>
         </div>
         <div style={s('flex:1')} />
+        <ImageSizeToggle value={imgKey} onChange={setImgKey} />
         <label style={s('display:flex;align-items:center;gap:6px;font-size:11px;color:#9CA0A6;cursor:pointer')} title="Collapse identical creatives (same image, title and description) to one row">
           <input type="checkbox" checked={uniqueOnly} onChange={(e) => setUniqueOnly(e.target.checked)} /> Unique creatives
         </label>
@@ -259,7 +263,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
 
       {/* Column head + rows */}
       <TableScroll label="clientkits">
-        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1102px')}>
+        <div style={s(`display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${rowMinW}px`)}>
           {canBuild && (
             <div style={s('width:52px;display:flex;align-items:center;gap:3px')}>
               <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all in this list" style={s('cursor:pointer')} />
@@ -267,8 +271,10 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
                 onPage={() => selectMany()} onFirst={(n) => selectMany(n)} onAll={() => selectMany()} onClear={() => setSelected(new Set())} />
             </div>
           )}
-          <div style={s('width:64px')} />
+          <div style={s(`width:${img.px + 12}px`)} />
           <div style={s('flex:1')}>Competitor Creative</div>
+          <div style={s('width:60px;padding-left:12px')}>Country</div>
+          <div style={s('width:130px')}>Vertical</div>
           <div style={s('width:70px;text-align:right')}>Days</div>
           <div style={s('width:90px;text-align:right')}>Revenue</div>
           <div style={s('width:65px;text-align:right')}>RPC</div>
@@ -277,7 +283,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
 
         {list.map((a) => (
           <KitRow
-            key={a.ad_archive_id} ad={a} NOW={NOW} canBuild={canBuild}
+            key={a.ad_archive_id} ad={a} NOW={NOW} canBuild={canBuild} img={img} rowMinW={rowMinW}
             assignment={assignments[a.ad_archive_id]}
             selected={selected.has(a.ad_archive_id)}
             onToggle={(shift) => toggleSel(a.ad_archive_id, shift)}
@@ -357,12 +363,14 @@ function FeedLoading({ loading, error, retry }) {
 }
 
 // ── one competitor ad, with its our-link cell ─────────────────────────────────
-function KitRow({ ad, NOW, canBuild, assignment, selected = false, onToggle, onAssignClick, onUnassign }) {
+function KitRow({ ad, NOW, canBuild, img, rowMinW = 1102, assignment, selected = false, onToggle, onAssignClick, onUnassign }) {
   const [busy, setBusy] = useState(false);
   const days = daysRunning(ad, NOW);
   const thumb = thumbOf(ad);
   const headline = ad.title || ad.caption || ad.body_text || '(no headline)';
   const body = ad.body_text && ad.body_text !== headline ? ad.body_text : '';
+  const px = img?.px || 48;
+  const fit = img?.fit || 'cover';
 
   const remove = async () => {
     if (busy) return;
@@ -375,25 +383,27 @@ function KitRow({ ad, NOW, canBuild, assignment, selected = false, onToggle, onA
   };
 
   return (
-    <div style={s(`display:flex;align-items:center;min-height:82px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:1102px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
+    <div style={s(`display:flex;align-items:center;min-height:${Math.max(82, px + 18)}px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:${rowMinW}px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
       {canBuild && (
         <div style={s('width:52px;display:flex;align-items:center')}>
           <input type="checkbox" checked={selected} onChange={() => {}}
             onClick={(e) => onToggle?.(e.shiftKey)} style={s('cursor:pointer')} />
         </div>
       )}
-      <div style={s('width:64px')}>
+      <div style={s(`width:${px + 12}px`)}>
         {thumb
-          ? <img src={thumb} alt="" style={s('width:48px;height:48px;object-fit:cover;background:#141619;border:1px solid rgba(255,255,255,.08)')} />
-          : <div style={s('width:48px;height:48px;background:#141619;border:1px solid rgba(255,255,255,.08)')} />}
+          ? <img src={thumb} alt="" style={s(`width:${px}px;height:${px}px;object-fit:${fit};background:#141619;border:1px solid rgba(255,255,255,.08)`)} />
+          : <div style={s(`width:${px}px;height:${px}px;background:#141619;border:1px solid rgba(255,255,255,.08)`)} />}
       </div>
       <div style={s('flex:1;padding-right:16px;min-width:0')}>
         <span style={s('font-size:12.5px;color:#C6C9CE;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{headline}</span>
         {body && <span style={s('font-size:11px;color:#8A8E94;margin-top:2px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{body}</span>}
         <span style={s(`font-family:${MONO};font-size:10px;color:#6C7076;margin-top:3px;display:block`)}>
-          {(ad.display_format || (isVideo(ad) ? 'video' : 'image'))} &middot; {langCode(ad.creative_language || ad.language) || '?'} &middot; {ad.country || '?'} &middot; {ad.vertical || 'no vertical'}
+          {(ad.display_format || (isVideo(ad) ? 'video' : 'image'))} &middot; {langCode(ad.creative_language || ad.language) || '?'}
         </span>
       </div>
+      <div style={s('width:60px;padding-left:12px;font-family:' + MONO + ';font-size:11px;color:#B6B9BE')}>{ad.country || '-'}</div>
+      <div style={s('width:130px;font-size:11px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px')}>{ad.vertical || '-'}</div>
       <div style={s(`width:70px;text-align:right;font-family:${MONO};font-size:13px;color:#B6B9BE;font-variant-numeric:tabular-nums`)}>{days}<span style={s('font-size:9px;color:#5A5E64')}>d</span></div>
       <div style={s(`width:90px;text-align:right;font-family:${MONO};font-size:12px;color:#9CA0A6;font-variant-numeric:tabular-nums`)}>{ad.sheet_revenue != null && ad.sheet_revenue !== '' ? `$${fmtDec(ad.sheet_revenue)}` : '-'}</div>
       <div style={s(`width:65px;text-align:right;font-family:${MONO};font-size:12px;color:#9CA0A6;font-variant-numeric:tabular-nums`)}>{ad.sheet_rpc != null && ad.sheet_rpc !== '' ? fmtDec(ad.sheet_rpc) : '-'}</div>
