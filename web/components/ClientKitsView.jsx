@@ -300,7 +300,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
       <div style={s('display:flex;align-items:stretch')}>
       <FilterRail groups={groups} filters={f} onToggle={onToggle}
         ranges={[{ key: 'days', title: 'Days Running', min: daysMin, max: daysMax, onMin: setDaysMin, onMax: setDaysMax }]}
-        onClear={clearFilters} />
+        onClear={clearFilters} sticky stickyTop={44} />
       <TableScroll label="clientkits" style={s('flex:1;min-width:0')}>
         <div style={s(`display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${rowMinW}px`)}>
           {canBuild && (
