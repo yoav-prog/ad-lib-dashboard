@@ -303,6 +303,7 @@ function CompRow({ row, canBuild, assignment, selected = false, onToggle, onAssi
           {row.has_sister && <span title="We have a sister article for this competitor" style={s(`font-family:${MONO};font-size:8.5px;letter-spacing:.4px;color:${A};border:1px solid rgba(232,163,61,.5);padding:1px 4px;margin-right:6px`)}>&#9733; SISTER</span>}
           {row.adtitle || '(no title)'}
         </span>
+        {row.meta_body && <span style={s('font-size:11px;color:#8A8E94;margin-top:2px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{row.meta_body}</span>}
         <span style={s(`font-family:${MONO};font-size:10px;color:#6C7076;margin-top:3px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>
           {row.network || '?'} &middot; {row.vertical || 'no vertical'} &middot; {row.geo || '?'}{row.top_keywords ? ` · ${row.top_keywords}` : ''}
         </span>
