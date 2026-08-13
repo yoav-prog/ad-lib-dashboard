@@ -6,7 +6,7 @@
 // availability is shared with the Meta source. Reuses the shared assign panel and export.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { s } from '@/lib/style';
-import { A, MONO, fmtDec, compToSubject, COMP_KIT_COLUMN_META } from '@/lib/ui';
+import { A, MONO, fmtDec, compToSubject, dedupeBy, COMP_KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
 import SelectMenu from '@/components/SelectMenu';
 import { AssignPanel, ExportModal, Empty, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON } from '@/components/kit-shared';
@@ -24,6 +24,7 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
   const [assignments, setAssignments] = useState({});   // comp_row_id -> assignment
   const [assignFor, setAssignFor] = useState(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [uniqueOnly, setUniqueOnly] = useState(true);   // collapse identical creatives (by title)
 
   // Facets once.
   useEffect(() => {
@@ -80,7 +81,11 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
     setBulkDomain(last && ourDomains.some((d) => d.domain === last) ? last : ourDomains[0].domain);
   }, [ourDomains, bulkDomain]);
 
-  const rowList = rows || [];
+  // RSOC rows have only a title (no image/body), so "unique" collapses identical titles.
+  const rowList = useMemo(() => {
+    const base = rows || [];
+    return uniqueOnly ? dedupeBy(base, (r) => String(r.adtitle || '').trim().toLowerCase()) : base;
+  }, [rows, uniqueOnly]);
   const toggleSel = useCallback((id, shift) => {
     const idx = rowList.findIndex((r) => r.id === id);
     setSelected((prev) => {
@@ -160,6 +165,9 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
         </select>
         <input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Search headline / keyword"
           style={s(`flex:1;min-width:180px;background:#0B0C0E;border:1px solid rgba(255,255,255,.1);color:#E7E8EA;font-family:${MONO};font-size:12px;padding:6px 9px;outline:none`)} />
+        <label style={s('display:flex;align-items:center;gap:6px;font-size:11px;color:#9CA0A6;cursor:pointer')} title="Collapse rows with an identical competitor title to one">
+          <input type="checkbox" checked={uniqueOnly} onChange={(e) => setUniqueOnly(e.target.checked)} /> Unique
+        </label>
         <span style={s(`font-family:${MONO};font-size:11px;color:#6C7076`)}>{assignedIds.length}/{rowList.length} paired</span>
         {canBuild && (
           <button onClick={() => setExportOpen(true)} disabled={!assignedIds.length}

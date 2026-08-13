@@ -313,7 +313,7 @@ export const DEFAULT_SHEET_COLUMN_KEYS = SHEET_COLUMNS.map((c) => c.key);
 // construction, so a kit can never expose a competitor URL. Our-link columns are appended
 // and read from the assignment joined onto the ad (a.our_domain / a.our_url /
 // a.our_headline), so the client sees the creative beside OUR link.
-const KIT_COMPETITOR_KEYS = ['preview', 'image_url', 'page', 'domain', 'headline', 'body', 'cta', 'vertical', 'country', 'language', 'format', 'days', 'revenue', 'keywords', 'ad_id'];
+const KIT_COMPETITOR_KEYS = ['preview', 'image_url', 'page', 'domain', 'headline', 'body', 'cta', 'vertical', 'country', 'language', 'format', 'days', 'revenue', 'rpc', 'keywords', 'ad_id'];
 const OUR_LINK_COLUMNS = [
   { key: 'our_domain',   header: 'Our Domain',   kind: 'text', get: (a) => a.our_domain,   width: 150, align: 'LEFT', wrap: false },
   { key: 'our_link',     header: 'Our Link',     kind: 'link', get: (a) => a.our_url,       width: 300, align: 'LEFT', wrap: false },
@@ -385,6 +385,30 @@ export function rankLinks(ad, links) {
 export function availableLinks(links, assignedUrls) {
   const taken = new Set((assignedUrls || []).map(String));
   return (links || []).filter((l) => !taken.has(String(l.url)));
+}
+
+// Identity of a competitor creative, for the "unique creatives" toggle: image + title +
+// body, so byte-identical creatives collapse to one regardless of country/vertical (which
+// is what Maya asked - dedupe by identical creative only). Pure and shared with tests.
+export function creativeKey(ad) {
+  const img = thumbOf(ad) || mediaUrlOf(ad) || '';
+  const title = ad.title || ad.caption || '';
+  const body = ad.body_text || '';
+  return `${img}${title}${body}`.trim().toLowerCase();
+}
+
+// Keep the first row for each distinct key, preserving order (so a revenue-sorted list keeps
+// the highest-revenue instance of each creative). Pure.
+export function dedupeBy(rows, keyFn) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows || []) {
+    const k = keyFn(r);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
 }
 
 // Plan a bulk assignment: give each ad its best available link from a shared pool, never
