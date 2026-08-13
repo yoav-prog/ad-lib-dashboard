@@ -9,9 +9,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, thumbOf, isVideo, daysRunning, fmtDec, langCode, rankLinks, parseSheetId, KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
-import { loadOurDomains, searchOurLinks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, exportKitToSheet } from '@/app/actions';
+import { loadOurDomains, loadOurNetworks, searchOurLinks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, exportKitToSheet } from '@/app/actions';
 
 const LS_DOMAIN = 'adintel.kit.ourdomain';
+const LS_NETWORK = 'adintel.kit.ournetwork';
 const LS_SHEET_ID = 'adintel.kit.sheetid';
 const LS_SHEET_TAB = 'adintel.kit.sheettab';
 
@@ -40,15 +41,19 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
   // assignments: ad_archive_id -> { our_url, our_domain, our_headline, ... }
   const [assignments, setAssignments] = useState({});
   const [ourDomains, setOurDomains] = useState(null);   // null=loading, []=none/err
+  const [ourNetworks, setOurNetworks] = useState([]);   // [{network,total}]
   const [assignFor, setAssignFor] = useState(null);     // the ad being assigned, or null
   const [exportOpen, setExportOpen] = useState(false);
 
-  // Our publishing domains, once.
+  // Our publishing domains and networks, once.
   useEffect(() => {
     let alive = true;
     loadOurDomains()
       .then((r) => { if (alive) setOurDomains(r?.ok ? r.domains : []); })
       .catch((e) => { console.error('[kit domains] load failed', e); if (alive) setOurDomains([]); });
+    loadOurNetworks()
+      .then((r) => { if (alive && r?.ok) setOurNetworks(r.networks || []); })
+      .catch((e) => console.error('[kit networks] load failed', e));
     return () => { alive = false; };
   }, []);
 
@@ -77,6 +82,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
   const [selected, setSelected] = useState(() => new Set());
   const lastIdxRef = useRef(-1);
   const [bulkDomain, setBulkDomain] = useState('');
+  const [bulkNetwork, setBulkNetwork] = useState(() => ls(LS_NETWORK, ''));   // '' = any network
   const [bulkMatch, setBulkMatch] = useState(true);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMsg, setBulkMsg] = useState('');
@@ -114,13 +120,13 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
     // Send ids in the on-screen (revenue) order so top earners get first pick of links.
     const orderedIds = list.map((a) => a.ad_archive_id).filter((id) => selected.has(id));
     try {
-      const r = await bulkAssignOurLinks({ adIds: orderedIds, domain: bulkDomain, matchByAd: bulkMatch });
+      const r = await bulkAssignOurLinks({ adIds: orderedIds, domain: bulkDomain, network: bulkNetwork || null, matchByAd: bulkMatch });
       if (r?.ok) {
         setAssignments((p) => ({ ...p, ...r.assigned }));
-        setLs(LS_DOMAIN, bulkDomain);
+        setLs(LS_DOMAIN, bulkDomain); setLs(LS_NETWORK, bulkNetwork);
         const parts = [`Assigned ${r.matched}`];
         if (r.alreadyHad) parts.push(`${r.alreadyHad} already had a link`);
-        if (r.noLink?.length) parts.push(`${r.noLink.length} had no ${bulkMatch ? 'matching ' : ''}link on ${bulkDomain}`);
+        if (r.noLink?.length) parts.push(`${r.noLink.length} had no ${bulkMatch ? 'matching ' : ''}link on ${bulkDomain}${bulkNetwork ? ` (${bulkNetwork})` : ''}`);
         setBulkMsg(parts.join(' · ') + '.');
         setSelected(new Set());
       } else setBulkMsg(REASON[r?.reason] || 'Bulk assign failed.');
@@ -182,6 +188,11 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
                 {ourDomains == null && <option value="">loading domains...</option>}
                 {(ourDomains || []).map((d) => <option key={d.domain} value={d.domain}>{d.domain} ({d.total})</option>)}
               </select>
+              <select value={bulkNetwork} onChange={(e) => setBulkNetwork(e.target.value)} title="Only offer links from this network"
+                style={s(`background:#101216;border:1px solid rgba(255,255,255,.14);color:#E7E8EA;font-family:${MONO};font-size:11px;padding:5px 8px;outline:none`)}>
+                <option value="">any network</option>
+                {ourNetworks.map((n) => <option key={n.network} value={n.network}>{n.network} ({n.total})</option>)}
+              </select>
               <label style={s('display:flex;align-items:center;gap:6px;font-size:11px;color:#9CA0A6;cursor:pointer')}>
                 <input type="checkbox" checked={bulkMatch} onChange={(e) => setBulkMatch(e.target.checked)} /> match language
               </label>
@@ -230,7 +241,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
 
       {assignFor && (
         <AssignPanel
-          ad={assignFor} ourDomains={ourDomains || []}
+          ad={assignFor} ourDomains={ourDomains || []} ourNetworks={ourNetworks}
           onClose={() => setAssignFor(null)}
           onAssigned={(assignment) => { onAssigned(assignFor.ad_archive_id, assignment); setAssignFor(null); }}
         />
@@ -314,12 +325,13 @@ function KitRow({ ad, NOW, canBuild, assignment, selected = false, onToggle, onA
 }
 
 // ── assign panel: pick an available link for one ad ───────────────────────────
-function AssignPanel({ ad, ourDomains, onClose, onAssigned }) {
+function AssignPanel({ ad, ourDomains, ourNetworks = [], onClose, onAssigned }) {
   const [domain, setDomain] = useState(() => {
     const last = ls(LS_DOMAIN, '');
     if (last && ourDomains.some((d) => d.domain === last)) return last;
     return ourDomains[0]?.domain || '';
   });
+  const [network, setNetwork] = useState(() => ls(LS_NETWORK, ''));   // '' = any network
   const [matchAd, setMatchAd] = useState(true);   // narrow by the ad's language + country
   const [search, setSearch] = useState('');
   const [links, setLinks] = useState(null);        // null=loading
@@ -329,7 +341,7 @@ function AssignPanel({ ad, ourDomains, onClose, onAssigned }) {
   const adLang = langCode(ad.creative_language || ad.language);
   const adCountry = ad.country || '';
 
-  // Fetch available links whenever the domain / match toggle / (debounced) search changes.
+  // Fetch available links whenever domain / network / match toggle / (debounced) search change.
   useEffect(() => {
     if (!domain) { setLinks([]); return; }
     let alive = true;
@@ -337,6 +349,7 @@ function AssignPanel({ ad, ourDomains, onClose, onAssigned }) {
     const t = setTimeout(() => {
       searchOurLinks({
         domain,
+        network: network || null,
         language: matchAd ? adLang : null,
         country: matchAd ? adCountry : null,
         search: search.trim() || null,
@@ -349,7 +362,7 @@ function AssignPanel({ ad, ourDomains, onClose, onAssigned }) {
         .catch((e) => { console.error('[kit search] failed', e); if (alive) { setLinks([]); setErr('Could not load links.'); } });
     }, 220);
     return () => { alive = false; clearTimeout(t); };
-  }, [domain, matchAd, search]);
+  }, [domain, network, matchAd, search]);
 
   const choose = async (link) => {
     if (busyUrl) return;
@@ -357,7 +370,7 @@ function AssignPanel({ ad, ourDomains, onClose, onAssigned }) {
     try {
       const r = await assignOurLink({ adId: ad.ad_archive_id, url: link.url, domain: link.domain || domain, headline: link.headline, articleId: link.id });
       if (r?.ok) {
-        setLs(LS_DOMAIN, domain);
+        setLs(LS_DOMAIN, domain); setLs(LS_NETWORK, network);
         onAssigned({ our_url: link.url, our_domain: link.domain || domain, our_headline: link.headline || null, our_article_id: link.id ?? null });
         return;
       }
@@ -384,6 +397,13 @@ function AssignPanel({ ad, ourDomains, onClose, onAssigned }) {
             <select value={domain} onChange={(e) => setDomain(e.target.value)} style={{ ...input }}>
               {ourDomains.length === 0 && <option value="">No domains available</option>}
               {ourDomains.map((d) => <option key={d.domain} value={d.domain}>{d.domain} ({d.total})</option>)}
+            </select>
+          </div>
+          <div style={s('flex:1;min-width:0')}>
+            <div style={label}>Network</div>
+            <select value={network} onChange={(e) => setNetwork(e.target.value)} style={{ ...input }}>
+              <option value="">Any network</option>
+              {ourNetworks.map((n) => <option key={n.network} value={n.network}>{n.network} ({n.total})</option>)}
             </select>
           </div>
           <div style={s('flex:1;min-width:0')}>
