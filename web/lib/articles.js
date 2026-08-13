@@ -194,6 +194,51 @@ function mapCompRow(r) {
   };
 }
 
+// ── Sister family (article_lineage) ────────────────────────────────────────────
+// article_lineage links a competitor/source `parent_url` to OUR child articles, grouped by
+// `family_id` (which equals the articles' `sister_family_id`). So a competitor URL that we
+// have cloned yields a family, and our articles in that family (is_external=false) are the
+// exact sister versions we built from it - a far stronger match than topic/vertical guessing.
+
+// Which of the given competitor URLs actually have a sister family (for badging rows).
+export async function getSisterFamilyUrls(urls) {
+  const clean = [...new Set((Array.isArray(urls) ? urls : []).map(String).filter(Boolean))].slice(0, 500);
+  if (!clean.length) return [];
+  const sql = getArticlesSql();
+  const rows = await sql`select distinct parent_url from article_lineage where parent_url = any(${clean})`;
+  return rows.map((r) => r.parent_url);
+}
+
+// Our sister articles for a set of competitor URLs, keyed by competitor URL. Only our own
+// links (is_external=false), optionally narrowed to one network. Availability (already
+// assigned) is filtered on the adintel side by the caller, since that ledger lives there.
+export async function getSisterLinksForUrls(urls, network) {
+  const clean = [...new Set((Array.isArray(urls) ? urls : []).map(String).filter(Boolean))].slice(0, 300);
+  if (!clean.length) return {};
+  const net = String(network || '').trim();
+  const sql = getArticlesSql();
+  const rows = await sql`
+    select l.parent_url as competitor_url,
+           a.id, a.url, a.headline, a.domain, a.network, a.country, a.language, a.vertical, a.published_at
+    from article_lineage l
+    join articles a on a.sister_family_id = l.family_id and a.is_external = false and a.url like 'http%'
+    where l.parent_url = any(${clean})
+      ${net ? sql`and lower(a.network) = ${net.toLowerCase()}` : sql``}
+    order by a.published_at desc nulls last, a.id desc
+    limit 3000
+  `;
+  const byUrl = {};
+  for (const r of rows) {
+    (byUrl[r.competitor_url] = byUrl[r.competitor_url] || []).push({
+      id: r.id, url: r.url, headline: r.headline, domain: r.domain, network: r.network,
+      country: r.country, language: r.language, vertical: r.vertical,
+      published_at: r.published_at ? new Date(r.published_at).toISOString() : null,
+      sister: true,
+    });
+  }
+  return byUrl;
+}
+
 // Comp rows by id, server-authoritative, for bulk assign and export (so matching and the
 // exported values never trust client-sent fields). Preserves the given id order.
 export async function getCompRowsByIds(ids) {
