@@ -17,7 +17,7 @@ import SelectMenu from '@/components/SelectMenu';
 import { AssignPanel, ExportModal, Empty, Mono, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON } from '@/components/kit-shared';
 import { loadOurDomains, loadOurNetworks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, bulkAssignSisters, exportKitToSheet } from '@/app/actions';
 
-export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuery = () => true, notConfigured = false }) {
+export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuery = () => true, notConfigured = false, feedReady = true, feedLoading = false, feedError = false, retryFeed }) {
   const [source, setSource] = useState('meta');   // 'meta' | 'rsoc'
 
   const domains = useMemo(() => {
@@ -172,6 +172,11 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
   if (source === 'rsoc') {
     return <div>{toggle}<ClientKitsRsoc canBuild={canBuild} ourDomains={ourDomains} ourNetworks={ourNetworks} /></div>;
   }
+  // Meta source only: it groups the full ad feed by competitor, so it waits for that feed
+  // (the RSOC / My Assignments sources above never reach here and load instantly).
+  if (!feedReady) {
+    return <div>{toggle}<FeedLoading loading={feedLoading} error={feedError} retry={retryFeed} /></div>;
+  }
   if (!domains.length) {
     return <div>{toggle}<Empty>No Meta competitors yet. Run a scrape to populate the feed, or switch to the RSOC source above.</Empty></div>;
   }
@@ -321,6 +326,24 @@ function SourceToggle({ source, setSource }) {
         {opt('rsoc', 'RSOC')}
         {opt('saved', 'My Assignments')}
       </div>
+    </div>
+  );
+}
+
+// ── Meta feed loading / error (only the Meta source needs the full feed) ───────
+function FeedLoading({ loading, error, retry }) {
+  if (error) {
+    return (
+      <div style={s('display:flex;flex-direction:column;align-items:center;gap:12px;padding:70px 20px')}>
+        <span style={s('font-size:12.5px;color:#ff8a80')}>Could not load the competitor feed.</span>
+        <button onClick={retry} style={s(`background:#101216;border:1px solid rgba(255,255,255,.14);color:#C6C9CE;font-family:${MONO};font-size:11px;padding:7px 14px;cursor:pointer`)}>TRY AGAIN</button>
+      </div>
+    );
+  }
+  return (
+    <div style={s('display:flex;align-items:center;justify-content:center;gap:10px;padding:70px 20px')}>
+      <span style={s(`width:8px;height:8px;border-radius:50%;background:${A};animation:freshpulse 1.4s ease-in-out infinite`)} />
+      <span style={s(`font-family:${MONO};font-size:11px;letter-spacing:.5px;color:#8A8E94`)}>{loading ? 'LOADING COMPETITOR FEED...' : 'PREPARING...'}</span>
     </div>
   );
 }
