@@ -640,9 +640,12 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
         </LazyTab>
       )}
       {view === 'kits' && (
-        <LazyTab tab="client kits" loading={fullLoading} failed={fullError} retry={ensureFullFeed} ready={!serverFeed || fullAds != null}>
-          <ClientKitsView ads={adsAll} NOW={NOW} canBuild={canExport} matchesQuery={matchesQuery} notConfigured={!articlesConfigured} />
-        </LazyTab>
+        // Not wrapped in the full-feed LazyTab: only the Meta source needs the full feed, so
+        // the tab renders instantly and the Meta view waits for the feed on its own (RSOC and
+        // My Assignments load their own data and never block on it).
+        <ClientKitsView
+          ads={adsAll} feedReady={!serverFeed || fullAds != null} feedLoading={fullLoading} feedError={fullError} retryFeed={ensureFullFeed}
+          NOW={NOW} canBuild={canExport} matchesQuery={matchesQuery} notConfigured={!articlesConfigured} />
       )}
       {view === 'review' && (
         <LazyTab tab="review" loading={loadingTab === 'review'} failed={tabError === 'review'} retry={() => { setTabError(null); loadTab('review'); }} ready={loadedRef.current.review}>
