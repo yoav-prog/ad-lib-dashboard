@@ -9,7 +9,7 @@
 // the read-only articles DB; which link is taken is remembered in the adintel DB.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { s } from '@/lib/style';
-import { A, MONO, thumbOf, isVideo, daysRunning, fmtDec, langCode, KIT_COLUMN_META } from '@/lib/ui';
+import { A, MONO, thumbOf, isVideo, daysRunning, fmtDec, langCode, creativeKey, dedupeBy, KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
 import ClientKitsRsoc from '@/components/ClientKitsRsoc';
 import ClientKitsSaved from '@/components/ClientKitsSaved';
@@ -28,14 +28,18 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
 
   const [dom, setDom] = useState(domains[0] || '');
   const active = dom || domains[0] || '';
+  const [uniqueOnly, setUniqueOnly] = useState(true);   // collapse identical creatives (Maya's default)
 
-  // The competitor's ads, winners first (revenue, then longevity), search-filtered.
+  // The competitor's ads, winners first (revenue, then longevity), search-filtered, and -
+  // when uniqueOnly is on - collapsed so each identical creative appears once (the revenue
+  // sort means the highest-earning instance is the one kept).
   const list = useMemo(() => {
     const rev = (a) => (a.sheet_revenue == null || a.sheet_revenue === '' ? -1 : Number(a.sheet_revenue));
-    return ads
+    const sorted = ads
       .filter((a) => a.domain === active && matchesQuery(a))
       .sort((x, y) => rev(y) - rev(x) || daysRunning(y, NOW) - daysRunning(x, NOW));
-  }, [ads, active, matchesQuery, NOW]);
+    return uniqueOnly ? dedupeBy(sorted, creativeKey) : sorted;
+  }, [ads, active, matchesQuery, NOW, uniqueOnly]);
 
   // assignments: ad_archive_id -> { our_url, our_domain, our_headline, ... }
   const [assignments, setAssignments] = useState({});
@@ -204,6 +208,9 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
           </div>
         </div>
         <div style={s('flex:1')} />
+        <label style={s('display:flex;align-items:center;gap:6px;font-size:11px;color:#9CA0A6;cursor:pointer')} title="Collapse identical creatives (same image, title and description) to one row">
+          <input type="checkbox" checked={uniqueOnly} onChange={(e) => setUniqueOnly(e.target.checked)} /> Unique creatives
+        </label>
         {canBuild && (
           <button onClick={() => setExportOpen(true)} disabled={!assignedIds.length}
             style={s(`font-family:${MONO};font-size:10px;letter-spacing:.4px;color:${assignedIds.length ? '#0B0C0E' : '#6C7076'};background:${assignedIds.length ? A : '#1A1C20'};border:none;padding:8px 14px;cursor:${assignedIds.length ? 'pointer' : 'default'}`)}>
@@ -252,7 +259,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
 
       {/* Column head + rows */}
       <TableScroll label="clientkits">
-        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1032px')}>
+        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1102px')}>
           {canBuild && (
             <div style={s('width:52px;display:flex;align-items:center;gap:3px')}>
               <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all in this list" style={s('cursor:pointer')} />
@@ -264,6 +271,7 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
           <div style={s('flex:1')}>Competitor Creative</div>
           <div style={s('width:70px;text-align:right')}>Days</div>
           <div style={s('width:90px;text-align:right')}>Revenue</div>
+          <div style={s('width:65px;text-align:right')}>RPC</div>
           <div style={s('width:420px;padding-left:20px')}>Our Link</div>
         </div>
 
@@ -353,6 +361,8 @@ function KitRow({ ad, NOW, canBuild, assignment, selected = false, onToggle, onA
   const [busy, setBusy] = useState(false);
   const days = daysRunning(ad, NOW);
   const thumb = thumbOf(ad);
+  const headline = ad.title || ad.caption || ad.body_text || '(no headline)';
+  const body = ad.body_text && ad.body_text !== headline ? ad.body_text : '';
 
   const remove = async () => {
     if (busy) return;
@@ -365,7 +375,7 @@ function KitRow({ ad, NOW, canBuild, assignment, selected = false, onToggle, onA
   };
 
   return (
-    <div style={s(`display:flex;align-items:center;min-height:70px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:1032px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
+    <div style={s(`display:flex;align-items:center;min-height:82px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:1102px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
       {canBuild && (
         <div style={s('width:52px;display:flex;align-items:center')}>
           <input type="checkbox" checked={selected} onChange={() => {}}
@@ -378,13 +388,15 @@ function KitRow({ ad, NOW, canBuild, assignment, selected = false, onToggle, onA
           : <div style={s('width:48px;height:48px;background:#141619;border:1px solid rgba(255,255,255,.08)')} />}
       </div>
       <div style={s('flex:1;padding-right:16px;min-width:0')}>
-        <span style={s('font-size:12.5px;color:#C6C9CE;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{ad.title || ad.caption || ad.body_text || '(no headline)'}</span>
+        <span style={s('font-size:12.5px;color:#C6C9CE;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>{headline}</span>
+        {body && <span style={s('font-size:11px;color:#8A8E94;margin-top:2px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{body}</span>}
         <span style={s(`font-family:${MONO};font-size:10px;color:#6C7076;margin-top:3px;display:block`)}>
           {(ad.display_format || (isVideo(ad) ? 'video' : 'image'))} &middot; {langCode(ad.creative_language || ad.language) || '?'} &middot; {ad.country || '?'} &middot; {ad.vertical || 'no vertical'}
         </span>
       </div>
       <div style={s(`width:70px;text-align:right;font-family:${MONO};font-size:13px;color:#B6B9BE;font-variant-numeric:tabular-nums`)}>{days}<span style={s('font-size:9px;color:#5A5E64')}>d</span></div>
       <div style={s(`width:90px;text-align:right;font-family:${MONO};font-size:12px;color:#9CA0A6;font-variant-numeric:tabular-nums`)}>{ad.sheet_revenue != null && ad.sheet_revenue !== '' ? `$${fmtDec(ad.sheet_revenue)}` : '-'}</div>
+      <div style={s(`width:65px;text-align:right;font-family:${MONO};font-size:12px;color:#9CA0A6;font-variant-numeric:tabular-nums`)}>{ad.sheet_rpc != null && ad.sheet_rpc !== '' ? fmtDec(ad.sheet_rpc) : '-'}</div>
       <div style={s('width:420px;padding-left:20px')}>
         {assignment ? (
           <div style={s('display:flex;align-items:center;gap:8px')}>

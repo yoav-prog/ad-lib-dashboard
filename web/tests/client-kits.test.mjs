@@ -4,7 +4,7 @@
 // what link a client sees, so they are pinned here rather than trusted to review.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreLink, rankLinks, availableLinks, planBulkAssignment, buildSheetData, KIT_COLUMNS, KIT_COLUMN_META, DEFAULT_KIT_COLUMN_KEYS, geoToLang, urlLang, compToSubject, COMP_KIT_COLUMNS, COMP_KIT_COLUMN_META, DEFAULT_COMP_KIT_COLUMN_KEYS } from '../lib/ui.js';
+import { scoreLink, rankLinks, availableLinks, planBulkAssignment, buildSheetData, KIT_COLUMNS, KIT_COLUMN_META, DEFAULT_KIT_COLUMN_KEYS, geoToLang, urlLang, compToSubject, COMP_KIT_COLUMNS, COMP_KIT_COLUMN_META, DEFAULT_COMP_KIT_COLUMN_KEYS, creativeKey, dedupeBy } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 7, 13);
 
@@ -176,6 +176,25 @@ test('buildSheetData(COMP_KIT_COLUMNS) never leaks the competitor url', () => {
   const idx = (h) => columns.findIndex((c) => c.header === h);
   assert.equal(rows[0].cells[idx('Our Link')].value, 'https://mytips.com/a');
   assert.ok(!JSON.stringify(rows[0].cells).includes('rival.com/secret'));
+});
+
+test('creativeKey dedupes by identical creative only, ignoring country/vertical', () => {
+  const a = { original_image_urls: ['https://c/i.jpg'], title: 'Buy now', body_text: 'Great deal', country: 'US', vertical: 'Finance' };
+  const sameCreativeDiffGeo = { ...a, country: 'DE', vertical: 'Insurance' };
+  const diffBody = { ...a, body_text: 'Different' };
+  assert.equal(creativeKey(a), creativeKey(sameCreativeDiffGeo));   // country/vertical ignored
+  assert.notEqual(creativeKey(a), creativeKey(diffBody));           // body is part of identity
+});
+
+test('dedupeBy keeps the first row per key, preserving order', () => {
+  const rows = [{ k: 'a', v: 1 }, { k: 'b', v: 2 }, { k: 'a', v: 3 }, { k: 'c', v: 4 }];
+  const out = dedupeBy(rows, (r) => r.k);
+  assert.deepEqual(out.map((r) => r.v), [1, 2, 4]);   // first 'a' kept, second dropped
+});
+
+test('KIT export includes RPC (Maya asked for country/vertical/RPC)', () => {
+  const headers = KIT_COLUMN_META.map((m) => m.header);
+  for (const need of ['RPC', 'Country', 'Vertical', 'Body']) assert.ok(headers.includes(need), `KIT export must include ${need}`);
 });
 
 test('buildSheetData(KIT_COLUMNS) populates our-link cells from the joined ad', () => {
