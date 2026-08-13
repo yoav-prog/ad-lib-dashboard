@@ -332,11 +332,29 @@ export const DEFAULT_KIT_COLUMN_KEYS = KIT_COLUMNS.map((c) => c.key);
 // because the two databases use different taxonomies. Pure and deterministic, so the view
 // can rank the available list and pick a top match, and it is unit-tested without a DB.
 const kitTokens = (s) => String(s || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+const norm = (s) => String(s || '').trim().toLowerCase();
 
-function verticalOverlap(a, b) {
-  const A2 = new Set(kitTokens(a));
-  if (!A2.size) return 0;
-  for (const t of kitTokens(b)) if (A2.has(t)) return 2;
+// Graded vertical fit: an EXACT vertical/category match is worth clearly more than a loose
+// token overlap, so "Dental Implants" prefers a Dental Implants article over a "Dental Care"
+// one. The two DBs use different taxonomies, hence the partial fallback rather than an
+// all-or-nothing exact test.
+function verticalScore(adVert, linkVert, linkCat) {
+  const a = norm(adVert);
+  if (!a) return 0;
+  if (a === norm(linkVert) || a === norm(linkCat)) return 4;
+  const set = new Set(kitTokens(adVert));
+  if (!set.size) return 0;
+  for (const t of [...kitTokens(linkVert), ...kitTokens(linkCat)]) if (set.has(t)) return 2;
+  return 0;
+}
+
+// A light relevance nudge: a shared meaningful word (>=4 chars, so stopwords don't count)
+// between the competitor's headline and our article's headline/keyword. Breaks ties toward
+// an on-topic link when vertical/language/country are equal.
+function textOverlap(title, headline, keyword) {
+  const set = new Set(kitTokens(title).filter((t) => t.length >= 4));
+  if (!set.size) return 0;
+  for (const t of [...kitTokens(headline), ...kitTokens(keyword)]) if (t.length >= 4 && set.has(t)) return 1;
   return 0;
 }
 
@@ -345,12 +363,12 @@ export function scoreLink(ad, link) {
   let score = 0;
   const adLang = langCode(ad.creative_language || ad.language);
   const linkLang = langCode(link.language);
-  if (adLang && linkLang && adLang === linkLang) score += 5;
+  if (adLang && linkLang && adLang === linkLang) score += 5;      // language: strongest
   const adCountry = String(ad.country || '').toUpperCase();
   const linkCountry = String(link.country || '').toUpperCase();
-  if (adCountry && linkCountry && adCountry === linkCountry) score += 3;
-  score += verticalOverlap(ad.vertical, link.vertical);
-  score += verticalOverlap(ad.vertical, link.category);
+  if (adCountry && linkCountry && adCountry === linkCountry) score += 3;   // country
+  score += verticalScore(ad.vertical, link.vertical, link.category);        // vertical: 4 exact / 2 partial
+  score += textOverlap(ad.title, link.headline, link.keyword);             // topic tiebreak: +1
   return score;
 }
 
