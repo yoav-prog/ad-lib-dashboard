@@ -12,6 +12,7 @@ import { s } from '@/lib/style';
 import { A, MONO, thumbOf, isVideo, daysRunning, fmtDec, langCode, KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
 import ClientKitsRsoc from '@/components/ClientKitsRsoc';
+import SelectMenu from '@/components/SelectMenu';
 import { AssignPanel, ExportModal, Empty, Mono, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON } from '@/components/kit-shared';
 import { loadOurDomains, loadOurNetworks, loadKitAssignments, assignOurLink, unassignOurLink, bulkAssignOurLinks, exportKitToSheet } from '@/app/actions';
 
@@ -108,6 +109,8 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
 
   const allSelected = list.length > 0 && list.every((a) => selected.has(a.ad_archive_id));
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(list.map((a) => a.ad_archive_id)));
+  // Select the first n rows (or all when n is omitted) - powers the shared SelectMenu.
+  const selectMany = (n) => setSelected(new Set((n ? list.slice(0, n) : list).map((a) => a.ad_archive_id)));
 
   const runBulk = async () => {
     if (bulkBusy || !bulkDomain || !selected.size) return;
@@ -213,10 +216,12 @@ export default function ClientKitsView({ ads, NOW, canBuild = false, matchesQuer
 
       {/* Column head + rows */}
       <TableScroll label="clientkits">
-        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1010px')}>
+        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1032px')}>
           {canBuild && (
-            <div style={s('width:30px;display:flex;align-items:center')}>
+            <div style={s('width:52px;display:flex;align-items:center;gap:3px')}>
               <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all in this list" style={s('cursor:pointer')} />
+              <SelectMenu pageRows={list.length} total={list.length} busy={false} hasSelection={selected.size > 0}
+                onPage={() => selectMany()} onFirst={(n) => selectMany(n)} onAll={() => selectMany()} onClear={() => setSelected(new Set())} />
             </div>
           )}
           <div style={s('width:64px')} />
@@ -304,9 +309,9 @@ function KitRow({ ad, NOW, canBuild, assignment, selected = false, onToggle, onA
   };
 
   return (
-    <div style={s(`display:flex;align-items:center;min-height:70px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:1010px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
+    <div style={s(`display:flex;align-items:center;min-height:70px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:1032px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
       {canBuild && (
-        <div style={s('width:30px;display:flex;align-items:center')}>
+        <div style={s('width:52px;display:flex;align-items:center')}>
           <input type="checkbox" checked={selected} onChange={() => {}}
             onClick={(e) => onToggle?.(e.shiftKey)} style={s('cursor:pointer')} />
         </div>

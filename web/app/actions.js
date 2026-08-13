@@ -3,9 +3,9 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain } from '@/lib/queries';
+import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getThumbnailsByHosts } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
-import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS } from '@/lib/ui';
+import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
 import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, articlesConfigured } from '@/lib/articles';
 
@@ -840,7 +840,15 @@ export async function loadCompRows({ network, vertical, geo, search } = {}) {
     const rows = await searchCompRows({
       network: network || null, vertical: vertical || null, geo: geo || null, search: search || null, limit: 200,
     });
-    return { ok: true, rows };
+    // Best-effort: attach a Meta creative to each comp row whose landing host also appears in
+    // the adintel ads (a coarse host match, ~1/3 of rows; the rest simply have no thumbnail).
+    const hosts = [...new Set(rows.map((r) => hostOf(r.url)).filter(Boolean))];
+    let thumbs = {};
+    try { thumbs = hosts.length ? await getThumbnailsByHosts(hosts) : {}; }
+    catch (e) { console.warn('[kit comp thumbs] lookup failed (rows still returned)', String(e.message || e)); }
+    const withThumbs = rows.map((r) => ({ ...r, thumb: thumbs[hostOf(r.url)] || null }));
+    console.info('[kit comp rows]', { returned: withThumbs.length, thumbs: Object.keys(thumbs).length });
+    return { ok: true, rows: withThumbs };
   } catch (e) {
     console.error('[kit comp rows] failed', e);
     return { ok: false, reason: 'error', message: String(e.message || e) };

@@ -612,6 +612,31 @@ export async function getAssignedUrlsForDomain(domain) {
   return rows.map((r) => r.our_url);
 }
 
+// Best-effort Meta creative per competitor host, for the RSOC kit view: given a set of
+// landing hosts, return one representative thumbnail (newest ad on that host) keyed by host.
+// The RSOC comp rows and the Meta ads share no id, so this is a coarse host-level match -
+// it attaches a creative to roughly a third of comp rows and leaves the rest without one,
+// which is why the thumbnail is presented as a bonus, never a requirement.
+export async function getThumbnailsByHosts(hosts) {
+  const clean = [...new Set((Array.isArray(hosts) ? hosts : []).map((h) => String(h || '').toLowerCase()).filter(Boolean))].slice(0, 500);
+  if (!clean.length) return {};
+  const sql = getSql();
+  const rows = await sql`
+    select distinct on (host) host, thumb from (
+      select lower(regexp_replace(substring(resolved_url from '://([^/]+)'), '^www\\.', '')) as host,
+             coalesce(original_image_urls[1], video_preview_url) as thumb,
+             last_seen_at
+      from ads
+      where resolved_url like 'http%'
+    ) t
+    where host = any(${clean}) and thumb is not null
+    order by host, last_seen_at desc nulls last
+  `;
+  const byHost = {};
+  for (const r of rows) byHost[r.host] = r.thumb;
+  return byHost;
+}
+
 export async function getLastRun() {
   const sql = getSql();
   const rows = await sql`
