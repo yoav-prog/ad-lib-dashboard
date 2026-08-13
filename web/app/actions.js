@@ -7,7 +7,7 @@ import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getS
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
-import { listOurDomains, searchOurLinks as searchArticleLinks, articlesConfigured } from '@/lib/articles';
+import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, articlesConfigured } from '@/lib/articles';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url', 'brand'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
@@ -613,10 +613,23 @@ export async function loadOurDomains() {
   }
 }
 
+// Our publishing networks (Tonic, System1, ...), for the assign panel's network filter.
+export async function loadOurNetworks() {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
+  try {
+    return { ok: true, networks: await listOurNetworks() };
+  } catch (e) {
+    console.error('[kit networks] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
+}
+
 // Available links on one of our domains, ranked best-first for the given ad and with
 // already-assigned URLs removed. The ranking is done client-side (pure ui.rankLinks) so
-// this stays a thin read; the DB only narrows by domain / language / country / search.
-export async function searchOurLinks({ domain, language, country, search } = {}) {
+// this stays a thin read; the DB narrows by domain / network / language / country / search.
+export async function searchOurLinks({ domain, network, language, country, search } = {}) {
   const user = await getCurrentUser();
   if (!user) throw new Error('Forbidden: sign in required');
   if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
@@ -626,6 +639,7 @@ export async function searchOurLinks({ domain, language, country, search } = {})
     const assigned = await getAssignedUrlsForDomain(dom);
     const links = await searchArticleLinks({
       domain: dom,
+      network: network || null,
       language: language || null,
       country: country || null,
       search: search || null,
@@ -693,7 +707,7 @@ export async function assignOurLink({ adId, url, domain, headline, articleId } =
 // link on that domain are reported so the UI can say so. Capped so one click can't fan out
 // unbounded work. Returns the assignments that landed (same shape as loadKitAssignments)
 // for an in-place UI update.
-export async function bulkAssignOurLinks({ adIds, domain, matchByAd = true } = {}) {
+export async function bulkAssignOurLinks({ adIds, domain, network, matchByAd = true } = {}) {
   await requireCapability('export_data');
   if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
   const dom = String(domain || '').trim();
@@ -712,9 +726,10 @@ export async function bulkAssignOurLinks({ adIds, domain, matchByAd = true } = {
     const alreadyHad = ads.length - targets.length;
     if (!targets.length) return { ok: true, assigned: {}, matched: 0, noLink: [], alreadyHad };
 
-    // One generous pool for the domain; the pure planner ranks per-ad and keeps links
-    // distinct, so an English ad gets an English link and no two ads share one.
-    const pool = await searchArticleLinks({ domain: dom, excludeUrls: taken, limit: 1000 });
+    // One generous pool for the domain (and network, if chosen); the pure planner ranks
+    // per-ad and keeps links distinct, so an English ad gets an English link, no two ads
+    // share one, and a network filter keeps a Tonic kit to Tonic links.
+    const pool = await searchArticleLinks({ domain: dom, network: network || null, excludeUrls: taken, limit: 1000 });
     const { assigned, unassigned } = planBulkAssignment(targets, pool, { taken, requireLangMatch: matchByAd });
     if (!assigned.length) {
       return { ok: true, assigned: {}, matched: 0, noLink: unassigned.map((a) => a.ad_archive_id), alreadyHad };

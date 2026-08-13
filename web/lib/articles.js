@@ -52,23 +52,47 @@ export async function listOurDomains() {
   return out;
 }
 
+// The networks our links are published on (Tonic, System1, Traffic Club, Inuvo, ...) with
+// how many links each holds, most first. Drives the network filter in the assign panel so
+// a Tonic client is only ever offered Tonic links. Held for ten minutes like the domains.
+const networksCache = createTtlCache(10 * 60 * 1000);
+
+export async function listOurNetworks() {
+  const hit = networksCache.peek();
+  if (hit) return hit.value;
+  const sql = getArticlesSql();
+  const rows = await sql`
+    select network, count(*)::int as total
+    from articles
+    where network is not null and network <> '' and url like 'http%'
+    group by network
+    order by total desc, network asc
+  `;
+  const out = rows.map((r) => ({ network: r.network, total: r.total }));
+  networksCache.fill(out);
+  console.info('[articles db] networks listed', { networks: out.length });
+  return out;
+}
+
 // Real, http(s) links on one of our domains, newest first, optionally narrowed by
-// language / country / a free-text search, and excluding any URLs already handed out
-// (the caller passes the assigned set for this domain so the array stays small). Capped
+// network / language / country / a free-text search, and excluding any URLs already handed
+// out (the caller passes the assigned set for this domain so the array stays small). Capped
 // so a panel never pulls the whole table. Returns plain rows the UI and the matcher read.
-export async function searchOurLinks({ domain, language, country, search, excludeUrls, limit = 200 } = {}) {
+export async function searchOurLinks({ domain, network, language, country, search, excludeUrls, limit = 200 } = {}) {
   const dom = String(domain || '').trim();
   if (!dom) return [];
   const cap = Math.min(500, Math.max(1, Number(limit) || 200));
   const s = String(search || '').trim();
   const like = s ? `%${s}%` : null;
+  const net = String(network || '').trim();
   const excluded = Array.isArray(excludeUrls) && excludeUrls.length ? excludeUrls.map(String) : null;
   const sql = getArticlesSql();
   const rows = await sql`
-    select id, url, headline, domain, country, language, vertical, category, keyword, published_at
+    select id, url, headline, domain, network, country, language, vertical, category, keyword, published_at
     from articles
     where domain = ${dom}
       and url like 'http%'
+      ${net ? sql`and lower(network) = ${net.toLowerCase()}` : sql``}
       ${language ? sql`and lower(language) = ${String(language).toLowerCase()}` : sql``}
       ${country ? sql`and upper(country) = ${String(country).toUpperCase()}` : sql``}
       ${like ? sql`and (headline ilike ${like} or url ilike ${like} or keyword ilike ${like})` : sql``}
@@ -77,7 +101,7 @@ export async function searchOurLinks({ domain, language, country, search, exclud
     limit ${cap}
   `;
   console.info('[articles db] links searched', {
-    domain: dom, language: language || null, country: country || null, search: s || null,
+    domain: dom, network: net || null, language: language || null, country: country || null, search: s || null,
     excluded: excluded ? excluded.length : 0, returned: rows.length,
   });
   return rows.map((r) => ({
@@ -85,6 +109,7 @@ export async function searchOurLinks({ domain, language, country, search, exclud
     url: r.url,
     headline: r.headline,
     domain: r.domain,
+    network: r.network,
     country: r.country,
     language: r.language,
     vertical: r.vertical,
