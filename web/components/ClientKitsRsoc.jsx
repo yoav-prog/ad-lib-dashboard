@@ -9,7 +9,7 @@ import { s } from '@/lib/style';
 import { A, MONO, fmtDec, compToSubject, dedupeBy, COMP_KIT_COLUMN_META } from '@/lib/ui';
 import TableScroll from '@/components/TableScroll';
 import SelectMenu from '@/components/SelectMenu';
-import { AssignPanel, ExportModal, Empty, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON } from '@/components/kit-shared';
+import { AssignPanel, ExportModal, Empty, miniBtn, shortUrl, ls, setLs, LS_DOMAIN, LS_NETWORK, REASON, IMG_SIZES, ImageSizeToggle } from '@/components/kit-shared';
 import { loadCompFacets, loadCompRows, loadCompAssignments, assignOurLinkToComp, unassignFromComp, bulkAssignToComp, bulkAssignSisters, exportCompKitToSheet } from '@/app/actions';
 
 export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ourNetworks = [] }) {
@@ -25,6 +25,9 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
   const [assignFor, setAssignFor] = useState(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [uniqueOnly, setUniqueOnly] = useState(true);   // collapse identical creatives (by title)
+  const [imgKey, setImgKey] = useState('s');
+  const img = IMG_SIZES.find((z) => z.key === imgKey) || IMG_SIZES[0];
+  const rowMinW = 1252 + img.px;   // table min-width grows with the thumbnail
 
   // Facets once.
   useEffect(() => {
@@ -165,6 +168,7 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
         </select>
         <input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Search headline / keyword"
           style={s(`flex:1;min-width:180px;background:#0B0C0E;border:1px solid rgba(255,255,255,.1);color:#E7E8EA;font-family:${MONO};font-size:12px;padding:6px 9px;outline:none`)} />
+        <ImageSizeToggle value={imgKey} onChange={setImgKey} />
         <label style={s('display:flex;align-items:center;gap:6px;font-size:11px;color:#9CA0A6;cursor:pointer')} title="Collapse rows with an identical competitor title to one">
           <input type="checkbox" checked={uniqueOnly} onChange={(e) => setUniqueOnly(e.target.checked)} /> Unique
         </label>
@@ -215,7 +219,7 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
 
       {/* Rows */}
       <TableScroll label="clientkits-rsoc">
-        <div style={s('display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:1150px')}>
+        <div style={s(`display:flex;align-items:center;height:26px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;letter-spacing:1px;color:#5A5E64;text-transform:uppercase;min-width:${rowMinW}px`)}>
           {canBuild && (
             <div style={s('width:52px;display:flex;align-items:center;gap:3px')}>
               <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all" style={s('cursor:pointer')} />
@@ -223,8 +227,10 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
                 onPage={() => selectMany()} onFirst={(n) => selectMany(n)} onAll={() => selectMany()} onClear={() => setSelected(new Set())} />
             </div>
           )}
-          <div style={s('width:48px')}>Ad</div>
+          <div style={s(`width:${img.px + 12}px`)}>Ad</div>
           <div style={s('flex:1')}>Competitor (RSOC)</div>
+          <div style={s('width:130px')}>Vertical</div>
+          <div style={s('width:60px')}>Geo</div>
           <div style={s('width:90px;text-align:right')}>Revenue</div>
           <div style={s('width:60px;text-align:right')}>RPC</div>
           <div style={s('width:430px;padding-left:20px')}>Our Link</div>
@@ -237,7 +243,7 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
         )}
         {rowList.map((r) => (
           <CompRow
-            key={r.id} row={r} canBuild={canBuild}
+            key={r.id} row={r} canBuild={canBuild} img={img} rowMinW={rowMinW}
             assignment={assignments[r.id]}
             selected={selected.has(r.id)}
             onToggle={(shift) => toggleSel(r.id, shift)}
@@ -276,8 +282,10 @@ export default function ClientKitsRsoc({ canBuild = false, ourDomains = null, ou
 }
 
 // ── one RSOC competitor row, with its our-link cell ───────────────────────────
-function CompRow({ row, canBuild, assignment, selected = false, onToggle, onAssignClick, onUnassign }) {
+function CompRow({ row, canBuild, img, rowMinW = 1150, assignment, selected = false, onToggle, onAssignClick, onUnassign }) {
   const [busy, setBusy] = useState(false);
+  const px = img?.px || 48;
+  const fit = img?.fit || 'cover';
   const remove = async () => {
     if (busy) return;
     setBusy(true);
@@ -287,16 +295,16 @@ function CompRow({ row, canBuild, assignment, selected = false, onToggle, onAssi
   };
 
   return (
-    <div style={s(`display:flex;align-items:center;min-height:64px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:1150px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
+    <div style={s(`display:flex;align-items:center;min-height:${Math.max(64, px + 18)}px;padding:8px 24px;border-bottom:1px solid rgba(255,255,255,.045);min-width:${rowMinW}px;background:${selected ? 'rgba(232,163,61,.06)' : 'transparent'}`)}>
       {canBuild && (
         <div style={s('width:52px;display:flex;align-items:center')}>
           <input type="checkbox" checked={selected} onChange={() => {}} onClick={(e) => onToggle?.(e.shiftKey)} style={s('cursor:pointer')} />
         </div>
       )}
-      <div style={s('width:48px')} title={row.thumb ? 'Matching Meta creative (by landing host)' : 'No matching Meta creative'}>
+      <div style={s(`width:${px + 12}px`)} title={row.thumb ? 'Matching Meta creative (by landing host)' : 'No matching Meta creative'}>
         {row.thumb
-          ? <img src={row.thumb} alt="" style={s('width:40px;height:40px;object-fit:cover;background:#141619;border:1px solid rgba(255,255,255,.08)')} />
-          : <div style={s('width:40px;height:40px;background:#0F1113;border:1px dashed rgba(255,255,255,.1)')} />}
+          ? <img src={row.thumb} alt="" style={s(`width:${px}px;height:${px}px;object-fit:${fit};background:#141619;border:1px solid rgba(255,255,255,.08)`)} />
+          : <div style={s(`width:${px}px;height:${px}px;background:#0F1113;border:1px dashed rgba(255,255,255,.1)`)} />}
       </div>
       <div style={s('flex:1;padding-right:16px;min-width:0')}>
         <span style={s('font-size:12.5px;color:#C6C9CE;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block')}>
@@ -305,9 +313,11 @@ function CompRow({ row, canBuild, assignment, selected = false, onToggle, onAssi
         </span>
         {row.meta_body && <span style={s('font-size:11px;color:#8A8E94;margin-top:2px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{row.meta_body}</span>}
         <span style={s(`font-family:${MONO};font-size:10px;color:#6C7076;margin-top:3px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>
-          {row.network || '?'} &middot; {row.vertical || 'no vertical'} &middot; {row.geo || '?'}{row.top_keywords ? ` · ${row.top_keywords}` : ''}
+          {row.network || '?'}{row.top_keywords ? ` · ${row.top_keywords}` : ''}
         </span>
       </div>
+      <div style={s('width:130px;font-size:11px;color:#9CA0A6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px')}>{row.vertical || '-'}</div>
+      <div style={s(`width:60px;font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{row.geo || '-'}</div>
       <div style={s(`width:90px;text-align:right;font-family:${MONO};font-size:12px;color:#9CA0A6;font-variant-numeric:tabular-nums`)}>{row.revenue != null ? `$${fmtDec(row.revenue)}` : '-'}</div>
       <div style={s(`width:60px;text-align:right;font-family:${MONO};font-size:12px;color:#9CA0A6;font-variant-numeric:tabular-nums`)}>{row.rpc != null ? fmtDec(row.rpc) : '-'}</div>
       <div style={s('width:430px;padding-left:20px')}>
