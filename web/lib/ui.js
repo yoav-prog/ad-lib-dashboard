@@ -390,6 +390,62 @@ export function planBulkAssignment(ads, links, { taken = [], requireLangMatch = 
   return { assigned, unassigned };
 }
 
+// ── RSOC competitor rows → our-link matching ───────────────────────────────────
+// RSOC comp rows (ref_comp_rows) carry a geo but no language. We infer the language two
+// ways, best first: the /xx/ segment many of our-style landing URLs carry, then a geo→
+// language fallback. Kept small and pure so the matcher and tests can share it.
+const GEO_LANG = {
+  US: 'en', GB: 'en', UK: 'en', CA: 'en', AU: 'en', IE: 'en', NZ: 'en', ZA: 'en', IN: 'en', AE: 'en',
+  DE: 'de', AT: 'de', CH: 'de',
+  FR: 'fr', BE: 'fr',
+  ES: 'es', MX: 'es', AR: 'es', CO: 'es', CL: 'es', PE: 'es',
+  IT: 'it', NL: 'nl', PT: 'pt', BR: 'pt', PL: 'pl', SE: 'sv', NO: 'no', DK: 'da', FI: 'fi',
+  CZ: 'cs', JP: 'ja', IL: 'he',
+};
+
+export function urlLang(url) {
+  const m = String(url || '').match(/:\/\/[^/]+\/([a-z]{2})\//i);
+  return m ? m[1].toLowerCase() : '';
+}
+
+export function geoToLang(geo) {
+  return GEO_LANG[String(geo || '').toUpperCase()] || '';
+}
+
+// Adapt a competitor comp row into the { creative_language, language, country, vertical,
+// title } shape scoreLink / rankLinks / planBulkAssignment already understand, so the RSOC
+// side reuses the exact same matching as the Meta side.
+export function compToSubject(row) {
+  const lang = urlLang(row?.url) || geoToLang(row?.geo);
+  return {
+    creative_language: lang,
+    language: lang,
+    country: row?.geo || '',
+    vertical: row?.vertical || '',
+    title: row?.adtitle || '',
+  };
+}
+
+// The Client Kits export catalog for the RSOC source: the competitor's own URL is omitted
+// by construction (client-safe), the competitor's data columns come first, our link after.
+// Reads a comp row joined with our_domain / our_url / our_headline (like KIT_COLUMNS).
+export const COMP_KIT_COLUMNS = [
+  { key: 'network',      header: 'Competitor Network', kind: 'text', get: (r) => r.network,                                  width: 140, align: 'LEFT',   wrap: false },
+  { key: 'vertical',     header: 'Vertical',           kind: 'text', get: (r) => r.vertical,                                 width: 140, align: 'LEFT',   wrap: false },
+  { key: 'geo',          header: 'Geo',                kind: 'text', get: (r) => r.geo,                                      width: 60,  align: 'CENTER', wrap: false },
+  { key: 'adtitle',      header: 'Competitor Headline', kind: 'text', get: (r) => r.adtitle,                                 width: 320, align: 'LEFT',   wrap: true  },
+  { key: 'revenue',      header: 'Revenue',            kind: 'text', get: (r) => fmtDec(r.revenue),                          width: 100, align: 'RIGHT',  wrap: false },
+  { key: 'clicks',       header: 'Clicks',             kind: 'text', get: (r) => (r.clicks != null ? r.clicks : ''),         width: 80,  align: 'RIGHT',  wrap: false },
+  { key: 'rpc',          header: 'RPC',                kind: 'text', get: (r) => fmtDec(r.rpc),                              width: 70,  align: 'RIGHT',  wrap: false },
+  { key: 'keywords',     header: 'Top Keywords',       kind: 'text', get: (r) => r.top_keywords,                             width: 300, align: 'LEFT',   wrap: true  },
+  { key: 'comp_id',      header: 'Comp ID',            kind: 'text', get: (r) => r.id,                                       width: 80,  align: 'LEFT',   wrap: false },
+  { key: 'our_domain',   header: 'Our Domain',         kind: 'text', get: (r) => r.our_domain,                               width: 150, align: 'LEFT',   wrap: false },
+  { key: 'our_link',     header: 'Our Link',           kind: 'link', get: (r) => r.our_url,                                  width: 300, align: 'LEFT',   wrap: false },
+  { key: 'our_headline', header: 'Our Headline',       kind: 'text', get: (r) => r.our_headline,                             width: 260, align: 'LEFT',   wrap: true  },
+];
+export const COMP_KIT_COLUMN_META = COMP_KIT_COLUMNS.map(({ key, header }) => ({ key, header }));
+export const DEFAULT_COMP_KIT_COLUMN_KEYS = COMP_KIT_COLUMNS.map((c) => c.key);
+
 const cellText = (c, a, now) => { const v = c.get(a, now); return v == null ? '' : String(v); };
 
 // Build a CSV string from ad rows. Uses the same catalog as the Sheet, minus the

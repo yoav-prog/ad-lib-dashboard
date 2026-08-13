@@ -4,7 +4,7 @@
 // what link a client sees, so they are pinned here rather than trusted to review.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreLink, rankLinks, availableLinks, planBulkAssignment, buildSheetData, KIT_COLUMNS, KIT_COLUMN_META, DEFAULT_KIT_COLUMN_KEYS } from '../lib/ui.js';
+import { scoreLink, rankLinks, availableLinks, planBulkAssignment, buildSheetData, KIT_COLUMNS, KIT_COLUMN_META, DEFAULT_KIT_COLUMN_KEYS, geoToLang, urlLang, compToSubject, COMP_KIT_COLUMNS, COMP_KIT_COLUMN_META, DEFAULT_COMP_KIT_COLUMN_KEYS } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 7, 13);
 
@@ -115,6 +115,48 @@ test('planBulkAssignment gives the top earner first pick when links are scarce',
   const byAd = Object.fromEntries(assigned.map((a) => [a.ad.ad_archive_id, a.link.url]));
   assert.equal(byAd.top, 'https://d.com/us', 'the first ad gets the best (country-matching) link');
   assert.equal(byAd.next, 'https://d.com/de');
+});
+
+test('urlLang extracts the /xx/ path segment; geoToLang falls back by country', () => {
+  assert.equal(urlLang('https://intuitionlink.com/en/articles/x'), 'en');
+  assert.equal(urlLang('https://x.com/DE/articles/y'), 'de');
+  assert.equal(urlLang('https://x.com/articles/y'), '');
+  assert.equal(geoToLang('US'), 'en');
+  assert.equal(geoToLang('DE'), 'de');
+  assert.equal(geoToLang('MX'), 'es');
+  assert.equal(geoToLang('ZZ'), '');
+});
+
+test('compToSubject prefers the URL language, then geo, and carries geo/vertical/title', () => {
+  const withUrlLang = compToSubject({ url: 'https://factripple.com/de/articles/x', geo: 'US', vertical: 'HIV Treatment', adtitle: 'T' });
+  assert.equal(withUrlLang.language, 'de');   // url path wins over geo
+  assert.equal(withUrlLang.country, 'US');
+  assert.equal(withUrlLang.vertical, 'HIV Treatment');
+  assert.equal(withUrlLang.title, 'T');
+  const geoOnly = compToSubject({ url: 'https://x.com/articles/x', geo: 'FR' });
+  assert.equal(geoOnly.language, 'fr');       // falls back to geo->lang
+});
+
+test('a comp subject matches our links via the shared scorer', () => {
+  const subject = compToSubject({ url: 'https://x.com/en/articles/x', geo: 'US', vertical: 'Massage' });
+  const link = { url: 'https://d.com/1', language: 'en', country: 'US', vertical: 'Massage', published_at: '2026-08-10' };
+  assert.equal(scoreLink(subject, link), 5 + 3 + 2);
+});
+
+test('COMP_KIT_COLUMNS omits the competitor URL and carries our link', () => {
+  const headers = COMP_KIT_COLUMN_META.map((m) => m.header);
+  assert.ok(!headers.some((h) => /url/i.test(h)), 'no competitor URL column');
+  for (const need of ['Competitor Network', 'Vertical', 'Geo', 'Competitor Headline', 'Revenue', 'Our Link']) {
+    assert.ok(headers.includes(need), `COMP kit must include ${need}`);
+  }
+});
+
+test('buildSheetData(COMP_KIT_COLUMNS) never leaks the competitor url', () => {
+  const joined = { id: 5, network: 'mgid-rsoc', vertical: 'HIV Treatment', geo: 'US', adtitle: 'T', revenue: 100, rpc: 0.5, top_keywords: 'a, b', url: 'https://rival.com/secret', our_url: 'https://mytips.com/a', our_domain: 'mytips.com', our_headline: 'H' };
+  const { columns, rows } = buildSheetData([joined], NOW, DEFAULT_COMP_KIT_COLUMN_KEYS, COMP_KIT_COLUMNS);
+  const idx = (h) => columns.findIndex((c) => c.header === h);
+  assert.equal(rows[0].cells[idx('Our Link')].value, 'https://mytips.com/a');
+  assert.ok(!JSON.stringify(rows[0].cells).includes('rival.com/secret'));
 });
 
 test('buildSheetData(KIT_COLUMNS) populates our-link cells from the joined ad', () => {
