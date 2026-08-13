@@ -69,8 +69,8 @@ export async function searchOurLinks({ domain, language, country, search, exclud
     from articles
     where domain = ${dom}
       and url like 'http%'
-      ${language ? sql`and language = ${String(language)}` : sql``}
-      ${country ? sql`and country = ${String(country)}` : sql``}
+      ${language ? sql`and lower(language) = ${String(language).toLowerCase()}` : sql``}
+      ${country ? sql`and upper(country) = ${String(country).toUpperCase()}` : sql``}
       ${like ? sql`and (headline ilike ${like} or url ilike ${like} or keyword ilike ${like})` : sql``}
       ${excluded ? sql`and not (url = any(${excluded}))` : sql``}
     order by published_at desc nulls last, id desc
