@@ -542,6 +542,46 @@ export async function getAdsByIds(ids) {
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }
 
+// Client Kits: the our-link assignment for each of the given competitor ads. Keyed by
+// ad_archive_id so the kit view and export can attach "our link" to a competitor ad.
+// One assignment per ad in practice (assigning replaces the prior one), so the latest
+// wins if a stray duplicate ever exists.
+export async function getAssignmentsByAdIds(adIds) {
+  if (!Array.isArray(adIds) || !adIds.length) return {};
+  const clean = [...new Set(adIds.map(String))];
+  const sql = getSql();
+  const rows = await sql`
+    select ad_archive_id, our_url, our_domain, our_headline, our_article_id, assigned_by, assigned_at
+    from link_assignments
+    where ad_archive_id = any(${clean})
+    order by assigned_at asc
+  `;
+  const byAd = {};
+  for (const r of rows) {
+    byAd[r.ad_archive_id] = {
+      ad_archive_id: r.ad_archive_id,
+      our_url: r.our_url,
+      our_domain: r.our_domain,
+      our_headline: r.our_headline,
+      our_article_id: r.our_article_id,
+      assigned_by: r.assigned_by,
+      assigned_at: iso(r.assigned_at),
+    };
+  }
+  return byAd;
+}
+
+// The our-link URLs already handed out on a given domain, so the articles-DB search can
+// exclude them and only ever offer links that are still available. Scoped to one domain
+// keeps the excluded array small even as the ledger grows.
+export async function getAssignedUrlsForDomain(domain) {
+  const dom = String(domain || '').trim();
+  if (!dom) return [];
+  const sql = getSql();
+  const rows = await sql`select our_url from link_assignments where our_domain = ${dom}`;
+  return rows.map((r) => r.our_url);
+}
+
 export async function getLastRun() {
   const sql = getSql();
   const rows = await sql`

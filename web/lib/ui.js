@@ -307,6 +307,68 @@ export const SHEET_COLUMNS = [
 export const SHEET_COLUMN_META = SHEET_COLUMNS.map(({ key, header }) => ({ key, header }));
 export const DEFAULT_SHEET_COLUMN_KEYS = SHEET_COLUMNS.map((c) => c.key);
 
+// The Client Kits export catalog. The competitor side REUSES SHEET_COLUMNS defs (so the
+// creative and metric columns never drift from the main export), minus every column that
+// would leak the competitor's own destination: 'link', 'slug' and 'query' are omitted by
+// construction, so a kit can never expose a competitor URL. Our-link columns are appended
+// and read from the assignment joined onto the ad (a.our_domain / a.our_url /
+// a.our_headline), so the client sees the creative beside OUR link.
+const KIT_COMPETITOR_KEYS = ['preview', 'image_url', 'page', 'domain', 'headline', 'body', 'cta', 'vertical', 'country', 'language', 'format', 'days', 'revenue', 'keywords', 'ad_id'];
+const OUR_LINK_COLUMNS = [
+  { key: 'our_domain',   header: 'Our Domain',   kind: 'text', get: (a) => a.our_domain,   width: 150, align: 'LEFT', wrap: false },
+  { key: 'our_link',     header: 'Our Link',     kind: 'link', get: (a) => a.our_url,       width: 300, align: 'LEFT', wrap: false },
+  { key: 'our_headline', header: 'Our Headline', kind: 'text', get: (a) => a.our_headline,  width: 260, align: 'LEFT', wrap: true  },
+];
+export const KIT_COLUMNS = [
+  ...KIT_COMPETITOR_KEYS.map((k) => SHEET_COLUMNS.find((c) => c.key === k)).filter(Boolean),
+  ...OUR_LINK_COLUMNS,
+];
+export const KIT_COLUMN_META = KIT_COLUMNS.map(({ key, header }) => ({ key, header }));
+export const DEFAULT_KIT_COLUMN_KEYS = KIT_COLUMNS.map((c) => c.key);
+
+// ── Auto-suggest: how well one of our links fits a competitor ad ───────────────
+// Higher is better. Language and country are strong signals (a client's audience has to
+// match), so they carry the most weight; vertical/category is a softer token overlap
+// because the two databases use different taxonomies. Pure and deterministic, so the view
+// can rank the available list and pick a top match, and it is unit-tested without a DB.
+const kitTokens = (s) => String(s || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+
+function verticalOverlap(a, b) {
+  const A2 = new Set(kitTokens(a));
+  if (!A2.size) return 0;
+  for (const t of kitTokens(b)) if (A2.has(t)) return 2;
+  return 0;
+}
+
+export function scoreLink(ad, link) {
+  if (!ad || !link) return 0;
+  let score = 0;
+  const adLang = langCode(ad.creative_language || ad.language);
+  const linkLang = langCode(link.language);
+  if (adLang && linkLang && adLang === linkLang) score += 5;
+  const adCountry = String(ad.country || '').toUpperCase();
+  const linkCountry = String(link.country || '').toUpperCase();
+  if (adCountry && linkCountry && adCountry === linkCountry) score += 3;
+  score += verticalOverlap(ad.vertical, link.vertical);
+  score += verticalOverlap(ad.vertical, link.category);
+  return score;
+}
+
+// Our links ranked best-first for an ad: highest score, then newest. Returns a new
+// array of copies tagged with their `score` (never mutates the input).
+export function rankLinks(ad, links) {
+  return (links || [])
+    .map((link) => ({ ...link, score: scoreLink(ad, link) }))
+    .sort((x, y) => y.score - x.score || String(y.published_at || '').localeCompare(String(x.published_at || '')));
+}
+
+// The availability filter: drop candidate links whose URL is already assigned. Pure, so
+// the view and the tests share one definition of "available".
+export function availableLinks(links, assignedUrls) {
+  const taken = new Set((assignedUrls || []).map(String));
+  return (links || []).filter((l) => !taken.has(String(l.url)));
+}
+
 const cellText = (c, a, now) => { const v = c.get(a, now); return v == null ? '' : String(v); };
 
 // Build a CSV string from ad rows. Uses the same catalog as the Sheet, minus the
@@ -325,9 +387,11 @@ export function buildCsv(rows, now) {
 // order) plus each row's cells tagged by kind, so the Sheets layer can render text,
 // an in-cell image, or a link without knowing the ad shape. `selectedKeys` may arrive
 // unordered or partial; unknown keys are ignored and canonical order is preserved.
-export function buildSheetData(ads, now, selectedKeys) {
-  const want = new Set(selectedKeys && selectedKeys.length ? selectedKeys : DEFAULT_SHEET_COLUMN_KEYS);
-  const cols = SHEET_COLUMNS.filter((c) => want.has(c.key));
+// `catalog` selects which column set to build from — the Fresh Finds export (default)
+// or the Client Kits export (KIT_COLUMNS) — so both exports share one builder.
+export function buildSheetData(ads, now, selectedKeys, catalog = SHEET_COLUMNS) {
+  const want = new Set(selectedKeys && selectedKeys.length ? selectedKeys : catalog.map((c) => c.key));
+  const cols = catalog.filter((c) => want.has(c.key));
   const columns = cols.map((c) => ({ key: c.key, header: c.header, kind: c.kind, width: c.width, align: c.align, wrap: c.wrap }));
   const rows = ads.map((a) => ({
     cells: cols.map((c) => {

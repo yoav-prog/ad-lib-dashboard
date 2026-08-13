@@ -15,6 +15,7 @@ import TableScroll from '@/components/TableScroll';
 import CompetitorView from '@/components/CompetitorView';
 import TrendsView from '@/components/TrendsView';
 import PipelineView from '@/components/PipelineView';
+import ClientKitsView from '@/components/ClientKitsView';
 import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
 import FilteredView from '@/components/FilteredView';
@@ -23,9 +24,9 @@ import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFaile
 
 // The views that still analyse every ad in the browser. With the server-side feed on,
 // the full array is fetched once, on the first visit to any of them (ensureFullFeed).
-const FULL_FEED_VIEWS = ['competitor', 'trends', 'pipeline'];
+const FULL_FEED_VIEWS = ['competitor', 'trends', 'pipeline', 'kits'];
 
-export default function Dashboard({ ads: adsProp, serverFeed = false, initialFeed = null, ticker: tickerProp = null, secondaryCounts = { review: 0, filtered: 0, rejected: 0 }, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null }) {
+export default function Dashboard({ ads: adsProp, serverFeed = false, initialFeed = null, ticker: tickerProp = null, secondaryCounts = { review: 0, filtered: 0, rejected: 0 }, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null, articlesConfigured = false }) {
   // The server resolved these; the UI only decides what to render. Every action
   // is gated again server-side, so hiding a control is a courtesy, not the lock.
   const canEdit = caps.edit_ads === true;
@@ -637,6 +638,11 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
           <PipelineView ads={adsAll} update={update} openDetail={openDetail} matchesQuery={matchesQuery} />
         </LazyTab>
       )}
+      {view === 'kits' && (
+        <LazyTab tab="client kits" loading={fullLoading} failed={fullError} retry={ensureFullFeed} ready={!serverFeed || fullAds != null}>
+          <ClientKitsView ads={adsAll} NOW={NOW} canBuild={canExport} matchesQuery={matchesQuery} notConfigured={!articlesConfigured} />
+        </LazyTab>
+      )}
       {view === 'review' && (
         <LazyTab tab="review" loading={loadingTab === 'review'} failed={tabError === 'review'} retry={() => { setTabError(null); loadTab('review'); }} ready={loadedRef.current.review}>
           <ReviewView ads={tabAds.review} NOW={NOW} canEdit={canEdit} query={query} onDecide={onReviewDecide} />
@@ -740,6 +746,7 @@ function TopChrome({ view, setView, query, setQuery, placeholder, showSearch, la
     { id: 'competitor', label: 'Competitors' },
     { id: 'trends', label: 'Trends' },
     { id: 'pipeline', label: 'Pipeline' },
+    { id: 'kits', label: 'Client Kits' },
     { id: 'review', label: 'Review', badge: reviewCount },
     { id: 'filtered', label: 'Filtered', badge: filteredCount },
     { id: 'rejected', label: 'Rejected', badge: rejectedCount },

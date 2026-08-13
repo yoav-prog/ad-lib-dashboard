@@ -3,10 +3,11 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts } from '@/lib/queries';
+import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignedUrlsForDomain } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
-import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
+import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
+import { listOurDomains, searchOurLinks as searchArticleLinks, articlesConfigured } from '@/lib/articles';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url', 'brand'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
@@ -585,6 +586,156 @@ export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys,
   const { columns, rows } = buildSheetData(ads, Date.now(), keys.length ? keys : DEFAULT_SHEET_COLUMN_KEYS);
   try {
     const result = await writeToSheet({ spreadsheetId: id, tabName: tab, columns, rows, mode: writeMode }, Date.now());
+    return { ok: true, saEmail, sheetUrl: `https://docs.google.com/spreadsheets/d/${id}`, ...result };
+  } catch (e) {
+    return { ok: false, reason: e.code === 'PERMISSION' ? 'permission' : 'error', message: String(e.message || e), saEmail };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLIENT KITS - assign our own article links to competitor ads, export client-safe
+// ═══════════════════════════════════════════════════════════════════════════════
+// Our links live in a separate, read-only articles DB (lib/articles); the assignment
+// ledger lives here in the adintel DB (link_assignments). "Available" means a link's URL
+// is not yet in the ledger. Reads require a signed-in session (like the feed); the two
+// mutations require export_data (the same gate that guards pushing data to a sheet).
+
+// Our publishing domains, most links first, for the assign panel's domain dropdown.
+export async function loadOurDomains() {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
+  try {
+    return { ok: true, domains: await listOurDomains() };
+  } catch (e) {
+    console.error('[kit domains] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
+}
+
+// Available links on one of our domains, ranked best-first for the given ad and with
+// already-assigned URLs removed. The ranking is done client-side (pure ui.rankLinks) so
+// this stays a thin read; the DB only narrows by domain / language / country / search.
+export async function searchOurLinks({ domain, language, country, search } = {}) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  if (!articlesConfigured()) return { ok: false, reason: 'not-configured' };
+  const dom = String(domain || '').trim();
+  if (!dom) return { ok: false, reason: 'no-domain' };
+  try {
+    const assigned = await getAssignedUrlsForDomain(dom);
+    const links = await searchArticleLinks({
+      domain: dom,
+      language: language || null,
+      country: country || null,
+      search: search || null,
+      excludeUrls: assigned,
+      limit: 200,
+    });
+    return { ok: true, links };
+  } catch (e) {
+    console.error('[kit search] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
+}
+
+// The our-link assignments for a set of competitor ads, keyed by ad_archive_id.
+export async function loadKitAssignments(adIds) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  if (!Array.isArray(adIds) || !adIds.length) return { ok: true, assignments: {} };
+  const ids = [...new Set(adIds.map(String))].slice(0, 2000);
+  return { ok: true, assignments: await getAssignmentsByAdIds(ids) };
+}
+
+const KIT_URL_RE = /^https?:\/\/.+/i;
+
+// Assign one of our links to a competitor ad. Replaces any prior assignment for that ad
+// (freeing its old link back to available), then inserts, both in one transaction. A
+// unique violation on our_url means the link was taken in the meantime - surfaced as a
+// clean 'taken' reason rather than a 500.
+export async function assignOurLink({ adId, url, domain, headline, articleId } = {}) {
+  await requireCapability('export_data');
+  const ad = String(adId || '').trim();
+  const u = String(url || '').trim();
+  const dom = String(domain || '').trim().slice(0, 255);
+  if (!ad) return { ok: false, reason: 'no-ad' };
+  if (!KIT_URL_RE.test(u) || u.length > 2048) return { ok: false, reason: 'bad-url' };
+  if (!dom) return { ok: false, reason: 'no-domain' };
+  const head = headline ? String(headline).slice(0, 500) : null;
+  const artId = Number.isFinite(Number(articleId)) ? Math.trunc(Number(articleId)) : null;
+  const by = (await getCurrentUser())?.email || null;
+  const sql = getSql();
+  try {
+    await sql.begin(async (tx) => {
+      await tx`delete from link_assignments where ad_archive_id = ${ad}`;
+      await tx`
+        insert into link_assignments (ad_archive_id, our_url, our_domain, our_headline, our_article_id, assigned_by)
+        values (${ad}, ${u}, ${dom}, ${head}, ${artId}, ${by})
+      `;
+    });
+  } catch (e) {
+    if (e.code === '23505' || String(e.message || e).toLowerCase().includes('unique')) {
+      console.warn('[kit assign] link already taken', { adId: ad, domain: dom });
+      return { ok: false, reason: 'taken' };
+    }
+    console.error('[kit assign] failed', e);
+    return { ok: false, reason: 'error', message: String(e.message || e) };
+  }
+  console.info('[kit assign]', { adId: ad, domain: dom, articleId: artId });
+  revalidatePath('/');
+  return { ok: true };
+}
+
+// Remove a competitor ad's our-link assignment, freeing that link back to available.
+export async function unassignOurLink({ adId } = {}) {
+  await requireCapability('export_data');
+  const ad = String(adId || '').trim();
+  if (!ad) return { ok: false, reason: 'no-ad' };
+  const sql = getSql();
+  const rows = await sql`delete from link_assignments where ad_archive_id = ${ad} returning our_url`;
+  console.info('[kit unassign]', { adId: ad, removed: rows.length });
+  revalidatePath('/');
+  return { ok: true, removed: rows.length };
+}
+
+// Export a client kit to a Google Sheet: each competitor ad's creative beside OUR
+// assigned link, the competitor's own link/slug/query columns omitted by construction
+// (KIT_COLUMNS). Only ads that HAVE an assignment are written, so a kit never ships with a
+// blank Our Link. Mirrors exportToSheet's gate, validation and server-authoritative read.
+export async function exportKitToSheet({ spreadsheetId, tabName, adIds, columnKeys, mode } = {}) {
+  await requireCapability('export_data');
+  const id = String(spreadsheetId || '').trim();
+  const tab = String(tabName || '').trim();
+  const saEmail = serviceAccountEmail();
+  if (!SHEET_ID_RE.test(id)) return { ok: false, reason: 'bad-id', saEmail };
+  if (!tab) return { ok: false, reason: 'no-tab', saEmail };
+  if (!Array.isArray(adIds) || !adIds.length) return { ok: false, reason: 'no-rows', saEmail };
+  if (!sheetsConfigured()) return { ok: false, reason: 'not-configured', saEmail };
+
+  const allowed = new Set(DEFAULT_KIT_COLUMN_KEYS);
+  const keys = Array.isArray(columnKeys) ? columnKeys.filter((k) => allowed.has(k)) : [];
+  if (Array.isArray(columnKeys) && !keys.length) return { ok: false, reason: 'no-columns', saEmail };
+  const writeMode = mode === 'replace' ? 'replace' : 'append';
+
+  const ids = [...new Set(adIds.map(String))];
+  const rows0 = await getAdsByIds(ids);
+  if (!rows0.length) return { ok: false, reason: 'no-rows', saEmail };
+  const assignments = await getAssignmentsByAdIds(ids);
+  // Join our-link onto each ad; keep only ads that actually have an assignment.
+  const joined = rows0
+    .map((a) => {
+      const asg = assignments[a.ad_archive_id];
+      return asg ? { ...a, our_url: asg.our_url, our_domain: asg.our_domain, our_headline: asg.our_headline } : null;
+    })
+    .filter(Boolean);
+  if (!joined.length) return { ok: false, reason: 'no-assignments', saEmail };
+  const { ads } = attachSheetMetrics(joined, await getSheetMetricsIndex());
+
+  const { columns, rows } = buildSheetData(ads, Date.now(), keys.length ? keys : DEFAULT_KIT_COLUMN_KEYS, KIT_COLUMNS);
+  try {
+    const result = await writeToSheet({ spreadsheetId: id, tabName: tab, columns, rows, mode: writeMode }, Date.now());
+    console.info('[kit export]', { rows: rows.length, tab, mode: writeMode });
     return { ok: true, saEmail, sheetUrl: `https://docs.google.com/spreadsheets/d/${id}`, ...result };
   } catch (e) {
     return { ok: false, reason: e.code === 'PERMISSION' ? 'permission' : 'error', message: String(e.message || e), saEmail };
