@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
 import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getTakenOurUrls, getMetaCreativesByHosts } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
-import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf } from '@/lib/ui';
+import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf, langCode } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
 import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, articlesConfigured } from '@/lib/articles';
 
@@ -701,6 +701,42 @@ export async function assignOurLink({ adId, url, domain, headline, articleId } =
   return { ok: true };
 }
 
+// Assign our links to a batch of subjects, drawing each subject's link from a pool SCOPED
+// to that subject's own country+language (when matchByAd is on). Grouping by locale and
+// pre-filtering the article query at the DB is what guarantees a be/fr ad only ever sees
+// be/fr links - the pool literally cannot contain a France or Dutch article - while a
+// shared `used` set keeps every link distinct across the whole batch. The old single
+// domain-wide pool (newest 1000, no country filter) could miss a locale's links entirely
+// and then drift onto whatever same-language link was free, which is how a Belgian ad ended
+// up on a France (and even a Dutch) article. Each subject exposes { country, language | creative_language };
+// returns { assigned, unassigned } exactly like planBulkAssignment. With matchByAd off it
+// falls back to one un-scoped pool (legacy "any link" behavior).
+async function assignLinksScoped(subjects, { domain, network, taken = [], matchByAd = true } = {}) {
+  const groups = new Map();
+  for (const s of subjects) {
+    const country = matchByAd ? String(s.country || '').toUpperCase() : '';
+    const language = matchByAd ? langCode(s.creative_language || s.language) : '';
+    const key = `${country}|${language}`;
+    if (!groups.has(key)) groups.set(key, { country, language, subjects: [] });
+    groups.get(key).subjects.push(s);
+  }
+  const used = new Set((taken || []).map(String));
+  const assigned = [];
+  const unassigned = [];
+  for (const g of groups.values()) {
+    const pool = await searchArticleLinks({
+      domain, network: network || null,
+      country: g.country || null, language: g.language || null,
+      excludeUrls: [...used], limit: 500,
+    });
+    const r = planBulkAssignment(g.subjects, pool, { taken: [...used], requireLangMatch: matchByAd, requireCountryMatch: matchByAd });
+    for (const x of r.assigned) used.add(String(x.link.url));
+    assigned.push(...r.assigned);
+    unassigned.push(...r.unassigned);
+  }
+  return { assigned, unassigned };
+}
+
 // Assign our links to many competitor ads at once: for each SELECTED ad still without an
 // assignment, pick the best available link on the chosen domain, never repeating a link
 // within the batch. Ads that already have a link are left untouched; ads with no eligible
@@ -726,11 +762,11 @@ export async function bulkAssignOurLinks({ adIds, domain, network, matchByAd = t
     const alreadyHad = ads.length - targets.length;
     if (!targets.length) return { ok: true, assigned: {}, matched: 0, noLink: [], alreadyHad };
 
-    // One generous pool for the domain (and network, if chosen); the pure planner ranks
-    // per-ad and keeps links distinct, so an English ad gets an English link, no two ads
-    // share one, and a network filter keeps a Tonic kit to Tonic links.
-    const pool = await searchArticleLinks({ domain: dom, network: network || null, excludeUrls: taken, limit: 1000 });
-    const { assigned, unassigned } = planBulkAssignment(targets, pool, { taken, requireLangMatch: matchByAd });
+    // Each ad draws from a pool scoped to its own country+language, so a be/fr ad is only
+    // ever offered be/fr links (never France, never Dutch); vertical ranks within that and
+    // links stay distinct across the batch and against what's globally taken. A network
+    // filter still keeps a Tonic kit to Tonic links.
+    const { assigned, unassigned } = await assignLinksScoped(targets, { domain: dom, network, taken, matchByAd });
     if (!assigned.length) {
       return { ok: true, assigned: {}, matched: 0, noLink: unassigned.map((a) => a.ad_archive_id), alreadyHad };
     }
@@ -991,10 +1027,10 @@ export async function bulkAssignToComp({ compRowIds, domain, network, matchByAd 
     const alreadyHad = rows.length - targets.length;
     if (!targets.length) return { ok: true, assigned: {}, matched: 0, noLink: [], alreadyHad };
 
-    // Adapt comp rows to the { language, country, vertical } shape the matcher understands.
+    // Adapt comp rows to the { language, country, vertical } shape the matcher understands,
+    // then draw each subject's link from a pool scoped to its own country+language.
     const subjects = targets.map((r) => ({ ...compToSubject(r), _compId: r.id }));
-    const pool = await searchArticleLinks({ domain: dom, network: network || null, excludeUrls: taken, limit: 1000 });
-    const { assigned, unassigned } = planBulkAssignment(subjects, pool, { taken, requireLangMatch: matchByAd });
+    const { assigned, unassigned } = await assignLinksScoped(subjects, { domain: dom, network, taken, matchByAd });
     if (!assigned.length) {
       return { ok: true, assigned: {}, matched: 0, noLink: unassigned.map((a) => a._compId), alreadyHad };
     }

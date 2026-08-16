@@ -414,17 +414,29 @@ export function dedupeBy(rows, keyFn) {
 // Plan a bulk assignment: give each ad its best available link from a shared pool, never
 // handing the same link to two ads in the batch. Pure, so the greedy allocation is
 // testable without a DB. `taken` seeds URLs already used elsewhere (globally assigned on
-// the domain). With `requireLangMatch` (the default), an ad is only given a link in its
-// own language - country and vertical still rank within that - so a fast "assign to this
-// domain" never pairs an English ad with a French article. Ads left with no eligible link
-// come back in `unassigned` rather than being forced a mismatch.
-export function planBulkAssignment(ads, links, { taken = [], requireLangMatch = true } = {}) {
+// the domain). With strict matching on (the default for both `requireLangMatch` and
+// `requireCountryMatch`), an ad is only ever given a link in its OWN language AND its OWN
+// country - a Belgian French ad gets a be/fr link, never a France one, and never a Dutch
+// one - with vertical still ranking within that scope so an on-topic link wins. This is a
+// hard gate, not a soft nudge: once the correct-language/country links run out, an ad is
+// left in `unassigned` rather than forced onto a wrong-country or wrong-language link (the
+// exact "headline is Belgium, link is France" mismatch Maya reported). Callers guarantee
+// "nothing empty" by scoping the pool to the ad's locale, where our supply is ample.
+export function planBulkAssignment(ads, links, { taken = [], requireLangMatch = true, requireCountryMatch = true } = {}) {
   const used = new Set((taken || []).map(String));
   const assigned = [];
   const unassigned = [];
   for (const ad of ads || []) {
     const adLang = langCode(ad.creative_language || ad.language);
-    const pool = (links || []).filter((l) => !used.has(String(l.url)) && (!requireLangMatch || (adLang && langCode(l.language) === adLang)));
+    const adCountry = String(ad.country || '').toUpperCase();
+    const pool = (links || []).filter((l) => {
+      if (used.has(String(l.url))) return false;
+      // Hard gates, but only on attributes the ad actually carries: a be/fr ad must get a
+      // be/fr link, yet an ad with no known country isn't starved to nothing over it.
+      if (requireLangMatch && adLang && langCode(l.language) !== adLang) return false;
+      if (requireCountryMatch && adCountry && String(l.country || '').toUpperCase() !== adCountry) return false;
+      return true;
+    });
     const pick = rankLinks(ad, pool)[0];
     if (pick) { used.add(String(pick.url)); assigned.push({ ad, link: pick }); }
     else unassigned.push(ad);

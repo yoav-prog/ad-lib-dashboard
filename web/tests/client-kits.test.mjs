@@ -105,10 +105,10 @@ test('planBulkAssignment with requireLangMatch skips ads that have no same-langu
   assert.deepEqual(unassigned.map((a) => a.ad_archive_id), ['de1']);
 });
 
-test('planBulkAssignment without requireLangMatch will use any language', () => {
+test('planBulkAssignment with strict matching off will use any language/country', () => {
   const ads = [{ ad_archive_id: 'de1', creative_language: 'de', country: 'DE' }];
   const links = [{ id: 1, url: 'https://d.com/en', language: 'en', country: 'US', published_at: '2026-08-10' }];
-  const { assigned } = planBulkAssignment(ads, links, { requireLangMatch: false });
+  const { assigned } = planBulkAssignment(ads, links, { requireLangMatch: false, requireCountryMatch: false });
   assert.equal(assigned.length, 1);
 });
 
@@ -120,8 +120,11 @@ test('planBulkAssignment excludes already-taken URLs', () => {
   assert.equal(unassigned.length, 1);
 });
 
-test('planBulkAssignment gives the top earner first pick when links are scarce', () => {
-  // Two en/US ads, but only one en/US link and one en/DE link. Order = priority.
+test('planBulkAssignment never hands a wrong-country link, even when its own country runs short', () => {
+  // Two en/US ads, one en/US link and one en/DE link. The first ad gets the US link; the
+  // second is left UNASSIGNED rather than forced onto the DE link - the exact "headline is
+  // Belgium, our link is France" mismatch Maya reported. (In production the pool is scoped to
+  // the ad's locale where supply is ample, so nothing goes empty; this pins the hard gate.)
   const ads = [
     { ad_archive_id: 'top', creative_language: 'en', country: 'US' },
     { ad_archive_id: 'next', creative_language: 'en', country: 'US' },
@@ -130,10 +133,46 @@ test('planBulkAssignment gives the top earner first pick when links are scarce',
     { id: 1, url: 'https://d.com/us', language: 'en', country: 'US', published_at: '2026-08-10' },
     { id: 2, url: 'https://d.com/de', language: 'en', country: 'DE', published_at: '2026-08-10' },
   ];
-  const { assigned } = planBulkAssignment(ads, links, { requireLangMatch: true });
+  const { assigned, unassigned } = planBulkAssignment(ads, links, { requireLangMatch: true });
   const byAd = Object.fromEntries(assigned.map((a) => [a.ad.ad_archive_id, a.link.url]));
-  assert.equal(byAd.top, 'https://d.com/us', 'the first ad gets the best (country-matching) link');
-  assert.equal(byAd.next, 'https://d.com/de');
+  assert.equal(byAd.top, 'https://d.com/us', 'the first ad gets the country-matching link');
+  assert.equal(byAd.next, undefined, 'the surplus US ad is not given the DE link');
+  assert.deepEqual(unassigned.map((a) => a.ad_archive_id), ['next']);
+});
+
+test('planBulkAssignment keeps a Belgian French ad on be/fr links (never France, never Dutch)', () => {
+  // The reported case: a be/fr ad must not receive a fr/FR (France) or a be/nl (Dutch) link.
+  const ads = [{ ad_archive_id: 'be1', creative_language: 'fr', country: 'BE', vertical: 'Real Estate' }];
+  const links = [
+    { id: 1, url: 'https://d.com/fr-fr', language: 'fr', country: 'FR', vertical: 'Real Estate', published_at: '2026-08-10' },
+    { id: 2, url: 'https://d.com/be-nl', language: 'nl', country: 'BE', vertical: 'Real Estate', published_at: '2026-08-11' },
+    { id: 3, url: 'https://d.com/be-fr', language: 'fr', country: 'BE', vertical: 'Home Value', published_at: '2026-08-09' },
+  ];
+  const { assigned, unassigned } = planBulkAssignment(ads, links, {});
+  assert.equal(assigned.length, 1);
+  assert.equal(assigned[0].link.url, 'https://d.com/be-fr', 'only the be/fr link is eligible');
+  assert.equal(unassigned.length, 0);
+});
+
+test('planBulkAssignment prefers the on-vertical link within the correct locale', () => {
+  // Both links are be/fr; vertical must rank the house link above the (newer) lingerie one,
+  // so a house-buying ad never gets a lingerie article when a house one is available.
+  const ads = [{ ad_archive_id: 'be1', creative_language: 'fr', country: 'BE', vertical: 'Real Estate' }];
+  const links = [
+    { id: 1, url: 'https://d.com/lingerie', language: 'fr', country: 'BE', vertical: 'Lingerie', published_at: '2026-08-12' },
+    { id: 2, url: 'https://d.com/house', language: 'fr', country: 'BE', vertical: 'Real Estate', published_at: '2026-08-01' },
+  ];
+  const { assigned } = planBulkAssignment(ads, links, {});
+  assert.equal(assigned[0].link.url, 'https://d.com/house');
+});
+
+test('planBulkAssignment fills every ad when the locale supply is ample (nothing empty)', () => {
+  const ads = Array.from({ length: 5 }, (_, i) => ({ ad_archive_id: `be${i}`, creative_language: 'fr', country: 'BE', vertical: 'Real Estate' }));
+  const links = Array.from({ length: 8 }, (_, i) => ({ id: i, url: `https://d.com/be-fr-${i}`, language: 'fr', country: 'BE', vertical: 'Real Estate', published_at: `2026-08-0${(i % 9) + 1}` }));
+  const { assigned, unassigned } = planBulkAssignment(ads, links, {});
+  assert.equal(assigned.length, 5);
+  assert.equal(unassigned.length, 0);
+  assert.equal(new Set(assigned.map((a) => a.link.url)).size, 5, 'all distinct');
 });
 
 test('urlLang extracts the /xx/ path segment; geoToLang falls back by country', () => {
