@@ -34,6 +34,59 @@ export function serviceAccountEmail() {
   return process.env.GCS_CLIENT_EMAIL || null;
 }
 
+// ── Transient-failure retry ───────────────────────────────────────────────────
+// Google answers a perfectly good request with a 5xx now and then (the "503: The service
+// is currently unavailable" an export used to die on) and throttles bursts with a 429.
+// Google documents both as retry-with-exponential-backoff conditions, so every call this
+// module makes goes through sendWithRetry rather than failing on the first bad answer.
+// Bounded far tighter than Google's own 32-64 s ceiling: an export runs in a server action
+// with someone watching a modal, so about 3 s of retry is all the latency budget there is.
+const RETRY_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 4;      // the first try plus three retries
+const BACKOFF_BASE_MS = 400; // 400ms, 800ms, 1600ms, each plus a little jitter
+const BACKOFF_CAP_MS = 2000;
+const JITTER_MS = 250;
+
+export function isTransientStatus(status) {
+  return RETRY_STATUS.has(status);
+}
+
+// min(base * 2^(n-1), cap) + jitter, for `attempt` counted from 1. The jitter keeps two
+// exports that hit the same outage from retrying in lockstep.
+export function backoffDelayMs(attempt, rand = Math.random) {
+  return Math.min(BACKOFF_BASE_MS * 2 ** (attempt - 1), BACKOFF_CAP_MS) + Math.floor(rand() * JITTER_MS);
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// One HTTP call to Google, retried through transient failures. `send` is re-invoked per
+// attempt because a request body cannot be replayed. A thrown network fault (dropped
+// socket, DNS blip) is retried on the same terms as a 5xx. Returns the last response even
+// when it is still transient, so the caller turns it into a message the usual way; only an
+// all-attempts-threw run rethrows. `sleep` is injectable so the tests do not actually wait.
+export async function sendWithRetry(send, action, sleep = wait) {
+  let lastThrown = null;
+  for (let attempt = 1; ; attempt++) {
+    let res = null;
+    try {
+      res = await send();
+      if (!isTransientStatus(res.status)) return res;
+    } catch (e) {
+      res = null;
+      lastThrown = e;
+    }
+    if (attempt >= MAX_ATTEMPTS) {
+      if (res) return res;
+      const err = new Error(`Could not reach Google Sheets while ${action}. Check the network connection and try again.`);
+      err.code = 'NETWORK';
+      err.cause = lastThrown;
+      throw err;
+    }
+    console.warn('[sheets] transient failure, retrying', { action, attempt, status: res ? res.status : 'network-error' });
+    await sleep(backoffDelayMs(attempt));
+  }
+}
+
 async function getAccessToken(nowMs) {
   if (cachedToken && cachedToken.exp - 60_000 > nowMs) return cachedToken.token;
   const sa = serviceAccount();
@@ -51,12 +104,15 @@ async function getAccessToken(nowMs) {
   }
   const assertion = `${signingInput}.${signature}`;
 
-  const res = await fetch(TOKEN_URL, {
+  const res = await sendWithRetry(() => fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }),
-  });
+  }), 'signing in to Google');
   if (!res.ok) {
+    // A transient status here survived every retry, so it gets the "Google is down, wait"
+    // wording rather than the misleading "check your key" one.
+    if (isTransientStatus(res.status)) await apiFail(res, 'signing in to Google');
     throw new Error('Google authentication failed. Check the service-account key and the server clock.');
   }
   const data = await res.json();
@@ -64,22 +120,31 @@ async function getAccessToken(nowMs) {
   return cachedToken.token;
 }
 
-// Turn a failed Sheets response into a message a non-technical admin can act on.
+// Turn a failed Sheets status into a message a non-technical admin can act on. Pure, so
+// the wording is unit-tested. A transient status only reaches here after every retry has
+// been spent, which is why it says to wait rather than to check anything.
+export function describeApiError(status, detail, action) {
+  if (status === 401 || status === 403) {
+    return { code: 'PERMISSION', message: 'Access denied. Share the sheet with the service account as Editor, and make sure the Google Sheets API is enabled.' };
+  }
+  if (status === 404) {
+    return { code: 'NOT_FOUND', message: 'No spreadsheet found with that ID. Double-check the ID or URL.' };
+  }
+  if (status === 429) {
+    return { code: 'RATE_LIMIT', message: `Google is rate-limiting this account (429) and kept doing so across ${MAX_ATTEMPTS} tries. Nothing is wrong with your sheet. Wait a minute, then export again.` };
+  }
+  if (isTransientStatus(status)) {
+    return { code: 'UNAVAILABLE', message: `Google Sheets is temporarily unavailable (${status}) and stayed that way across ${MAX_ATTEMPTS} tries. This is on Google's side, not your sheet. Wait a minute, then export again.` };
+  }
+  return { code: 'API', message: `Google Sheets error while ${action} (${status})${detail ? `: ${detail}` : ''}.` };
+}
+
 async function apiFail(res, action) {
   let detail = '';
   try { detail = (await res.json())?.error?.message || ''; } catch { /* no body */ }
-  if (res.status === 401 || res.status === 403) {
-    const err = new Error('Access denied. Share the sheet with the service account as Editor, and make sure the Google Sheets API is enabled.');
-    err.code = 'PERMISSION';
-    throw err;
-  }
-  if (res.status === 404) {
-    const err = new Error('No spreadsheet found with that ID. Double-check the ID or URL.');
-    err.code = 'NOT_FOUND';
-    throw err;
-  }
-  const err = new Error(`Google Sheets error while ${action} (${res.status})${detail ? `: ${detail}` : ''}.`);
-  err.code = 'API';
+  const { code, message } = describeApiError(res.status, detail, action);
+  const err = new Error(message);
+  err.code = code;
   throw err;
 }
 
@@ -91,27 +156,31 @@ export function a1Tab(title) {
   return `'${String(title).replace(/'/g, "''")}'`;
 }
 
-async function authed(token, url, init = {}) {
-  return fetch(url, { ...init, headers: { Authorization: `Bearer ${token}`, ...(init.headers || {}) } });
+// Every Sheets call goes through here: bearer auth, retry on a transient answer, a
+// friendly error on a real failure, parsed JSON back. `action` names the step for both
+// the retry log line and the error message.
+async function apiCall(token, url, init, action) {
+  const res = await sendWithRetry(
+    () => fetch(url, { ...init, headers: { Authorization: `Bearer ${token}`, ...(init?.headers || {}) } }),
+    action,
+  );
+  if (!res.ok) await apiFail(res, action);
+  return res.json();
 }
 
 async function batchUpdate(token, id, requests) {
-  const res = await authed(token, `${SHEETS_API}/${encodeURIComponent(id)}:batchUpdate`, {
+  return apiCall(token, `${SHEETS_API}/${encodeURIComponent(id)}:batchUpdate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ requests }),
-  });
-  if (!res.ok) await apiFail(res, 'updating the spreadsheet');
-  return res.json();
+  }, 'updating the spreadsheet');
 }
 
 // Sheet metadata we need up front: each tab's id/title/size and any banded ranges
 // (so we can clear and re-apply banding). Doubles as the access/existence check.
 async function getSheetMeta(token, id) {
   const fields = 'sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),bandedRanges(bandedRangeId))';
-  const res = await authed(token, `${SHEETS_API}/${encodeURIComponent(id)}?fields=${encodeURIComponent(fields)}`);
-  if (!res.ok) await apiFail(res, 'opening the spreadsheet');
-  const data = await res.json();
+  const data = await apiCall(token, `${SHEETS_API}/${encodeURIComponent(id)}?fields=${encodeURIComponent(fields)}`, undefined, 'opening the spreadsheet');
   return (data.sheets || []).map((s) => ({
     sheetId: s.properties?.sheetId,
     title: s.properties?.title,
@@ -132,9 +201,8 @@ async function addTab(token, id, title, columnCount) {
 // Every existing row of the tab (whole used range), for dedupe. Empty when blank.
 async function readRows(token, id, tabName) {
   const range = encodeURIComponent(a1Tab(tabName));
-  const res = await authed(token, `${SHEETS_API}/${encodeURIComponent(id)}/values/${range}?majorDimension=ROWS`);
-  if (!res.ok) await apiFail(res, 'reading the tab');
-  return (await res.json()).values || [];
+  const data = await apiCall(token, `${SHEETS_API}/${encodeURIComponent(id)}/values/${range}?majorDimension=ROWS`, undefined, 'reading the tab');
+  return data.values || [];
 }
 
 // ── Cell + formatting builders ────────────────────────────────────────────────
@@ -248,8 +316,8 @@ export async function writeToSheet({ spreadsheetId, tabName, columns, rows, mode
   const existing = created ? [] : await readRows(token, spreadsheetId, tabName);
   const oldRows = existing.length;
   const oldBandingIds = sheet.bandedRanges.map((b) => b.bandedRangeId);
-  // Grow the grid before writing when needed. appendCells auto-expands rows, but
-  // updateCells (replace) does not, so a Replace into a small tab must size it first.
+  // Grow the grid before writing when needed. Both modes write with updateCells, which
+  // never auto-expands the sheet, so a write past the current grid must size it first.
   const ensureGrid = (cols, rowsNeeded, reqs) => {
     const gp = {};
     if (sheet.columnCount && sheet.columnCount < cols) gp.columnCount = cols;
@@ -267,8 +335,7 @@ export async function writeToSheet({ spreadsheetId, tabName, columns, rows, mode
     const oldColMax = existing.reduce((m, r) => Math.max(m, r.length), 0);
     const clearRows = Math.max(oldRows, totalRows);
     const clearCols = Math.max(columns.length, oldColMax);
-    // Size the grid once to fit both the new data and anything being cleared, since
-    // updateCells (unlike appendCells) never auto-grows the sheet.
+    // Size the grid once to fit both the new data and anything being cleared.
     const gridReqs = [];
     ensureGrid(clearCols, clearRows, gridReqs);
     if (gridReqs.length) await batchUpdate(token, spreadsheetId, gridReqs);
@@ -303,12 +370,17 @@ export async function writeToSheet({ spreadsheetId, tabName, columns, rows, mode
   const dataRows = fresh.map(dataRowData);
   const toAppend = hasHeader ? dataRows : [headerData(columns), ...dataRows];
   const totalRows = oldRows + toAppend.length;
-  // Grow columns once up front; appendCells auto-grows rows as it writes.
+  // Written positionally at the first free row rather than with appendCells, which lands
+  // in the same place but is not idempotent: if Google commits an appendCells and then
+  // fails the response, the retry in sendWithRetry would append the block a second time.
+  // Writing the same cells to the same range twice is a no-op, so this is replay-safe.
+  // Costs one thing appendCells gave for free - it auto-grew the sheet - so the grid is
+  // sized for the new rows up front, exactly as replace mode does above.
   const gridReqs = [];
-  ensureGrid(columns.length, 0, gridReqs);
+  ensureGrid(columns.length, totalRows, gridReqs);
   if (gridReqs.length) await batchUpdate(token, spreadsheetId, gridReqs);
-  await writeInChunks(token, spreadsheetId, toAppend, (part) => (
-    { appendCells: { sheetId: sheet.sheetId, rows: part, fields: 'userEnteredValue' } }
+  await writeInChunks(token, spreadsheetId, toAppend, (part, start) => (
+    { updateCells: { range: rng(sheet.sheetId, oldRows + start, oldRows + start + part.length, 0, columns.length), rows: part, fields: 'userEnteredValue' } }
   ), formatRequests(sheet.sheetId, columns, totalRows, oldBandingIds));
   return { mode: 'append', appended: fresh.length, skipped: rows.length - fresh.length, created, wroteHeader: !hasHeader };
 }
