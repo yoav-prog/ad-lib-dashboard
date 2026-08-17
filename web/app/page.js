@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { requireAuth, getCapabilities, hasSessionCookie } from '@/lib/auth';
 import { getAds, getSecondaryCounts, getLastRun, getDomains, getRuns, getFeeds, getFeedPage, getFeedTicker } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics } from '@/lib/metrics';
+import { attachOwned, articlesConfigured } from '@/lib/articles';
 import Dashboard from '@/components/Dashboard';
 
 // Server-side feed, ON by default since the Phase 3 cutover: the page ships one page plus
@@ -53,6 +54,9 @@ export default async function Page() {
   let ticker = null;
   if (SERVER_FEED) {
     [initialFeed, ticker] = await feedPromise;
+    // Flag rows we already have our own article for (article_lineage), so the feed badges them
+    // on first paint - later pages get the same treatment in loadFeedPage.
+    initialFeed.rows = await attachOwned(initialFeed.rows);
     ads = initialFeed.rows;  // the first page, so the client has something to render immediately
     console.info('[feed] server-side first page', { rows: initialFeed.rows.length, total: initialFeed.total });
   } else {
@@ -61,7 +65,7 @@ export default async function Page() {
     // landing-page URL, so each view and export reads plain ad fields.
     const feed = attachSheetMetrics(rawAds, metricsIndex);
     console.info('[metrics] attach', { ads: feed.ads.length, matched: feed.matched, secondary: secondaryCounts });
-    ads = feed.ads;
+    ads = await attachOwned(feed.ads);
   }
 
   return (
@@ -80,7 +84,7 @@ export default async function Page() {
       caps={caps}
       me={{ email: user.email, name: user.name }}
       exportSaEmail={caps.export_data ? (process.env.GCS_CLIENT_EMAIL ?? null) : null}
-      articlesConfigured={Boolean(process.env.ARTICLES_DATABASE_URL)}
+      articlesConfigured={articlesConfigured()}
     />
   );
 }

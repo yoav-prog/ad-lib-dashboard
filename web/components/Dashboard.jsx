@@ -22,7 +22,7 @@ import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
 import FilteredView from '@/components/FilteredView';
 import RejectedView from '@/components/RejectedView';
-import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts, loadFeedPage, loadFeedFacets, loadFeedIds, loadFeedExport, loadFullFeed, loadDomainAdCounts } from '@/app/actions';
+import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts, loadFeedPage, loadFeedFacets, loadFeedIds, loadFeedExport, loadFullFeed, loadDomainAdCounts, loadOwnedSisters } from '@/app/actions';
 
 // The views that still analyse every ad in the browser. With the server-side feed on,
 // the full array is fetched once, on the first visit to any of them (ensureFullFeed).
@@ -1186,6 +1186,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
             {cols.has('creative_language') && <div key="creative_language" title="Language of the text ON the creative (image / video), not the ad copy" style={s('width:100px;flex-shrink:0;padding-left:16px')}>Creative Lang</div>}
             {cols.has('rsoc') && <div key="rsoc" title="How much policy care this topic/angle would need on Google RSoC. Green = no known restriction on the topic (NOT a guarantee the article you write is safe); Yellow = build with care; Red = restricted vertical or prohibited angle, likely to draw strikes." style={s('width:132px;flex-shrink:0;padding-left:16px')}>Policy</div>}
             <div key="headline" style={s('flex:1;min-width:0')}>Headline</div>
+            {cols.has('owned') && <div key="owned" title="We already have our own article made from this competitor's landing URL. Open the ad to see and copy our versions." style={s('width:92px;flex-shrink:0;text-align:center;padding-left:16px')}>Our Version</div>}
             {cols.has('url') && <div key="url" style={s('width:168px;flex-shrink:0')}>URL</div>}
             {showSlug && <div key="slug" style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
             {showQuery && <div key="query" title="The searched phrase behind the landing link (Predicto & Visymo feeds)" style={s('width:240px;flex-shrink:0;padding-left:16px')}>Query</div>}
@@ -1265,6 +1266,16 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                 <CopyCell key="headline" value={a.title || a.caption || a.body_text || ''} style={s('flex:1;min-width:0;padding-right:16px')}>
                   <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
                 </CopyCell>
+                {cols.has('owned') && (
+                  <div key="owned" style={s('width:92px;flex-shrink:0;display:flex;justify-content:center;padding-left:16px')}>
+                    {a.owned_parent_url
+                      ? <span title="We already have our own article made from this URL - open this ad to see and copy it"
+                          style={s(`display:inline-flex;align-items:center;gap:4px;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:#3FB27F;border:1px solid #3FB27F55;padding:2px 6px;white-space:nowrap`)}>
+                          <span style={s('width:6px;height:6px;border-radius:50%;background:#3FB27F;flex-shrink:0')} />OURS
+                        </span>
+                      : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
+                  </div>
+                )}
                 {cols.has('url') && (
                   <CopyCell key="url" value={url} style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>
                     {url
@@ -1653,6 +1664,22 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
     return () => { alive = false; };
   }, [ad.ad_archive_id]);
 
+  // Our own articles made from this competitor's landing URL (the article_lineage sister
+  // family). Loaded on demand when an owned ad opens - a family can be large, so it never ships
+  // with the feed. Keyed to reset whenever the ad or its matched parent changes.
+  const [sisters, setSisters] = useState(null);
+  const [sistersState, setSistersState] = useState('idle'); // idle | loading | ready | error
+  useEffect(() => {
+    if (!ad.owned_parent_url) { setSisters(null); setSistersState('idle'); return; }
+    let alive = true;
+    setSisters(null); setSistersState('loading');
+    console.info('[owned sisters] loading', { adId: ad.ad_archive_id, parent: ad.owned_parent_url });
+    loadOwnedSisters(ad.owned_parent_url)
+      .then((r) => { if (!alive) return; setSisters(r?.sisters || []); setSistersState(r?.ok ? 'ready' : 'error'); })
+      .catch((e) => { console.error('[owned sisters] load failed', e); if (alive) setSistersState('error'); });
+    return () => { alive = false; };
+  }, [ad.ad_archive_id, ad.owned_parent_url]);
+
   const [draft, setDraft] = useState(null);
   const [drafting, setDrafting] = useState(false);
   const genDraft = async () => {
@@ -1766,6 +1793,54 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
                       ? <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>The article could not be loaded. Reopen this ad to retry.</span>
                       : <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>Loading article...</span>}
               </div>
+            </div>
+          )}
+
+          {ad.owned_parent_url && (
+            <div style={s('margin-top:28px;padding-top:22px;border-top:1px solid rgba(255,255,255,.09)')}>
+              <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:14px')}>
+                <span style={s(`display:inline-flex;align-items:center;gap:5px;font-family:${MONO};font-size:9.5px;letter-spacing:1.2px;color:#3FB27F`)}>
+                  <span style={s('width:6px;height:6px;border-radius:50%;background:#3FB27F;flex-shrink:0')} />OUR VERSIONS OF THIS URL
+                </span>
+                {sistersState === 'ready' && sisters?.length > 0 && (
+                  <span style={s(`font-family:${MONO};font-size:9px;color:#0B0C0E;background:#3FB27F;padding:1px 6px;font-variant-numeric:tabular-nums`)}>{sisters.length}</span>
+                )}
+                <div style={s('flex:1;height:1px;background:rgba(255,255,255,.06)')} />
+              </div>
+              <div style={s('font-size:10.5px;color:#5A5E64;line-height:1.5;margin-bottom:12px')}>
+                We already made our own article inspired by this competitor's landing URL. Copy one, open it, or set it as this ad's linked article.
+              </div>
+              {sistersState === 'loading' && <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>Finding our versions...</span>}
+              {sistersState === 'error' && <span style={s(`font-family:${MONO};font-size:11px;color:#C86B5C`)}>Could not load our versions. Reopen this ad to retry.</span>}
+              {sistersState === 'ready' && sisters?.length === 0 && <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>No matching articles found.</span>}
+              {sistersState === 'ready' && sisters?.length > 0 && (
+                <div style={s('display:flex;flex-direction:column;gap:1px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.06)')}>
+                  {sisters.slice(0, 40).map((v) => {
+                    const linked = ad.linked_article_url && ad.linked_article_url === v.url;
+                    return (
+                      <div key={v.id} style={s('background:#0B0C0E;padding:10px 12px;display:flex;flex-direction:column;gap:6px')}>
+                        <div style={s('display:flex;align-items:center;gap:8px;flex-wrap:wrap')}>
+                          <span style={s(`font-family:${MONO};font-size:9.5px;color:#8A8E94`)}>{v.domain || '-'}</span>
+                          {(v.country || v.language) && <span style={s(`font-family:${MONO};font-size:9px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:1px 5px`)}>{[v.country, v.language].filter(Boolean).join(' · ')}</span>}
+                          {linked && <span style={s(`font-family:${MONO};font-size:9px;color:#3FB27F;border:1px solid #3FB27F55;padding:1px 5px`)}>LINKED</span>}
+                        </div>
+                        {v.headline && <div style={s('font-size:12px;color:#C6C9CE;line-height:1.4')}>{v.headline}</div>}
+                        <div style={s('display:flex;align-items:center;gap:8px;flex-wrap:wrap')}>
+                          <a href={v.url} target="_blank" rel="noreferrer" style={s(`display:inline-flex;align-items:center;gap:4px;font-family:${MONO};font-size:10px;color:#3FB27F;text-decoration:none;border:1px solid #3FB27F55;padding:3px 8px`)}>OPEN &#8599;</a>
+                          <button onClick={() => { try { navigator.clipboard?.writeText(v.url); console.info('[owned sisters] copied', { url: v.url }); } catch (e) { console.warn('[owned sisters] copy failed', String(e)); } }}
+                            style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:3px 8px;cursor:pointer`)}>COPY URL</button>
+                          {canEdit && !linked && (
+                            <button onClick={() => { updateLocal(ad.ad_archive_id, { linked_article_url: v.url }); commit(ad.ad_archive_id, { linked_article_url: v.url }); }}
+                              style={s(`font-family:${MONO};font-size:10px;color:#E8A33D;background:none;border:1px solid rgba(232,163,61,.4);padding:3px 8px;cursor:pointer`)}>SET AS LINKED</button>
+                          )}
+                        </div>
+                        <a href={v.url} target="_blank" rel="noreferrer" style={s(`font-family:${MONO};font-size:9.5px;color:#5A5E64;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{v.url}</a>
+                      </div>
+                    );
+                  })}
+                  {sisters.length > 40 && <div style={s('background:#0B0C0E;padding:8px 12px;font-family:'+MONO+';font-size:9.5px;color:#5A5E64')}>+{sisters.length - 40} more in this family</div>}
+                </div>
+              )}
             </div>
           )}
 
