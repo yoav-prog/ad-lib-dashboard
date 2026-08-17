@@ -22,6 +22,7 @@ export const COLUMN_CATALOGS = {
     { key: 'creative_language', label: 'Creative Lang' },
     { key: 'rsoc', label: 'Policy' },
     { key: 'headline', label: 'Headline', pinned: true },
+    { key: 'owned', label: 'Our Version' },
     { key: 'url', label: 'URL' },
     { key: 'slug', label: 'Slug', auto: true },
     { key: 'query', label: 'Query', auto: true },

@@ -9,6 +9,7 @@
 // points at a read-only Postgres role so least-privilege is enforced at the DB too.
 import postgres from 'postgres';
 import { createTtlCache } from './ttl-cache.js';
+import { normalizeUrlKey, matchOwned } from './owned.js';
 
 // One shared client, created lazily. The Supabase pooler needs prepared statements off
 // and SSL, same as lib/db.js. The URL may arrive in SQLAlchemy form
@@ -259,4 +260,66 @@ export async function getCompRowsByIds(ids) {
   `;
   const byId = new Map(rows.map((r) => [r.id, mapCompRow(r)]));
   return uniq.map((id) => byId.get(id)).filter(Boolean);
+}
+
+// ── "We have our own version" (main feed lineage badge) ─────────────────────────
+// Amit's ask: on the main competitor feed, flag each ad for which we have already produced our
+// own article inspired by its landing URL. That is exactly the sister-family relation above -
+// article_lineage.parent_url is the competitor/source URL, and the family's is_external=false
+// articles are our own versions. The Client Kits tab (RSOC comp rows) matches parent_url
+// exactly because a comp row's `url` is already a clean article URL. A Meta ad's landing is
+// not: link_url can be " | "-joined and carry tracking query strings, and resolved_url may be
+// an RSOC search page with no article at all. So this path normalizes both sides to host+path
+// and matches on that. The pure URL-matching rules live in lib/owned.js (dependency-free, unit-
+// tested); everything here reads only this database, so it stays inside the one enforced
+// boundary. attachOwned takes already-fetched adintel rows as plain data.
+
+// The index of competitor/source URLs we have our own version of: every article_lineage parent
+// whose family actually contains one of OUR articles (is_external=false, real http link). Small
+// (~1k rows), the same for every viewer, and only shifts when we clone something new, so it is
+// held for ten minutes like the other article-DB lookups. Keyed by normalized parent_url;
+// the first parent to claim a normalized key wins (they collide only on trivial dupes).
+const ownedIndexCache = createTtlCache(10 * 60 * 1000);
+
+export async function getOwnedParentIndex() {
+  const hit = ownedIndexCache.peek();
+  if (hit) return hit.value;
+  const sql = getArticlesSql();
+  const rows = await sql`
+    select distinct l.parent_url, l.family_id
+    from article_lineage l
+    where l.parent_url like 'http%'
+      and exists (
+        select 1 from articles a
+        where a.sister_family_id = l.family_id and a.is_external = false and a.url like 'http%'
+      )
+  `;
+  const index = new Map();
+  for (const r of rows) {
+    const key = normalizeUrlKey(r.parent_url);
+    if (key && !index.has(key)) index.set(key, { parent_url: r.parent_url, family_id: r.family_id });
+  }
+  ownedIndexCache.fill(index);
+  console.info('[owned] index built', { parents: rows.length, keys: index.size });
+  return index;
+}
+
+// Attach owned_parent_url / owned_family_id to each feed row (null when we have no own version).
+// Best-effort: if the articles DB is not configured or the lookup fails, the feed is returned
+// unchanged rather than broken - the badge is an enrichment, never a gate on showing ads.
+export async function attachOwned(rows) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+  if (!articlesConfigured()) return rows;
+  try {
+    const index = await getOwnedParentIndex();
+    const hits = matchOwned(rows, index);
+    console.info('[owned] page matched', { rows: rows.length, owned: hits.size });
+    return rows.map((r) => {
+      const h = hits.get(r.ad_archive_id) || null;
+      return { ...r, owned_parent_url: h?.parent_url ?? null, owned_family_id: h?.family_id ?? null };
+    });
+  } catch (e) {
+    console.warn('[owned] enrichment skipped', String(e?.message || e));
+    return rows;
+  }
 }

@@ -7,7 +7,7 @@ import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getS
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf, langCode } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
-import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, articlesConfigured } from '@/lib/articles';
+import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, attachOwned, articlesConfigured } from '@/lib/articles';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url', 'brand'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
@@ -86,7 +86,29 @@ export async function loadFeedPage(params) {
   const user = await getCurrentUser();
   if (!user) throw new Error('Forbidden: sign in required');
   const { rows, total, page, pageSize } = await getFeedPage(params || {});
-  return { ok: true, rows, total, page, pageSize };
+  // Badge the rows we already have our own article for (best-effort; never blocks the feed).
+  const owned = await attachOwned(rows);
+  return { ok: true, rows: owned, total, page, pageSize };
+}
+
+// The panel behind an owned row: our own articles made from this competitor URL. Loaded on
+// demand when a flagged ad's Detail opens (the family can be large, so it is never shipped with
+// the feed). parent_url is the exact article_lineage parent this ad matched (server-attached),
+// so the lookup is a precise sister-family read, not a guess. Signed-in gate, like the feed.
+export async function loadOwnedSisters(parentUrl) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('Forbidden: sign in required');
+  const url = String(parentUrl || '').trim();
+  if (!url) return { ok: true, sisters: [] };
+  try {
+    const map = await getSisterLinksForUrls([url], null);
+    const sisters = map[url] || [];
+    console.info('[owned sisters] fetched', { parent: url.slice(0, 80), count: sisters.length });
+    return { ok: true, sisters };
+  } catch (e) {
+    console.error('[owned sisters] failed', String(e?.message || e));
+    return { ok: false, error: 'Could not load our versions', sisters: [] };
+  }
 }
 
 export async function loadFeedFacets(selectedFeeds) {
