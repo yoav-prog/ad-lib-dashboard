@@ -182,7 +182,10 @@ async def choose_family(session, sem, excerpt, candidates, model):
                 print(f'  OpenAI {resp.status}: {(await resp.text())[:160]}', flush=True)
                 return None
         except Exception as e:
-            print(f'  vertical error: {e}', flush=True)
+            # The type matters as much as the message: the common failure here is an
+            # asyncio/aiohttp timeout, whose str() is empty, so "vertical error: " alone
+            # tells you nothing about a run that left rows behind.
+            print(f'  vertical error: {type(e).__name__}: {e}', flush=True)
             return None
 
 
