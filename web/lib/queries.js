@@ -49,6 +49,9 @@ function mapAd(r) {
     tags: r.tags || [],
     notes: r.notes,
     review_status: r.review_status,
+    // The vertical family derived from this ad's own landing article (see migration 0017).
+    // lib/ourmatch.js needs it on the row to build the articles-DB lookup for the page.
+    article_verticals: r.article_verticals || [],
   };
 }
 
@@ -66,7 +69,7 @@ const FEED_COLUMNS = [
   'total_active_time', 'resolved_url', 'rank', 'language', 'country', 'vertical',
   'brand', 'creative_language', 'content_flag', 'rsoc_tier', 'rsoc_policy_area', 'rsoc_reason',
   'first_seen_at', 'last_seen_at', 'status', 'owner', 'linked_article_url',
-  'is_saved', 'tags', 'notes', 'review_status',
+  'is_saved', 'tags', 'notes', 'review_status', 'article_verticals',
 ];
 
 // A row is prohibited-content when its content_flag is a real category (anything but
@@ -190,6 +193,14 @@ function feedConditions(sql, { filters = {}, dateRange = 'all', search = '', ids
   inList((v) => sql`a.display_format = any(${v})`, f.format);
   inList((v) => sql`a.status = any(${v})`, f.status);
   inList((v) => sql`a.rsoc_tier = any(${v})`, f.rsoc);
+
+  // "Only ads we already have an article for", on the domain picked in the rail. The articles
+  // themselves live in a different Postgres, so this reads the materialized answer written by
+  // backfill_article_verticals.py (migration 0017) - the one thing that lets the question be
+  // asked in SQL at all, and therefore survive server-side paging. The counts and links the
+  // page displays are still read live from the articles DB, so a stale backfill can leave a row
+  // out of the filter but can never invent a count. GIN-indexed, so it stays cheap.
+  if (f.hasOurArticle && f.ourDomain) conds.push(sql`${String(f.ourDomain)} = any(a.our_article_domains)`);
 
   // GEOS: cm.geos is "CC-pct,CC-pct"; keep a row if any selected country appears as a token.
   if (Array.isArray(f.geos) && f.geos.length) {

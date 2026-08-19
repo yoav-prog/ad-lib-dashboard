@@ -7,6 +7,9 @@
 // the selected arrays keyed by group; onToggle(group, value) flips one. `ranges` is optional:
 // { key, title, min, max, onMin, onMax }. `dateRange`/`onDateRange` render the date buttons.
 // `sticky` keeps the rail in view while the table scrolls (opt-in, used by Client Kits).
+// `top` is a slot rendered above the groups, for a filter that is a single choice rather than
+// a chip set (Fresh Finds puts the "our domain" picker there); it renders while the facets are
+// still loading, since it does not depend on them.
 import { useState } from 'react';
 import { s } from '@/lib/style';
 import { A, MONO, titleCase, pad } from '@/lib/ui';
@@ -14,7 +17,7 @@ import { A, MONO, titleCase, pad } from '@/lib/ui';
 export default function FilterRail({
   groups = [], filters = {}, onToggle, ranges = [], onClear, loading = false, width = 236,
   dateRange = null, onDateRange = null, dateOptions = ['24h', '7d', '30d', 'all'],
-  chosenCount = null, sticky = false, stickyTop = 44,
+  chosenCount = null, sticky = false, stickyTop = 44, top = null,
 }) {
   const [gsearch, setGsearch] = useState({});
   const auto = Object.values(filters).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0)
@@ -32,6 +35,8 @@ export default function FilterRail({
         <span style={s(`font-family:${MONO};font-size:10px;letter-spacing:1.5px;color:#6C7076`)}>FILTERS</span>
         {onClear && <button onClick={onClear} style={s(`background:none;border:none;color:${count ? A : '#5A5E64'};font-family:${MONO};font-size:9.5px;letter-spacing:.5px;cursor:pointer`)}>CLEAR ({count})</button>}
       </div>
+
+      {top}
 
       {loading ? (
         <div style={s('display:flex;align-items:center;gap:8px;padding:16px 14px')}>
