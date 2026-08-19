@@ -194,13 +194,25 @@ function feedConditions(sql, { filters = {}, dateRange = 'all', search = '', ids
   inList((v) => sql`a.status = any(${v})`, f.status);
   inList((v) => sql`a.rsoc_tier = any(${v})`, f.rsoc);
 
-  // "Only ads we already have an article for", on the domain picked in the rail. The articles
-  // themselves live in a different Postgres, so this reads the materialized answer written by
+  // "Have" / "Missing" an article on the domain picked in the rail. The articles themselves
+  // live in a different Postgres, so this reads the materialized answer written by
   // backfill_article_verticals.py (migration 0017) - the one thing that lets the question be
   // asked in SQL at all, and therefore survive server-side paging. The counts and links the
   // page displays are still read live from the articles DB, so a stale backfill can leave a row
   // out of the filter but can never invent a count. GIN-indexed, so it stays cheap.
-  if (f.hasOurArticle && f.ourDomain) conds.push(sql`${String(f.ourDomain)} = any(a.our_article_domains)`);
+  //
+  // "Missing" is deliberately NOT the plain negation. It additionally requires
+  // article_verticals is not null, i.e. the backfill has actually looked at this ad. A newly
+  // scraped ad has no family yet, and "we have not checked" is not "we have nothing" - listing
+  // it as a gap would send someone off to write an article we may well already own. Rows the
+  // backfill has looked at and found nothing for carry an empty array, which this keeps: the
+  // coalesce is what makes `not (dom = any('{}'))` true rather than NULL.
+  if (f.ourDomain && f.ourArticle === 'have') {
+    conds.push(sql`${String(f.ourDomain)} = any(a.our_article_domains)`);
+  } else if (f.ourDomain && f.ourArticle === 'missing') {
+    conds.push(sql`a.article_verticals is not null
+      and not coalesce(${String(f.ourDomain)} = any(a.our_article_domains), false)`);
+  }
 
   // GEOS: cm.geos is "CC-pct,CC-pct"; keep a row if any selected country appears as a token.
   if (Array.isArray(f.geos) && f.geos.length) {
