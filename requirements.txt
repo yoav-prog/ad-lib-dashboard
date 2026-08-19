@@ -10,6 +10,11 @@ google-cloud-storage
 apify-client==3.0.5
 scrapingbee
 
+# backfill_article_verticals.py shortlists ~2k vertical embeddings per ad. In pure
+# Python that is 3M multiply-adds an ad (hours over the full feed); as one matrix
+# product it is minutes. Nothing else in the pipeline imports it.
+numpy
+
 # Supabase / Postgres access (transaction pooler). psycopg 3.x.
 psycopg[binary]>=3.1
 

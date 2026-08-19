@@ -10,6 +10,7 @@
 import postgres from 'postgres';
 import { createTtlCache } from './ttl-cache.js';
 import { normalizeUrlKey, matchOwned } from './owned.js';
+import { ourQueryPlan, groupOurArticles, countOurArticles } from './ourmatch.js';
 
 // One shared client, created lazily. The Supabase pooler needs prepared statements off
 // and SSL, same as lib/db.js. The URL may arrive in SQLAlchemy form
@@ -321,5 +322,124 @@ export async function attachOwned(rows) {
   } catch (e) {
     console.warn('[owned] enrichment skipped', String(e?.message || e));
     return rows;
+  }
+}
+
+// ── "Our articles for this ad, on the domain you picked" ───────────────────────
+// The feature the OURS badge above only half-delivered. Rather than requiring an exact URL
+// clone (article_lineage, which covers 1,826 of ~30k ads), this asks the looser and far more
+// useful question: on the domain the user chose, do we already have articles for the same
+// COUNTRY, the same LANGUAGE and the same TOPIC as this ad's landing article?
+//
+// "Same topic" is `ads.article_verticals` - the vertical family derived from the ad's own
+// article by backfill_article_verticals.py, drawn verbatim from the vocabulary of THIS
+// database, so it can be compared with `articles.vertical` directly. The matching rules
+// themselves live in lib/ourmatch.js (pure, unit-tested, no driver import); this file only
+// turns them into SQL.
+//
+// What the user sees is always read live from here, never from the materialized
+// `ads.our_article_domains`: that column exists solely so the feed's server-side filter can be
+// expressed in adintel SQL, and a page must never show a count a stale backfill made up.
+
+// Bounds on one lookup. Measured against the live database with a deliberately pessimistic
+// 200-vertical locale on our biggest domain: 330 ms and ~190 KB at five rows per vertical.
+// A feed page is 5-15 locales, run in parallel, so that is the wall-clock cost of the whole
+// page. OUR_CHUNK keeps a whole-feed export behaving exactly like a page rather than asking
+// for one enormous union that the vertical cap would then silently truncate.
+const OUR_MAX_LOCALES = 25;
+const OUR_MAX_VERTICALS = 300;
+const OUR_PER_VERTICAL = 5;
+const OUR_CHUNK = 250;
+
+// Our articles on one domain for one locale, newest first, capped per vertical. Each row also
+// carries `total`, its vertical's real count, so the UI can say "128" while only 8 crossed the
+// wire. country/language are compared directly rather than through upper()/lower(): both
+// columns are already stored normalized here (verified - zero rows deviate), so the plain
+// comparison is both correct and able to use ix_articles_country / ix_articles_language.
+async function ourArticlesForLocale(sql, domain, { country, language, verticals }) {
+  const verts = verticals.slice(0, OUR_MAX_VERTICALS);
+  // Only the fields the row chip and the detail panel actually render. network / category /
+  // keyword are deliberately absent: nothing displays them here and they were about half the
+  // bytes on a busy locale.
+  return sql`
+    select t.id, t.url, t.headline, t.domain, t.country, t.language, t.vertical,
+           t.published_at, t.total
+    from (
+      select a.id, a.url, a.headline, a.domain, a.country, a.language, a.vertical, a.published_at,
+             row_number() over (partition by a.vertical
+                                order by a.published_at desc nulls last, a.id desc) as rn,
+             count(*) over (partition by a.vertical)::int as total
+      from articles a
+      where a.domain = ${domain}
+        and a.is_external = false
+        and a.url like 'http%'
+        and a.country = ${country}
+        and a.language = ${language}
+        and a.vertical = any(${verts})
+    ) t
+    where t.rn <= ${OUR_PER_VERTICAL}
+  `;
+}
+
+// Every article any row on this page could match, in one round trip per locale. Returns a flat
+// array; grouping it back onto the ads is groupOurArticles' job (pure, so it is tested directly).
+export async function getOurArticlesForAds(rows, domain) {
+  const dom = String(domain || '').trim();
+  if (!dom) return [];
+  const plan = ourQueryPlan(rows).slice(0, OUR_MAX_LOCALES);
+  if (!plan.length) return [];
+  const sql = getArticlesSql();
+  const batches = await Promise.all(plan.map((p) => ourArticlesForLocale(sql, dom, p)));
+  const out = batches.flat().map((r) => ({
+    id: r.id, url: r.url, headline: r.headline, domain: r.domain,
+    country: r.country, language: r.language, vertical: r.vertical, total: r.total,
+    published_at: r.published_at ? new Date(r.published_at).toISOString() : null,
+  }));
+  console.info('[our articles] fetched', { domain: dom, locales: plan.length, articles: out.length });
+  return out;
+}
+
+// Hang `our_articles` (the newest few, for the row chip and the detail panel) and
+// `our_articles_count` (the real total) on each feed row. Best-effort in exactly the way
+// attachOwned is: no domain chosen, articles DB unconfigured, or a throwing lookup all return
+// the rows untouched. This enriches the feed; it is never a gate on showing it.
+export async function attachOurArticles(rows, domain, { perRow = 6 } = {}) {
+  const dom = String(domain || '').trim();
+  if (!Array.isArray(rows) || !rows.length || !dom) return rows;
+  if (!articlesConfigured()) return rows;
+  try {
+    // Chunked so a 20k-row export asks the same size of question a 100-row page does. Without
+    // this the per-locale vertical cap would quietly drop verticals on a big export and the
+    // CSV would disagree with the table it was downloaded from.
+    const byAd = new Map();
+    for (let i = 0; i < rows.length; i += OUR_CHUNK) {
+      const chunk = rows.slice(i, i + OUR_CHUNK);
+      const articles = await getOurArticlesForAds(chunk, dom);
+      for (const [id, hits] of groupOurArticles(chunk, articles)) byAd.set(id, hits);
+    }
+    console.info('[our articles] matched', { domain: dom, rows: rows.length, matched: byAd.size });
+    return rows.map((r) => {
+      const hits = byAd.get(r.ad_archive_id);
+      if (!hits || !hits.length) return { ...r, our_articles: [], our_articles_count: 0 };
+      return { ...r, our_articles: hits.slice(0, perRow), our_articles_count: countOurArticles(hits) };
+    });
+  } catch (e) {
+    console.warn('[our articles] enrichment skipped', String(e?.message || e));
+    return rows;
+  }
+}
+
+// Is this a domain we actually publish on? The choice arrives from the browser and reaches
+// SQL, so it is checked against the real list rather than trusted - a value that is not one of
+// ours is refused outright instead of quietly running a query for it.
+export async function isOurDomain(domain) {
+  const dom = String(domain || '').trim();
+  if (!dom) return false;
+  try {
+    const domains = await listOurDomains();
+    return domains.some((d) => d.domain === dom);
+  } catch (e) {
+    console.warn('[our articles] domain check failed', String(e?.message || e));
+    return false;
   }
 }

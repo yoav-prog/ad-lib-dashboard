@@ -301,6 +301,12 @@ export const SHEET_COLUMNS = [
   { key: 'feed',      header: 'Feed',             kind: 'text',  get: (a) => a.feed,                                                width: 90,  align: 'LEFT',   wrap: false },
   { key: 'status',    header: 'Status',           kind: 'text',  get: (a) => a.status,                                              width: 80,  align: 'CENTER', wrap: false },
   { key: 'ad_id',     header: 'Ad ID',            kind: 'text',  get: (a) => a.ad_archive_id,                                       width: 150, align: 'LEFT',   wrap: false },
+  // Our own articles for this ad on the domain picked in the rail: how many we have, and the
+  // freshest one's link and headline. Blank on every row when no domain is chosen, which is
+  // the honest rendering - without a domain the question has not been asked.
+  { key: 'ours_count',    header: 'Our Articles',    kind: 'text', get: (a) => (a.our_articles_count ? a.our_articles_count : ''),   width: 90,  align: 'CENTER', wrap: false },
+  { key: 'ours_link',     header: 'Our Article URL', kind: 'link', get: (a) => (a.our_articles?.[0]?.url || ''),                     width: 300, align: 'LEFT',   wrap: false },
+  { key: 'ours_headline', header: 'Our Headline',    kind: 'text', get: (a) => (a.our_articles?.[0]?.headline || ''),                width: 260, align: 'LEFT',   wrap: true  },
 ];
 
 // Column keys + headers for the export picker (no functions, safe to pass to the client).

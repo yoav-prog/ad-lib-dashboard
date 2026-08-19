@@ -7,7 +7,7 @@ import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getS
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf, langCode } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
-import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, attachOwned, articlesConfigured } from '@/lib/articles';
+import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, attachOwned, attachOurArticles, isOurDomain, articlesConfigured } from '@/lib/articles';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url', 'brand'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
@@ -85,10 +85,31 @@ export async function refreshSecondaryCounts() {
 export async function loadFeedPage(params) {
   const user = await getCurrentUser();
   if (!user) throw new Error('Forbidden: sign in required');
-  const { rows, total, page, pageSize } = await getFeedPage(params || {});
+  // The domain reaches SQL (the "only ads we have an article for" filter) and the articles DB,
+  // so it is validated against the real list of our domains rather than trusted. An unknown
+  // value is dropped entirely: the page then renders with no our-articles enrichment and no
+  // filter, which is the same thing the user sees before they pick a domain.
+  const clean = await withCleanDomain(params);
+  const ourDomain = clean.filters.ourDomain;
+  const { rows, total, page, pageSize } = await getFeedPage(clean);
   // Badge the rows we already have our own article for (best-effort; never blocks the feed).
+  // attachOwned is the exact-clone lineage signal; attachOurArticles is the domain-scoped
+  // country+language+vertical match the rail's domain picker drives.
   const owned = await attachOwned(rows);
-  return { ok: true, rows: owned, total, page, pageSize };
+  const enriched = await attachOurArticles(owned, ourDomain);
+  return { ok: true, rows: enriched, total, page, pageSize };
+}
+
+// One place decides whether a client-supplied domain is one of ours, so the page, the id list
+// and the export can never disagree about which rows the "only ads we have an article for"
+// filter keeps. Returns the same params with `filters.ourDomain` either a real domain of ours
+// or null - an unknown value is dropped rather than queried for, and an unreachable articles DB
+// degrades to "no domain chosen" instead of breaking the feed. Never throws.
+async function withCleanDomain(params) {
+  const p = params || {};
+  const dom = String(p.filters?.ourDomain || '').trim();
+  const ok = dom && articlesConfigured() && await isOurDomain(dom);
+  return { ...p, filters: { ...(p.filters || {}), ourDomain: ok ? dom : null } };
 }
 
 // The panel behind an owned row: our own articles made from this competitor URL. Loaded on
@@ -131,9 +152,13 @@ export async function loadFeedTicker() {
 export async function loadFeedExport(params) {
   const user = await getCurrentUser();
   if (!user) throw new Error('Forbidden: sign in required');
-  const rows = await getFeedExport(params || {});
-  console.info('[feed export action]', { rows: rows.length });
-  return { ok: true, rows };
+  const clean = await withCleanDomain(params);
+  const rows = await getFeedExport(clean);
+  // The CSV carries the same Our Articles columns the table shows, so a download is not a
+  // downgrade of what is on screen.
+  const enriched = await attachOurArticles(rows, clean.filters.ourDomain);
+  console.info('[feed export action]', { rows: enriched.length });
+  return { ok: true, rows: enriched };
 }
 
 // The id list matching the current filter set, in sort order, optionally capped - what
@@ -142,7 +167,7 @@ export async function loadFeedExport(params) {
 export async function loadFeedIds(params) {
   const user = await getCurrentUser();
   if (!user) throw new Error('Forbidden: sign in required');
-  const ids = await getFeedIds(params || {});
+  const ids = await getFeedIds(await withCleanDomain(params));
   return { ok: true, ids };
 }
 
@@ -582,7 +607,7 @@ export async function refreshMetrics() {
 // export never rides in one oversized Sheets request.
 const SHEET_ID_RE = /^[a-zA-Z0-9-_]{20,}$/;
 
-export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys, mode } = {}) {
+export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys, mode, ourDomain } = {}) {
   await requireCapability('export_data');
   const id = String(spreadsheetId || '').trim();
   const tab = String(tabName || '').trim();
@@ -604,8 +629,13 @@ export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys,
   // The DB rows carry no campaign metrics; re-attach them here so the exported
   // Revenue/Clicks/RPC/Keywords columns match what the table showed.
   const { ads } = attachSheetMetrics(rows0, await getSheetMetricsIndex());
+  // Same for our own articles: the Our Articles / Our Article URL / Our Headline columns are
+  // built from a live lookup, so an exported sheet says what the table said. Validated the
+  // same way the feed validates it - an unknown domain leaves the columns blank.
+  const { filters: exportFilters } = await withCleanDomain({ filters: { ourDomain } });
+  const enriched = await attachOurArticles(ads, exportFilters.ourDomain);
 
-  const { columns, rows } = buildSheetData(ads, Date.now(), keys.length ? keys : DEFAULT_SHEET_COLUMN_KEYS);
+  const { columns, rows } = buildSheetData(enriched, Date.now(), keys.length ? keys : DEFAULT_SHEET_COLUMN_KEYS);
   try {
     const result = await writeToSheet({ spreadsheetId: id, tabName: tab, columns, rows, mode: writeMode }, Date.now());
     return { ok: true, saEmail, sheetUrl: `https://docs.google.com/spreadsheets/d/${id}`, ...result };

@@ -22,7 +22,10 @@ import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
 import FilteredView from '@/components/FilteredView';
 import RejectedView from '@/components/RejectedView';
-import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts, loadFeedPage, loadFeedFacets, loadFeedIds, loadFeedExport, loadFullFeed, loadDomainAdCounts, loadOwnedSisters } from '@/app/actions';
+import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts, loadFeedPage, loadFeedFacets, loadFeedIds, loadFeedExport, loadFullFeed, loadDomainAdCounts, loadOwnedSisters, loadOurDomains } from '@/app/actions';
+
+// Which of our domains the feed reports on, remembered across visits.
+const OUR_DOMAIN_LS = 'adintel.ourdomain';
 
 // The views that still analyse every ad in the browser. With the server-side feed on,
 // the full array is fetched once, on the first visit to any of them (ensureFullFeed).
@@ -62,7 +65,46 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   const [filters, setFilters] = useState({
     domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], rsoc: [], format: [], status: [],
     daysMin: '', daysMax: '', rankMin: '', rankMax: '',
+    // Which of OUR domains the "do we already have an article for this?" column reports on,
+    // and whether the feed is narrowed to the ads that have one. Both are single values, not
+    // chip sets, so they live beside the numeric ranges rather than in checkboxGroups.
+    ourDomain: '', hasOurArticle: false,
   });
+
+  // The 47 domains we publish on, for the rail's picker. Fetched once, and only when the
+  // articles DB is wired up at all - without it the whole feature stays hidden rather than
+  // offering a control that cannot work. null = still loading, [] = none or unreachable.
+  const [ourDomains, setOurDomains] = useState(articlesConfigured ? null : []);
+  useEffect(() => {
+    if (!articlesConfigured) return;
+    let alive = true;
+    loadOurDomains()
+      .then((r) => { if (alive) setOurDomains(r?.ok ? r.domains : []); })
+      .catch((e) => { console.warn('[our articles] domain list failed', e); if (alive) setOurDomains([]); });
+    return () => { alive = false; };
+  }, [articlesConfigured]);
+
+  // Remember the chosen domain, so the column is still reporting on the same one tomorrow.
+  // Restored only once the real list is known, so a domain that has since been retired is
+  // dropped instead of quietly filtering the feed to nothing.
+  useEffect(() => {
+    if (!ourDomains || !ourDomains.length) return;
+    let saved = '';
+    try { saved = window.localStorage.getItem(OUR_DOMAIN_LS) || ''; } catch { /* first visit */ }
+    if (saved && ourDomains.some((d) => d.domain === saved)) {
+      setFilters((p) => (p.ourDomain ? p : { ...p, ourDomain: saved }));
+    }
+  }, [ourDomains]);
+
+  const setOurDomain = useCallback((domain) => {
+    setFilters((p) => ({ ...p, ourDomain: domain, hasOurArticle: domain ? p.hasOurArticle : false }));
+    try { window.localStorage.setItem(OUR_DOMAIN_LS, domain || ''); } catch { /* ignore */ }
+    console.info('[our articles] domain chosen', { domain: domain || null });
+  }, []);
+
+  const toggleHasOurArticle = useCallback(() => {
+    setFilters((p) => (p.ourDomain ? { ...p, hasOurArticle: !p.hasOurArticle } : p));
+  }, []);
   const [dateRange, setDateRange] = useState('all');
   const [page, setPage] = useState(0);
   const { pageSize: pageSizeRaw, setPageSize } = usePageSize('adintel.pagesize.freshfinds');
@@ -596,6 +638,9 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
 
       <RunBanner status={runStatus} pending={pending} onClick={() => goView('settings')} />
 
+      {/* Clear resets the filters but KEEPS the chosen domain: that is the lens the Our
+          Article column reports through rather than a filter, and re-picking it after every
+          Clear would be a chore. The has-an-article narrowing IS a filter, so it does reset. */}
       {view === 'fresh' && (
         <FreshFinds
           ads={ads} filtered={serverMode ? feedRows : filtered} paged={feedRows} NOW={NOW}
@@ -603,7 +648,8 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
           page={page} pageSize={pageSize} setPageSize={setPageSize} goPage={goPage}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
-          clearFilters={() => { setFilters({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], rsoc: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '' }); setDateRange('all'); setSelIndex(0); }}
+          clearFilters={() => { setFilters((p) => ({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], rsoc: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '', ourDomain: p.ourDomain, hasOurArticle: false })); setDateRange('all'); setSelIndex(0); }}
+          ourDomains={ourDomains} setOurDomain={setOurDomain} toggleHasOurArticle={toggleHasOurArticle}
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
@@ -622,6 +668,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
           back={() => setView('fresh')}
           prev={() => stepDetail(-1)} next={() => stepDetail(1)}
           update={update} updateLocal={updateLocal} commit={commit} canEdit={canEdit} lastRunStart={lastRunStart}
+          ourDomain={filters.ourDomain}
         />
       )}
 
@@ -839,7 +886,108 @@ const FRESH_COLS = [
   { key: 'ad_id',    label: 'Ad Archive ID',      w: 146 },
 ];
 
-function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = null, serverFacets = null, serverTicker = null, feedLoading = false, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, addSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, fetchAllIds, fetchExportRows, exportSaEmail, onRefreshMetrics }) {
+// One of our articles, offered for use against an ad: where it lives, what it is about, and
+// the three things anyone actually wants to do with it. Shared by both halves of the Detail
+// panel (the domain-scoped family match and the exact-clone lineage match) so the two lists
+// behave identically - the same actions in the same places, whichever route surfaced the link.
+function OurArticleList({ items, ad, canEdit, updateLocal, commit }) {
+  return (
+    <div style={s('display:flex;flex-direction:column;gap:1px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.06)')}>
+      {items.map((v) => {
+        const linked = ad.linked_article_url && ad.linked_article_url === v.url;
+        return (
+          <div key={v.id ?? v.url} style={s('background:#0B0C0E;padding:10px 12px;display:flex;flex-direction:column;gap:6px')}>
+            <div style={s('display:flex;align-items:center;gap:8px;flex-wrap:wrap')}>
+              <span style={s(`font-family:${MONO};font-size:9.5px;color:#8A8E94`)}>{v.domain || '-'}</span>
+              {(v.country || v.language) && <span style={s(`font-family:${MONO};font-size:9px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:1px 5px`)}>{[v.country, v.language].filter(Boolean).join(' · ')}</span>}
+              {v.vertical && <span style={s(`font-family:${MONO};font-size:9px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:1px 5px`)}>{v.vertical}</span>}
+              {linked && <span style={s(`font-family:${MONO};font-size:9px;color:#3FB27F;border:1px solid #3FB27F55;padding:1px 5px`)}>LINKED</span>}
+            </div>
+            {v.headline && <div style={s('font-size:12px;color:#C6C9CE;line-height:1.4')}>{v.headline}</div>}
+            <div style={s('display:flex;align-items:center;gap:8px;flex-wrap:wrap')}>
+              <a href={v.url} target="_blank" rel="noreferrer" style={s(`display:inline-flex;align-items:center;gap:4px;font-family:${MONO};font-size:10px;color:#3FB27F;text-decoration:none;border:1px solid #3FB27F55;padding:3px 8px`)}>OPEN &#8599;</a>
+              <button onClick={() => { try { navigator.clipboard?.writeText(v.url); console.info('[our articles] copied', { url: v.url }); } catch (e) { console.warn('[our articles] copy failed', String(e)); } }}
+                style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:3px 8px;cursor:pointer`)}>COPY URL</button>
+              {canEdit && !linked && (
+                <button onClick={() => { updateLocal(ad.ad_archive_id, { linked_article_url: v.url }); commit(ad.ad_archive_id, { linked_article_url: v.url }); }}
+                  style={s(`font-family:${MONO};font-size:10px;color:#E8A33D;background:none;border:1px solid rgba(232,163,61,.4);padding:3px 8px;cursor:pointer`)}>SET AS LINKED</button>
+              )}
+            </div>
+            <a href={v.url} target="_blank" rel="noreferrer" style={s(`font-family:${MONO};font-size:9.5px;color:#5A5E64;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{v.url}</a>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// One row's answer to "do we already have an article for this?". Four distinct states, each
+// worded so nobody has to guess which one they are looking at: no domain picked yet, the ad
+// has never been classified (the backfill has not reached it), classified with no match, and
+// a real match with its count and freshest headline. The old version of this column showed a
+// bare dash for all four, which read as "we have nothing" even when the truth was "nobody has
+// looked yet".
+function OurArticleCell({ ad, domain }) {
+  const dim = `font-family:${MONO};font-size:10px;color:#45484D`;
+  if (!domain) return <span style={s(dim)} title="Pick one of our domains in the filter rail.">&mdash;</span>;
+  if (!ad.article_verticals || !ad.article_verticals.length) {
+    return <span style={s(dim)} title="This ad's landing article has not been matched to our verticals yet (run backfill_article_verticals.py).">not checked</span>;
+  }
+  const n = ad.our_articles_count || 0;
+  if (!n) return <span style={s(dim)} title={`No article on ${domain} for this ad's country, language and topic.`}>none</span>;
+  const first = (ad.our_articles || [])[0];
+  return (
+    <div style={s('display:flex;flex-direction:column;gap:3px;min-width:0')}
+      title={`${n} article${n === 1 ? '' : 's'} on ${domain} for this ad's country, language and topic. Open the ad to see them all.`}>
+      <span style={s(`display:inline-flex;align-items:center;gap:4px;align-self:flex-start;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:#3FB27F;border:1px solid #3FB27F55;padding:2px 6px;white-space:nowrap`)}>
+        <span style={s('width:6px;height:6px;border-radius:50%;background:#3FB27F;flex-shrink:0')} />{fmtInt(n)} OURS
+      </span>
+      {first?.headline && (
+        <span style={s('font-size:10.5px;color:#8A8E94;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{first.headline}</span>
+      )}
+    </div>
+  );
+}
+
+// ── OUR DOMAIN ─────────────────────────────────────────────────────────────────
+// The head of the filter rail: pick one of the domains we publish on, and every row then
+// reports whether we already have articles there for its country, language and topic.
+// Nothing about the feature does anything until a domain is chosen, so the picker says that
+// in as many words rather than leaving the column showing dashes with no explanation.
+// `domains` is null while the list is loading and [] when the articles DB is not wired up -
+// in the latter case the whole block is hidden, since offering a control that cannot work is
+// worse than not offering it.
+function OurDomainPicker({ domains, chosen, onChoose, only, onToggleOnly }) {
+  if (Array.isArray(domains) && domains.length === 0) return null;
+  const loading = domains == null;
+  return (
+    <div style={s('border-bottom:1px solid rgba(255,255,255,.06);padding:11px 14px 12px')}>
+      <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:8px')}>
+        <span style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>Our Domain</span>
+        {chosen && <button onClick={() => onChoose('')} style={s(`background:none;border:none;color:${A};font-family:${MONO};font-size:9px;cursor:pointer`)}>reset</button>}
+      </div>
+      <select value={chosen || ''} onChange={(e) => onChoose(e.target.value)} disabled={loading}
+        title="Pick one of the domains we publish on. Every row then shows whether we already have articles there for the same country, language and topic."
+        style={s(`width:100%;box-sizing:border-box;background:#0B0C0E;border:1px solid ${chosen ? '#3FB27F55' : 'rgba(255,255,255,.1)'};color:${chosen ? '#E7E8EA' : '#8A8E94'};font-family:${MONO};font-size:11px;padding:6px 8px;outline:none;cursor:${loading ? 'default' : 'pointer'}`)}>
+        <option value="">{loading ? 'loading domains...' : 'choose a domain...'}</option>
+        {(domains || []).map((d) => <option key={d.domain} value={d.domain}>{d.domain} ({fmtInt(d.total)})</option>)}
+      </select>
+      <button onClick={onToggleOnly} disabled={!chosen}
+        title={chosen ? 'Show only the ads we already have at least one article for on this domain.' : 'Pick a domain first.'}
+        style={s(`display:flex;align-items:center;gap:9px;width:100%;margin-top:9px;padding:4px 0;background:transparent;border:none;cursor:${chosen ? 'pointer' : 'default'};text-align:left;opacity:${chosen ? 1 : .4}`)}>
+        <span style={s(`width:11px;height:11px;flex-shrink:0;border:1px solid ${only ? '#3FB27F' : 'rgba(255,255,255,.2)'};background:${only ? '#3FB27F' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:8px;color:#0B0C0E;line-height:1`)}>{only ? '✓' : ''}</span>
+        <span style={s(`flex:1;font-size:11.5px;color:${only ? '#E7E8EA' : '#9CA0A6'}`)}>Only ads we have an article for</span>
+      </button>
+      {!chosen && !loading && (
+        <div style={s('margin-top:8px;font-size:10px;color:#5A5E64;line-height:1.5')}>
+          Pick a domain to fill the <span style={s('color:#8A8E94')}>Our Article</span> column.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = null, serverFacets = null, serverTicker = null, feedLoading = false, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, addSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, fetchAllIds, fetchExportRows, exportSaEmail, onRefreshMetrics, ourDomains = [], setOurDomain, toggleHasOurArticle }) {
   // Selection serves two masters: bulk edits (edit_ads) and exports (export_data), so
   // the checkboxes show for either. Each toolbar action still answers to its own gate.
   const canSelect = canEdit || canExport;
@@ -1006,7 +1154,9 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
     checkboxGroups.reduce((n, k) => n + (filters[k]?.length || 0), 0)
     + (dateRange !== 'all' ? 1 : 0)
     + (filters.daysMin !== '' || filters.daysMax !== '' ? 1 : 0)
-    + (filters.rankMin !== '' || filters.rankMax !== '' ? 1 : 0);
+    + (filters.rankMin !== '' || filters.rankMax !== '' ? 1 : 0)
+    // The chosen domain is a lens, not a filter, so only the narrowing counts here.
+    + (filters.hasOurArticle ? 1 : 0);
   const maxDays = Math.max(1, ...ads.map((a) => daysRunning(a, NOW)));
 
   const sortDefs = [
@@ -1085,6 +1235,8 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
           chosenCount={activeFilterCount}
           onClear={clearFilters}
           loading={serverMode && !serverFacets}
+          top={<OurDomainPicker domains={ourDomains} chosen={filters.ourDomain} onChoose={setOurDomain}
+            only={filters.hasOurArticle} onToggleOnly={toggleHasOurArticle} />}
         />
 
         {/* feed */}
@@ -1186,7 +1338,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
             {cols.has('creative_language') && <div key="creative_language" title="Language of the text ON the creative (image / video), not the ad copy" style={s('width:100px;flex-shrink:0;padding-left:16px')}>Creative Lang</div>}
             {cols.has('rsoc') && <div key="rsoc" title="How much policy care this topic/angle would need on Google RSoC. Green = no known restriction on the topic (NOT a guarantee the article you write is safe); Yellow = build with care; Red = restricted vertical or prohibited angle, likely to draw strikes." style={s('width:132px;flex-shrink:0;padding-left:16px')}>Policy</div>}
             <div key="headline" style={s('flex:1;min-width:0')}>Headline</div>
-            {cols.has('owned') && <div key="owned" title="We already have our own article made from this competitor's landing URL. Open the ad to see and copy our versions." style={s('width:92px;flex-shrink:0;text-align:center;padding-left:16px')}>Our Version</div>}
+            {cols.has('our_article') && <div key="our_article" title="Articles we already have on the domain you picked, for this ad's country, language and topic. Open the ad to see and copy them." style={s('width:150px;flex-shrink:0;padding-left:16px')}>Our Article</div>}
             {cols.has('url') && <div key="url" style={s('width:168px;flex-shrink:0')}>URL</div>}
             {showSlug && <div key="slug" style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
             {showQuery && <div key="query" title="The searched phrase behind the landing link (Predicto & Visymo feeds)" style={s('width:240px;flex-shrink:0;padding-left:16px')}>Query</div>}
@@ -1266,14 +1418,9 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                 <CopyCell key="headline" value={a.title || a.caption || a.body_text || ''} style={s('flex:1;min-width:0;padding-right:16px')}>
                   <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
                 </CopyCell>
-                {cols.has('owned') && (
-                  <div key="owned" style={s('width:92px;flex-shrink:0;display:flex;justify-content:center;padding-left:16px')}>
-                    {a.owned_parent_url
-                      ? <span title="We already have our own article made from this URL - open this ad to see and copy it"
-                          style={s(`display:inline-flex;align-items:center;gap:4px;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:#3FB27F;border:1px solid #3FB27F55;padding:2px 6px;white-space:nowrap`)}>
-                          <span style={s('width:6px;height:6px;border-radius:50%;background:#3FB27F;flex-shrink:0')} />OURS
-                        </span>
-                      : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
+                {cols.has('our_article') && (
+                  <div key="our_article" style={s('width:150px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                    <OurArticleCell ad={a} domain={filters.ourDomain} />
                   </div>
                 )}
                 {cols.has('url') && (
@@ -1402,6 +1549,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
           selection={selCount > 0}
           resolveIds={selCount > 0 ? async () => [...selected] : () => fetchAllIds()}
           saEmail={exportSaEmail}
+          ourDomain={filters.ourDomain}
           onClose={() => setSheetOpen(false)}
         />
       )}
@@ -1486,7 +1634,7 @@ function loadCols() {
 // ids + column keys are sent; the server re-reads the rows. `resolveIds` supplies the
 // id list (it may be a server round trip in server mode), so EXPORT waits for it.
 // Styled to match the AI-draft modal above.
-function SheetExportModal({ count, selection = false, resolveIds, saEmail, onClose }) {
+function SheetExportModal({ count, selection = false, resolveIds, saEmail, ourDomain = '', onClose }) {
   const ls = (k, d) => { try { return (typeof window !== 'undefined' && window.localStorage.getItem(k)) || d; } catch { return d; } };
   const [sheetId, setSheetId] = useState(() => ls(SHEET_LS_ID, ''));
   const [tab, setTab] = useState(() => ls(SHEET_LS_TAB, 'Fresh Finds'));
@@ -1523,7 +1671,7 @@ function SheetExportModal({ count, selection = false, resolveIds, saEmail, onClo
     setState('working'); setMsg('');
     let r;
     try {
-      r = await exportToSheet({ spreadsheetId: id, tabName: tab.trim(), adIds: ids, columnKeys: cols, mode });
+      r = await exportToSheet({ spreadsheetId: id, tabName: tab.trim(), adIds: ids, columnKeys: cols, mode, ourDomain });
     } catch (e) {
       setState('error'); setMsg(String(e?.message || e)); return;
     }
@@ -1633,7 +1781,7 @@ function SheetExportModal({ count, selection = false, resolveIds, saEmail, onClo
 // ═════════════════════════════════════════════════════════════════════════════
 // CREATIVE DETAIL
 // ═════════════════════════════════════════════════════════════════════════════
-function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdit = true, lastRunStart }) {
+function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdit = true, lastRunStart, ourDomain = '' }) {
   if (!ad) return <Placeholder view="detail" />;
   const vid = isVideo(ad);
   const days = daysRunning(ad, NOW);
@@ -1796,49 +1944,69 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
             </div>
           )}
 
-          {ad.owned_parent_url && (
+          {(ourDomain || ad.owned_parent_url) && (
             <div style={s('margin-top:28px;padding-top:22px;border-top:1px solid rgba(255,255,255,.09)')}>
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:14px')}>
                 <span style={s(`display:inline-flex;align-items:center;gap:5px;font-family:${MONO};font-size:9.5px;letter-spacing:1.2px;color:#3FB27F`)}>
-                  <span style={s('width:6px;height:6px;border-radius:50%;background:#3FB27F;flex-shrink:0')} />OUR VERSIONS OF THIS URL
+                  <span style={s('width:6px;height:6px;border-radius:50%;background:#3FB27F;flex-shrink:0')} />
+                  {ourDomain ? `OUR ARTICLES ON ${ourDomain.toUpperCase()}` : 'OUR VERSIONS OF THIS URL'}
                 </span>
-                {sistersState === 'ready' && sisters?.length > 0 && (
-                  <span style={s(`font-family:${MONO};font-size:9px;color:#0B0C0E;background:#3FB27F;padding:1px 6px;font-variant-numeric:tabular-nums`)}>{sisters.length}</span>
+                {ourDomain && ad.our_articles_count > 0 && (
+                  <span style={s(`font-family:${MONO};font-size:9px;color:#0B0C0E;background:#3FB27F;padding:1px 6px;font-variant-numeric:tabular-nums`)}>{fmtInt(ad.our_articles_count)}</span>
                 )}
                 <div style={s('flex:1;height:1px;background:rgba(255,255,255,.06)')} />
               </div>
-              <div style={s('font-size:10.5px;color:#5A5E64;line-height:1.5;margin-bottom:12px')}>
-                We already made our own article inspired by this competitor's landing URL. Copy one, open it, or set it as this ad's linked article.
-              </div>
-              {sistersState === 'loading' && <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>Finding our versions...</span>}
-              {sistersState === 'error' && <span style={s(`font-family:${MONO};font-size:11px;color:#C86B5C`)}>Could not load our versions. Reopen this ad to retry.</span>}
-              {sistersState === 'ready' && sisters?.length === 0 && <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>No matching articles found.</span>}
-              {sistersState === 'ready' && sisters?.length > 0 && (
-                <div style={s('display:flex;flex-direction:column;gap:1px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.06)')}>
-                  {sisters.slice(0, 40).map((v) => {
-                    const linked = ad.linked_article_url && ad.linked_article_url === v.url;
-                    return (
-                      <div key={v.id} style={s('background:#0B0C0E;padding:10px 12px;display:flex;flex-direction:column;gap:6px')}>
-                        <div style={s('display:flex;align-items:center;gap:8px;flex-wrap:wrap')}>
-                          <span style={s(`font-family:${MONO};font-size:9.5px;color:#8A8E94`)}>{v.domain || '-'}</span>
-                          {(v.country || v.language) && <span style={s(`font-family:${MONO};font-size:9px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:1px 5px`)}>{[v.country, v.language].filter(Boolean).join(' · ')}</span>}
-                          {linked && <span style={s(`font-family:${MONO};font-size:9px;color:#3FB27F;border:1px solid #3FB27F55;padding:1px 5px`)}>LINKED</span>}
-                        </div>
-                        {v.headline && <div style={s('font-size:12px;color:#C6C9CE;line-height:1.4')}>{v.headline}</div>}
-                        <div style={s('display:flex;align-items:center;gap:8px;flex-wrap:wrap')}>
-                          <a href={v.url} target="_blank" rel="noreferrer" style={s(`display:inline-flex;align-items:center;gap:4px;font-family:${MONO};font-size:10px;color:#3FB27F;text-decoration:none;border:1px solid #3FB27F55;padding:3px 8px`)}>OPEN &#8599;</a>
-                          <button onClick={() => { try { navigator.clipboard?.writeText(v.url); console.info('[owned sisters] copied', { url: v.url }); } catch (e) { console.warn('[owned sisters] copy failed', String(e)); } }}
-                            style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:3px 8px;cursor:pointer`)}>COPY URL</button>
-                          {canEdit && !linked && (
-                            <button onClick={() => { updateLocal(ad.ad_archive_id, { linked_article_url: v.url }); commit(ad.ad_archive_id, { linked_article_url: v.url }); }}
-                              style={s(`font-family:${MONO};font-size:10px;color:#E8A33D;background:none;border:1px solid rgba(232,163,61,.4);padding:3px 8px;cursor:pointer`)}>SET AS LINKED</button>
-                          )}
-                        </div>
-                        <a href={v.url} target="_blank" rel="noreferrer" style={s(`font-family:${MONO};font-size:9.5px;color:#5A5E64;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{v.url}</a>
+
+              {ourDomain && (
+                <>
+                  <div style={s('font-size:10.5px;color:#5A5E64;line-height:1.5;margin-bottom:12px')}>
+                    Articles we already have on {ourDomain} for this ad&apos;s country{ad.country ? ` (${ad.country})` : ''},
+                    language{ad.language ? ` (${ad.language})` : ''} and topic. Copy one, open it, or set it as this ad&apos;s linked article.
+                  </div>
+                  {!ad.article_verticals?.length && (
+                    <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>This ad&apos;s landing article has not been matched to our verticals yet.</span>
+                  )}
+                  {ad.article_verticals?.length > 0 && !ad.our_articles?.length && (
+                    <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>Nothing on {ourDomain} for this country, language and topic.</span>
+                  )}
+                  {ad.our_articles?.length > 0 && (
+                    <>
+                      <div style={s('display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px')}>
+                        <span style={s(`font-family:${MONO};font-size:9px;color:#5A5E64;letter-spacing:.5px`)}>MATCHED ON</span>
+                        {ad.article_verticals.map((v) => (
+                          <span key={v} style={s(`font-family:${MONO};font-size:9px;color:#8A8E94;border:1px solid rgba(255,255,255,.12);padding:1px 5px`)}>{v}</span>
+                        ))}
                       </div>
-                    );
-                  })}
-                  {sisters.length > 40 && <div style={s('background:#0B0C0E;padding:8px 12px;font-family:'+MONO+';font-size:9.5px;color:#5A5E64')}>+{sisters.length - 40} more in this family</div>}
+                      <OurArticleList items={ad.our_articles} ad={ad} canEdit={canEdit} updateLocal={updateLocal} commit={commit} />
+                      {ad.our_articles_count > ad.our_articles.length && (
+                        <div style={s(`margin-top:8px;font-family:${MONO};font-size:9.5px;color:#5A5E64`)}>
+                          Showing the {ad.our_articles.length} newest of {fmtInt(ad.our_articles_count)} on {ourDomain}.
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+
+              {/* The exact-URL lineage match, demoted from the grid: when we have literally
+                  cloned this competitor's landing page, that is stronger evidence than any
+                  same-family match, so it stays - just not as a column that reads as if the
+                  competitor's URL were ours. */}
+              {ad.owned_parent_url && (
+                <div style={s(ourDomain ? 'margin-top:20px;padding-top:16px;border-top:1px solid rgba(255,255,255,.06)' : '')}>
+                  <div style={s(`font-family:${MONO};font-size:9px;letter-spacing:1.2px;color:#E8A33D;margin-bottom:8px`)}>EXACT CLONE OF THIS URL</div>
+                  <div style={s('font-size:10.5px;color:#5A5E64;line-height:1.5;margin-bottom:12px')}>
+                    We built our own article directly from this competitor&apos;s landing URL, so these are the closest possible match.
+                  </div>
+                  {sistersState === 'loading' && <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>Finding our versions...</span>}
+                  {sistersState === 'error' && <span style={s(`font-family:${MONO};font-size:11px;color:#C86B5C`)}>Could not load our versions. Reopen this ad to retry.</span>}
+                  {sistersState === 'ready' && sisters?.length === 0 && <span style={s(`font-family:${MONO};font-size:11px;color:#5A5E64`)}>No matching articles found.</span>}
+                  {sistersState === 'ready' && sisters?.length > 0 && (
+                    <>
+                      <OurArticleList items={sisters.slice(0, 40)} ad={ad} canEdit={canEdit} updateLocal={updateLocal} commit={commit} />
+                      {sisters.length > 40 && <div style={s(`margin-top:8px;font-family:${MONO};font-size:9.5px;color:#5A5E64`)}>+{sisters.length - 40} more in this family</div>}
+                    </>
+                  )}
                 </div>
               )}
             </div>
