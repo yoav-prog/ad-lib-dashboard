@@ -940,17 +940,21 @@ function OurArticleCell({ ad, domain }) {
   }
   const n = ad.our_articles_count || 0;
   if (!n) return <span style={s(dim)} title={`No article on ${domain} for this ad's country, language and topic.`}>none</span>;
-  const first = (ad.our_articles || [])[0];
+  // The newest one's URL, which is the thing anyone actually wants out of the grid - the
+  // articles come back ordered newest-first, so [0] is it. The count and every other match stay
+  // in the ad's detail panel rather than taking the row's width to say a number. Styled like the
+  // competitor URL column beside it so the two read as the same kind of thing, and the whole
+  // cell is a CopyCell (hover to copy) exactly like that one.
+  const a0 = ad.our_articles[0];
+  const more = n > 1 ? ` (+${fmtInt(n - 1)} more inside the ad)` : '';
   return (
-    <div style={s('display:flex;flex-direction:column;gap:3px;min-width:0')}
-      title={`${n} article${n === 1 ? '' : 's'} on ${domain} for this ad's country, language and topic. Open the ad to see them all.`}>
-      <span style={s(`display:inline-flex;align-items:center;gap:4px;align-self:flex-start;font-family:${MONO};font-size:9.5px;letter-spacing:.3px;color:#3FB27F;border:1px solid #3FB27F55;padding:2px 6px;white-space:nowrap`)}>
-        <span style={s('width:6px;height:6px;border-radius:50%;background:#3FB27F;flex-shrink:0')} />{fmtInt(n)} OURS
-      </span>
-      {first?.headline && (
-        <span style={s('font-size:10.5px;color:#8A8E94;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{first.headline}</span>
-      )}
-    </div>
+    <a href={a0.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+      title={`${a0.headline || a0.url}\n\nNewest of ${fmtInt(n)} on ${domain} for this ad's country, language and topic.${more}`}
+      style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
+      <span style={s('width:6px;height:6px;border-radius:50%;background:#3FB27F;flex-shrink:0')} />
+      <span style={s(`font-family:${MONO};font-size:10.5px;color:#3FB27F;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{a0.url}</span>
+      <span style={s('color:#3FB27F99;font-size:9px;flex-shrink:0')}>&#8599;</span>
+    </a>
   );
 }
 
@@ -1349,7 +1353,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
             {cols.has('creative_language') && <div key="creative_language" title="Language of the text ON the creative (image / video), not the ad copy" style={s('width:100px;flex-shrink:0;padding-left:16px')}>Creative Lang</div>}
             {cols.has('rsoc') && <div key="rsoc" title="How much policy care this topic/angle would need on Google RSoC. Green = no known restriction on the topic (NOT a guarantee the article you write is safe); Yellow = build with care; Red = restricted vertical or prohibited angle, likely to draw strikes." style={s('width:132px;flex-shrink:0;padding-left:16px')}>Policy</div>}
             <div key="headline" style={s('flex:1;min-width:0')}>Headline</div>
-            {cols.has('our_article') && <div key="our_article" title="Articles we already have on the domain you picked, for this ad's country, language and topic. Open the ad to see and copy them." style={s('width:150px;flex-shrink:0;padding-left:16px')}>Our Article</div>}
+            {cols.has('our_article') && <div key="our_article" title="The newest article we already have on the domain you picked, for this ad's country, language and topic. Open the ad to see the rest." style={s('width:230px;flex-shrink:0;padding-left:16px')}>Our Article</div>}
             {cols.has('url') && <div key="url" style={s('width:168px;flex-shrink:0')}>URL</div>}
             {showSlug && <div key="slug" style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
             {showQuery && <div key="query" title="The searched phrase behind the landing link (Predicto & Visymo feeds)" style={s('width:240px;flex-shrink:0;padding-left:16px')}>Query</div>}
@@ -1430,9 +1434,10 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                   <div style={s('font-size:12.5px;color:#C6C9CE;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical')}>{a.title || a.caption || a.body_text || ''}</div>
                 </CopyCell>
                 {cols.has('our_article') && (
-                  <div key="our_article" style={s('width:150px;flex-shrink:0;padding-left:16px;min-width:0')}>
+                  <CopyCell key="our_article" value={a.our_articles?.[0]?.url || ''}
+                    style={s('width:230px;flex-shrink:0;padding-left:16px;padding-right:12px;min-width:0')}>
                     <OurArticleCell ad={a} domain={filters.ourDomain} />
-                  </div>
+                  </CopyCell>
                 )}
                 {cols.has('url') && (
                   <CopyCell key="url" value={url} style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>

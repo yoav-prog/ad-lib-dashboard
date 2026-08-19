@@ -161,6 +161,33 @@ test('groupOurArticles shares one article between two ads that both want it', ()
   assert.equal(byAd.get('b').length, 1);
 });
 
+test('groupOurArticles returns each ad its articles newest first, across verticals', () => {
+  // The SQL only orders within each (country, language, vertical) partition, so an ad matching
+  // several verticals receives several already-sorted runs back to back. The grid shows the
+  // FIRST element as "the newest one", so the merge has to re-sort or that claim is false.
+  const rows = [{ ad_archive_id: 'us', country: 'US', language: 'English', article_verticals: ['Tires', 'Car Deals'] }];
+  const articles = [
+    article({ id: 1, url: 'a', vertical: 'Tires', published_at: '2026-01-01T00:00:00.000Z' }),
+    article({ id: 2, url: 'b', vertical: 'Car Deals', published_at: '2026-08-01T00:00:00.000Z' }),
+    article({ id: 3, url: 'c', vertical: 'Car Deals', published_at: '2026-03-01T00:00:00.000Z' }),
+  ];
+  assert.deepEqual(groupOurArticles(rows, articles).get('us').map((a) => a.url), ['b', 'c', 'a']);
+});
+
+test('groupOurArticles sinks undated articles and breaks ties on id', () => {
+  const rows = [{ ad_archive_id: 'us', country: 'US', language: 'English', article_verticals: ['Tires'] }];
+  const articles = [
+    article({ id: 1, url: 'undated', published_at: null }),
+    article({ id: 2, url: 'older', published_at: '2026-01-01T00:00:00.000Z' }),
+    article({ id: 9, url: 'same-day-high-id', published_at: '2026-08-01T00:00:00.000Z' }),
+    article({ id: 4, url: 'same-day-low-id', published_at: '2026-08-01T00:00:00.000Z' }),
+  ];
+  assert.deepEqual(
+    groupOurArticles(rows, articles).get('us').map((a) => a.url),
+    ['same-day-high-id', 'same-day-low-id', 'older', 'undated'],
+  );
+});
+
 test('groupOurArticles on empty input returns an empty map', () => {
   assert.equal(groupOurArticles([], []).size, 0);
   assert.equal(groupOurArticles(null, null).size, 0);
