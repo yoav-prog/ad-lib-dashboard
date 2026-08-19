@@ -122,6 +122,35 @@ def test_article_excerpt_drops_bare_urls_and_setext_rules():
     assert av.article_excerpt(None, body) == 'Best Tires 2026 Read today'
 
 
+# ── is_search_endpoint: landings not worth spending a credit on ───────────────
+def test_search_endpoints_are_skipped():
+    # Each verified live: fetched through the normal path, returned an empty body.
+    for url in ('https://analogaudiohub.com/asrsearch',
+                'https://trk.paxfind.com/visymo_redirect',
+                'https://query-pilot.com/searchcontent',
+                'https://ANALOGAUDIOHUB.com/AsrSearch',
+                'https://x.test/asrsearch?q=vitamins',
+                'https://x.test/asrsearch/'):
+        assert av.is_search_endpoint(url) is True, url
+
+
+def test_real_article_paths_are_not_skipped():
+    # /dsr looks every bit as much like a search endpoint as the ones above and returns a
+    # real 14,708-character article. Pattern-matching on the name would have lost it, and
+    # 100 more ads with it - this test is the guard on that mistake.
+    for url in ('https://www.vaporexa.com/dsr?q=Plataforma',
+                'https://mytips.com/fr/articles/comment-amenager-votre-garage',
+                'https://x.test/click.php?key=abc',
+                'https://x.test/rchat/?q=vitamins',
+                'https://x.test/searchcontent-buying-guide'):
+        assert av.is_search_endpoint(url) is False, url
+
+
+def test_search_endpoint_on_junk_input():
+    for url in (None, '', '   ', 'not a url'):
+        assert av.is_search_endpoint(url) is False
+
+
 # ── fallback_excerpt: the RSOC path, where there is no article to read ────────
 def test_fallback_leads_with_the_vertical():
     # RSOC search-arbitrage ads land on a search page, so there is nothing to scrape.

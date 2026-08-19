@@ -98,6 +98,38 @@ def ad_locale(row) -> tuple[str, str]:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# LANDINGS THAT ARE NOT ARTICLES
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Landing paths that are search or redirect endpoints and never carry an article. Each was
+# fetched live through the normal path and returned an empty body, so scraping them spends a
+# ScrapingBee credit and (when the endpoint simply never answers, which /asrsearch does) up to
+# the whole per-ad deadline, to learn nothing. They are 1,510 of the 2,727 approved ads that
+# still have no readable article - more than half the remaining scrape budget.
+#
+# This list is evidence, not pattern-matching on names, because pattern-matching would have
+# been wrong: `/dsr` looks exactly as much like a search endpoint as these do, and returns a
+# real 14,708-character article. `/click.php` also came back empty but is a generic redirector
+# name on one sample of 26 ads, so it is deliberately NOT here - the saving is negligible and
+# the chance of skipping a real article is not. Add a path only after checking it the same way.
+_NO_ARTICLE_PATHS = ('/asrsearch', '/visymo_redirect', '/searchcontent')
+
+
+def is_search_endpoint(url) -> bool:
+    """True when this landing URL is a known search/redirect endpoint with no article
+    behind it, so the caller should skip the fetch and go straight to the fallback."""
+    raw = (url or '').strip().lower()
+    if not raw:
+        return False
+    path = raw.split('?', 1)[0].split('#', 1)[0]
+    # Compare on the path only: the same endpoints appear across many hosts.
+    for marker in _NO_ARTICLE_PATHS:
+        if path.endswith(marker) or path.endswith(marker + '/') or f'{marker}/' in path:
+            return True
+    return False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # VOCABULARY + PROMPT
 # ═════════════════════════════════════════════════════════════════════════════
 
