@@ -31,7 +31,7 @@ const OUR_DOMAIN_LS = 'adintel.ourdomain';
 // the full array is fetched once, on the first visit to any of them (ensureFullFeed).
 const FULL_FEED_VIEWS = ['competitor', 'trends', 'pipeline', 'kits'];
 
-export default function Dashboard({ ads: adsProp, serverFeed = false, initialFeed = null, ticker: tickerProp = null, secondaryCounts = { review: 0, filtered: 0, rejected: 0 }, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null, articlesConfigured = false }) {
+export default function Dashboard({ ads: adsProp, serverFeed = false, initialFeed = null, ticker: tickerProp = null, secondaryCounts = { review: 0, filtered: 0, rejected: 0 }, domains = [], runs = [], feeds = [], lastRunIso, lastRunStartIso, nowIso, caps = {}, me = null, exportSaEmail = null, articlesConfigured = false, initialFacets = null, initialOurDomains = null }) {
   // The server resolved these; the UI only decides what to render. Every action
   // is gated again server-side, so hiding a control is a courtesy, not the lock.
   const canEdit = caps.edit_ads === true;
@@ -74,14 +74,21 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   // The 47 domains we publish on, for the rail's picker. Fetched once, and only when the
   // articles DB is wired up at all - without it the whole feature stays hidden rather than
   // offering a control that cannot work. null = still loading, [] = none or unreachable.
-  const [ourDomains, setOurDomains] = useState(articlesConfigured ? null : []);
+  // Seeded from the server render, so the picker is populated on first paint. The fetch below
+  // is the fallback for when that prefetch failed (it arrives as null) - not the normal path.
+  const [ourDomains, setOurDomains] = useState(
+    initialOurDomains ?? (articlesConfigured ? null : []),
+  );
   useEffect(() => {
-    if (!articlesConfigured) return;
+    if (!articlesConfigured || ourDomains !== null) return;
     let alive = true;
     loadOurDomains()
       .then((r) => { if (alive) setOurDomains(r?.ok ? r.domains : []); })
       .catch((e) => { console.warn('[our articles] domain list failed', e); if (alive) setOurDomains([]); });
     return () => { alive = false; };
+    // Runs once, only when the server could not supply the list; re-running on every
+    // setOurDomains would refetch itself in a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [articlesConfigured]);
 
   // Remember the chosen domain, so the column is still reporting on the same one tomorrow.
@@ -122,9 +129,9 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   // below). The fetch effects run only in that mode; client mode leaves them idle and keeps
   // the original memos.
   const [feedPage, setFeedPage] = useState(initialFeed);       // { rows, total, page, pageSize } | null
-  // Facets are not server-rendered (the effect below fetches them on mount anyway), so
-  // the rail shows a loading line until the first batch lands.
-  const [serverFacets, setServerFacets] = useState(null);
+  // Server-rendered, so the rail paints populated. Null only when that prefetch failed, in
+  // which case the effect below fetches them and the rail shows its loading line meanwhile.
+  const [serverFacets, setServerFacets] = useState(initialFacets);
   const [serverTicker, setServerTicker] = useState(tickerProp);
   const [feedLoading, setFeedLoading] = useState(false);
   const serverMode = serverFeed && feedPage != null;
@@ -143,8 +150,15 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
 
   // Refetch facets when the selected feed changes - the Domain facet is scoped to it. Ticker is
   // whole-feed and filter-independent, so it stays as first loaded.
+  //
+  // The mount run is skipped when the server already supplied the facets, which is the normal
+  // case: re-requesting on hydration is what kept the rail on "LOADING FILTERS..." while a
+  // fresh serverless instance paid ~2.2s of connection setup for numbers we were already
+  // holding. It still runs on mount when the prefetch failed, so nothing is lost.
+  const facetsSeeded = useRef(Boolean(initialFacets));
   useEffect(() => {
     if (!serverFeed) return;
+    if (facetsSeeded.current) { facetsSeeded.current = false; return; }
     let alive = true;
     loadFeedFacets(filters.feed).then((r) => { if (alive && r?.ok) setServerFacets(r.facets); }).catch(() => {});
     return () => { alive = false; };

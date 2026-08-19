@@ -340,23 +340,49 @@ async function facetColumn(sql, colExpr, whereFrag) {
   return rows.map((r) => ({ value: r.value, count: r.count }));
 }
 
-// The feed-independent facets (everything but Domain), computed over the base feed. Run
-// SEQUENTIALLY on purpose: firing them all at once overwhelms the Supabase transaction pooler
-// and stalls. They are cached, so this cost is paid once per TTL, not per request.
+// The feed-independent facets (everything but Domain), computed over the base feed.
+//
+// These used to be nine separate group-by queries run one after another - concurrently was
+// tried and stalls the Supabase pooler, so sequential was the safe choice. But nine scans of
+// the same ~26k rows under the same predicate (which itself carries a subquery on `runs`) cost
+// over five seconds on a cold instance, and the filter rail sits on "LOADING FILTERS..." for
+// every one of them. The answer is not to run them at once, it is to stop running nine.
+//
+// One pass now: each ad is cross-joined against a VALUES list naming its own nine facet
+// columns, which unpivots the row into nine (facet, value) pairs, and a single group-by counts
+// them all. Same numbers, same predicate, one scan. The `::text` casts are needed because the
+// facet keys are bound parameters and Postgres cannot infer a type for a bare parameter
+// sitting in a VALUES list.
+const BASE_FACETS = (sql) => [
+  ['feed', sql`a.feed`],
+  ['vertical', sql`a.vertical`],
+  ['country', sql`a.country`],
+  ['language', sql`a.language`],
+  ['creative_language', sql`a.creative_language`],
+  ['brand', sql`a.brand`],
+  ['rsoc', sql`a.rsoc_tier`],
+  ['format', sql`a.display_format`],
+  ['status', sql`a.status`],
+];
+
 async function computeBaseFacets(sql) {
   const base = andAll(sql, feedConditions(sql, {}));
   const t0 = Date.now();
-  const out = {
-    feed: await facetColumn(sql, sql`a.feed`, base),
-    vertical: await facetColumn(sql, sql`a.vertical`, base),
-    country: await facetColumn(sql, sql`a.country`, base),
-    language: await facetColumn(sql, sql`a.language`, base),
-    creative_language: await facetColumn(sql, sql`a.creative_language`, base),
-    brand: await facetColumn(sql, sql`a.brand`, base),
-    rsoc: await facetColumn(sql, sql`a.rsoc_tier`, base),
-    format: await facetColumn(sql, sql`a.display_format`, base),
-    status: await facetColumn(sql, sql`a.status`, base),
-  };
+  const facets = BASE_FACETS(sql);
+  const values = facets
+    .map(([key, col]) => sql`(${key}::text, ${col})`)
+    .reduce((acc, frag) => sql`${acc}, ${frag}`);
+  const rows = await sql`
+    select u.k as facet, u.v as value, count(*)::int as count
+    from ads a
+    cross join lateral (values ${values}) as u(k, v)
+    where ${base} and u.v is not null
+    group by u.k, u.v
+  `;
+  // Every facet key is present even when nothing carries it, so a caller never has to guard
+  // against a missing group (the client's hide-when-empty rules read the empty list).
+  const out = Object.fromEntries(facets.map(([key]) => [key, []]));
+  for (const r of rows) out[r.facet].push({ value: r.value, count: r.count });
   // GEOS: split each ad's "CC-pct,CC-pct" into its countries and count ads per country
   // (busiest first). Inner join drops ads with no matched campaign.
   const geos = await sql`

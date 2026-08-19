@@ -1,15 +1,16 @@
 import { redirect } from 'next/navigation';
 import { requireAuth, getCapabilities, hasSessionCookie } from '@/lib/auth';
-import { getAds, getSecondaryCounts, getLastRun, getDomains, getRuns, getFeeds, getFeedPage, getFeedTicker } from '@/lib/queries';
+import { getAds, getSecondaryCounts, getLastRun, getDomains, getRuns, getFeeds, getFeedPage, getFeedTicker, getFeedFacets } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics } from '@/lib/metrics';
-import { attachOwned, articlesConfigured } from '@/lib/articles';
+import { attachOwned, articlesConfigured, listOurDomains } from '@/lib/articles';
 import Dashboard from '@/components/Dashboard';
 
 // Server-side feed, ON by default since the Phase 3 cutover: the page ships one page plus
 // the ticker counts instead of the whole ~28 MB feed, and the Dashboard drives filtering,
-// sorting, search, paging, selection and export against the database. Facets are not
-// server-rendered - the Dashboard fetches them on mount anyway, so shipping them here was
-// double work. SERVER_SIDE_FEED=0 restores the old all-rows client path (the rollback lever).
+// sorting, search, paging, selection and export against the database. The filter rail's facets
+// and our-domains list ARE server-rendered (see railPromise below); leaving them to the browser
+// meant a second request paying its own connection setup while the rail showed a spinner.
+// SERVER_SIDE_FEED=0 restores the old all-rows client path (the rollback lever).
 const SERVER_FEED = process.env.SERVER_SIDE_FEED !== '0';
 const INITIAL_PAGE_SIZE = 100;
 
@@ -45,9 +46,26 @@ export default async function Page() {
   // rejection cannot surface as an unhandled one.
   feedPromise.catch(() => {});
 
+  // The filter rail's two inputs, fetched HERE rather than from the browser after hydration.
+  // They used to be skipped on the grounds that the Dashboard fetches them on mount anyway, so
+  // shipping them was double work - but that reasoning missed what the round trip costs. The
+  // queries themselves are trivial (169 ms for all nine facets server-side, 19 ms for geos);
+  // what hurt was a fresh request paying its own connection setup, ~2.2 s cold, while the rail
+  // sat on "LOADING FILTERS...". Here they ride along with the feed query on a connection that
+  // is being opened regardless, so the rail arrives populated and the browser waits for
+  // nothing. Both are best-effort: a failure yields null and the Dashboard falls back to
+  // fetching them itself, exactly as before.
+  const railPromise = Promise.all([
+    getFeedFacets([]).catch((e) => { console.warn('[facets] server-side prefetch failed', String(e?.message || e)); return null; }),
+    articlesConfigured()
+      ? listOurDomains().catch((e) => { console.warn('[our articles] domain prefetch failed', String(e?.message || e)); return null; })
+      : Promise.resolve([]),
+  ]);
+
   const user = await requireAuth();
   const caps = await getCapabilities();
   const [secondaryCounts, lastRun, domains, runs, feeds] = await commonPromise;
+  const [initialFacets, initialOurDomains] = await railPromise;
 
   let ads;
   let initialFeed = null;
@@ -85,6 +103,8 @@ export default async function Page() {
       me={{ email: user.email, name: user.name }}
       exportSaEmail={caps.export_data ? (process.env.GCS_CLIENT_EMAIL ?? null) : null}
       articlesConfigured={articlesConfigured()}
+      initialFacets={initialFacets}
+      initialOurDomains={initialOurDomains}
     />
   );
 }
