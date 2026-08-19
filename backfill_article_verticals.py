@@ -419,8 +419,13 @@ async def derive_families(args):
             # 1. make sure each ad has article text, fetching only the ones that lack it.
             fetched: list[tuple[str, str, str]] = []
             if not args.no_scrape:
+                # Ads whose landing is a known search/redirect endpoint are skipped outright:
+                # there is no article behind them to find, and /asrsearch in particular does
+                # not answer at all, so each one costs a credit plus the full per-ad deadline
+                # to learn nothing. They fall through to the vertical fallback, which is the
+                # right answer for them anyway.
                 need = [r for r in batch if len(r.get('article_content') or '') < MIN_ARTICLE_CHARS
-                        and landing_url(r)]
+                        and landing_url(r) and not av.is_search_endpoint(landing_url(r))]
                 if need:
                     if not SCRAPINGBEE_API_KEY:
                         raise SystemExit('SCRAPINGBEE_API_KEY is not set (or pass --no-scrape).')
