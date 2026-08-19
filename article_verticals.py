@@ -150,6 +150,43 @@ def article_excerpt(title: str | None, content: str | None) -> str:
     return ' . '.join(parts)[:EXCERPT_CHARS]
 
 
+# Values `ads.vertical` uses for "not classified". 'None' is a literal string in that column
+# (722 rows), not a NULL, so a plain truthiness test would happily classify ads as being about
+# the topic "None".
+_EMPTY_VERTICALS = {'', 'none', 'null', 'n/a', 'unknown', '-'}
+# How much creative copy rides along behind the vertical in the fallback. Deliberately far
+# short of EXCERPT_CHARS: the copy is there to disambiguate ("Mobile Phones" - contract or
+# handset?), not to outvote the vertical, and ad copy is mostly hype per token.
+FALLBACK_COPY_CHARS = 400
+
+
+def fallback_excerpt(vertical: str | None, copy_parts) -> str:
+    """What we classify an ad from when its landing page has no article to read.
+
+    RSOC search-arbitrage ads land on a search page, not an advertorial, so there is
+    nothing to scrape and never will be - about 3,400 approved ads. They are not
+    unknowable though: the pipeline already assigned each one a vertical from the app's
+    own taxonomy, and 98.5% of these ads carry one ("Abandoned Houses", "24/7 Nurse",
+    "Car & Auto Parts"). That label leads here, followed by a short slice of the ad's
+    own copy.
+
+    It is labelled a HINT rather than a topic on purpose. Sampled live, a meaningful
+    minority of those verticals are plainly wrong for the ad they sit on - "AARP
+    membership" on an ad for a small electric car for seniors, "Accountant Jobs" on one
+    for security-services work. Naming it as a prior the copy can override (and the
+    system prompt says exactly that) keeps a wrong label from dragging the whole family
+    off-topic, while a right one still does the heavy lifting the user asked it to do.
+    """
+    v = (vertical or '').strip()
+    if v.lower() in _EMPTY_VERTICALS:
+        v = ''
+    copy = ' . '.join(p.strip() for p in copy_parts if isinstance(p, str) and p.strip())
+    copy = _clean(copy)[:FALLBACK_COPY_CHARS]
+    if not v:
+        return article_excerpt(None, copy)
+    return article_excerpt(f'Topic hint: {v}', copy)
+
+
 _SYSTEM_PROMPT = (
     "You match an advertising article to the vertical categories a publisher already "
     "writes about. You are given the article and a numbered list of candidate verticals.\n"
@@ -164,6 +201,8 @@ _SYSTEM_PROMPT = (
     f"- Return at most {MAX_FAMILY}, best first, one per line, nothing else.\n"
     "- The article may be in any language; the candidates are always English. Match on "
     "meaning, not on shared words.\n"
+    "- A leading \"Topic hint:\" is an earlier guess about the subject, not ground truth. "
+    "Where it disagrees with the text that follows it, trust the text.\n"
     "- If no candidate covers the article's subject, return the single word NONE."
 )
 
