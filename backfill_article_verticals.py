@@ -85,6 +85,20 @@ BATCH_SIZE = 256
 EMBED_BATCH = 256          # inputs per embeddings request (the API caps at 2048)
 MIN_ARTICLE_CHARS = 200    # below this a stored article is treated as absent
 
+# (connect, read) seconds for the ScrapingBee HTTP call itself, and the ceiling on one ad's
+# whole scrape step.
+#
+# These are not belt-and-braces, they are load-bearing. The `timeout` inside the params dict
+# is ScrapingBee's OWN page-load timeout - it is sent to their API as a query parameter and
+# says nothing about our socket. Only a top-level `timeout=` reaches requests (the SDK passes
+# **kwargs straight through to session.request). Without it requests waits forever, and one
+# stalled connection wedges the executor thread, then the asyncio.gather over the batch, then
+# the entire run: observed live, a full backfill sat dead for 65 minutes mid-batch having
+# printed nothing. The read budget is comfortably above ScrapingBee's own 30s page timeout so
+# a legitimate JS render is never cut short.
+HTTP_TIMEOUT = (15, 90)
+SCRAPE_DEADLINE = 240      # seconds for one ad: a plain fetch plus a rendered retry, with slack
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # ARTICLES DATABASE - read-only
@@ -206,7 +220,7 @@ def _fetch(url, render_js):
         resp = client.get(url, params={
             'render_js': render_js, 'return_page_markdown': True,
             'block_resources': not render_js, 'timeout': 30000,
-        })
+        }, timeout=HTTP_TIMEOUT)
         if not resp.ok:
             return '', '', False
         title, body = '', []
@@ -310,6 +324,26 @@ def write_domains(updates):
         )
 
 
+async def scrape_one(url):
+    """One ad's scrape, off the event loop and under a hard deadline.
+
+    Defence in depth behind HTTP_TIMEOUT: a thread that somehow still overruns cannot hold
+    up the batch's gather, and therefore cannot stall the run. Cancelling does not kill the
+    underlying thread - Python cannot - but it does free the loop, and the thread dies when
+    its own socket timeout fires. Returns ('', '') on anything unusable, which drops the ad
+    to the vertical/copy fallback rather than losing it.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, scrape_article, url), SCRAPE_DEADLINE)
+    except asyncio.TimeoutError:
+        print(f'  scrape deadline hit for {url[:70]}', flush=True)
+        return '', ''
+    except Exception as e:
+        print(f'  scrape failed for {url[:70]}: {type(e).__name__}: {e}', flush=True)
+        return '', ''
+
+
 def excerpt_for(row):
     """The text we classify one ad from.
 
@@ -377,6 +411,10 @@ async def derive_families(args):
 
         for start in range(0, len(rows), BATCH_SIZE):
             batch = rows[start:start + BATCH_SIZE]
+            # Announce each phase before entering it. A batch takes under a minute, so silence
+            # for longer than that now names the stage it is stuck in - the earlier hang printed
+            # nothing at all for 65 minutes and looked identical to slow progress.
+            print(f'  batch {start // BATCH_SIZE + 1}: scraping...', flush=True)
 
             # 1. make sure each ad has article text, fetching only the ones that lack it.
             fetched: list[tuple[str, str, str]] = []
@@ -386,10 +424,7 @@ async def derive_families(args):
                 if need:
                     if not SCRAPINGBEE_API_KEY:
                         raise SystemExit('SCRAPINGBEE_API_KEY is not set (or pass --no-scrape).')
-                    loop = asyncio.get_running_loop()
-                    results = await asyncio.gather(*[
-                        loop.run_in_executor(None, scrape_article, landing_url(r)) for r in need
-                    ])
+                    results = await asyncio.gather(*[scrape_one(landing_url(r)) for r in need])
                     for r, (t, b) in zip(need, results):
                         if b:
                             r['article_title'] = r.get('article_title') or t
@@ -400,6 +435,7 @@ async def derive_families(args):
                         write_article_text(fetched)
 
             # 2. embed each ad's article, in the same order, and shortlist against the vocabulary.
+            print(f'  batch {start // BATCH_SIZE + 1}: embedding...', flush=True)
             excerpts = [excerpt_for(r) for r in batch]
             usable = [i for i, e in enumerate(excerpts) if e]
             shortlists: dict[int, list[str]] = {}
@@ -413,6 +449,7 @@ async def derive_families(args):
                     shortlists[j] = [names[p] for p in picks]
 
             # 3. one chat call per ad, from its own shortlist.
+            print(f'  batch {start // BATCH_SIZE + 1}: classifying {len(shortlists)}...', flush=True)
             order = sorted(shortlists)
             families = await asyncio.gather(*[
                 choose_family(session, sem, excerpts[j], shortlists[j], args.model) for j in order
