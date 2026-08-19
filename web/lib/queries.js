@@ -52,6 +52,8 @@ function mapAd(r) {
     // The vertical family derived from this ad's own landing article (see migration 0017).
     // lib/ourmatch.js needs it on the row to build the articles-DB lookup for the page.
     article_verticals: r.article_verticals || [],
+    // Set only when the GEOS revenue split overrode the article's guessed country (0018).
+    country_scraped: r.country_scraped ?? null,
   };
 }
 
@@ -69,7 +71,7 @@ const FEED_COLUMNS = [
   'total_active_time', 'resolved_url', 'rank', 'language', 'country', 'vertical',
   'brand', 'creative_language', 'content_flag', 'rsoc_tier', 'rsoc_policy_area', 'rsoc_reason',
   'first_seen_at', 'last_seen_at', 'status', 'owner', 'linked_article_url',
-  'is_saved', 'tags', 'notes', 'review_status', 'article_verticals',
+  'is_saved', 'tags', 'notes', 'review_status', 'article_verticals', 'country_scraped',
 ];
 
 // A row is prohibited-content when its content_flag is a real category (anything but
