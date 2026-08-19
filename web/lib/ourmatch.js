@@ -119,7 +119,25 @@ export function groupOurArticles(rows, articles) {
         hits.push(a);
       }
     }
-    if (hits.length) byAd.set(r.ad_archive_id, hits);
+    if (hits.length) byAd.set(r.ad_archive_id, hits.sort(newestFirst));
   }
   return byAd;
+}
+
+// Newest first, mirroring the SQL's `published_at desc nulls last, id desc`.
+//
+// The query only orders WITHIN each (country, language, vertical) partition - that is what the
+// row_number() is for - and the outer statement has no global order at all. An ad that matches
+// several verticals therefore collects several already-sorted runs, one after another, so the
+// first element was the newest of whichever vertical came back first, not the newest overall.
+// The grid shows exactly that first element, so this sort is what makes "the newest one" true.
+function newestFirst(x, y) {
+  const a = x.published_at || '';
+  const b = y.published_at || '';
+  if (a !== b) {
+    if (!a) return 1;          // undated sinks, like `nulls last`
+    if (!b) return -1;
+    return b.localeCompare(a); // ISO strings sort lexicographically
+  }
+  return (y.id ?? 0) - (x.id ?? 0);
 }
