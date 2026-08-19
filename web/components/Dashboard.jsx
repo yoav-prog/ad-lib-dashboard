@@ -921,15 +921,20 @@ function OurArticleList({ items, ad, canEdit, updateLocal, commit }) {
   );
 }
 
-// One row's answer to "do we already have an article for this?". Four distinct states, each
-// worded so nobody has to guess which one they are looking at: no domain picked yet, the ad
-// has never been classified (the backfill has not reached it), classified with no match, and
-// a real match with its count and freshest headline. The old version of this column showed a
-// bare dash for all four, which read as "we have nothing" even when the truth was "nobody has
-// looked yet".
+// One row's answer to "do we already have an article for this?". Five distinct states, each
+// worded so nobody has to guess which one they are looking at: no domain picked, the lookup
+// never ran for this row, the ad has never been classified (the backfill has not reached it),
+// classified with nothing on this domain, and a real match with its count and freshest
+// headline. The old version of this column showed a bare dash for all of them, which read as
+// "we have nothing" even when the truth was "nobody has looked yet" - the distinction this
+// whole feature exists to make.
 function OurArticleCell({ ad, domain }) {
   const dim = `font-family:${MONO};font-size:10px;color:#45484D`;
   if (!domain) return <span style={s(dim)} title="Pick one of our domains in the filter rail.">&mdash;</span>;
+  // attachOurArticles always sets our_articles (even to []), so an absent field means this row
+  // never went through the lookup at all - the client-side feed path (SERVER_SIDE_FEED=0).
+  // Saying "none" here would be a claim we have not actually checked.
+  if (!ad.our_articles) return <span style={s(dim)} title="Not looked up on this row (the client-side feed path does not run the articles lookup).">&mdash;</span>;
   if (!ad.article_verticals || !ad.article_verticals.length) {
     return <span style={s(dim)} title="This ad's landing article has not been matched to our verticals yet (run backfill_article_verticals.py).">not checked</span>;
   }
@@ -957,9 +962,13 @@ function OurArticleCell({ ad, domain }) {
 // `domains` is null while the list is loading and [] when the articles DB is not wired up -
 // in the latter case the whole block is hidden, since offering a control that cannot work is
 // worse than not offering it.
-function OurDomainPicker({ domains, chosen, onChoose, only, onToggleOnly }) {
+function OurDomainPicker({ domains, chosen, onChoose, only, onToggleOnly, canFilter = true }) {
   if (Array.isArray(domains) && domains.length === 0) return null;
   const loading = domains == null;
+  // The narrowing is a SQL filter on the materialized column, so it only exists on the
+  // server-side feed. On the rollback path (SERVER_SIDE_FEED=0) the checkbox would tick and
+  // change nothing, so it is disabled and says why instead.
+  const canOnly = Boolean(chosen) && canFilter;
   return (
     <div style={s('border-bottom:1px solid rgba(255,255,255,.06);padding:11px 14px 12px')}>
       <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:8px')}>
@@ -972,9 +981,11 @@ function OurDomainPicker({ domains, chosen, onChoose, only, onToggleOnly }) {
         <option value="">{loading ? 'loading domains...' : 'choose a domain...'}</option>
         {(domains || []).map((d) => <option key={d.domain} value={d.domain}>{d.domain} ({fmtInt(d.total)})</option>)}
       </select>
-      <button onClick={onToggleOnly} disabled={!chosen}
-        title={chosen ? 'Show only the ads we already have at least one article for on this domain.' : 'Pick a domain first.'}
-        style={s(`display:flex;align-items:center;gap:9px;width:100%;margin-top:9px;padding:4px 0;background:transparent;border:none;cursor:${chosen ? 'pointer' : 'default'};text-align:left;opacity:${chosen ? 1 : .4}`)}>
+      <button onClick={onToggleOnly} disabled={!canOnly}
+        title={!chosen ? 'Pick a domain first.'
+          : !canFilter ? 'Unavailable on the client-side feed path (SERVER_SIDE_FEED=0).'
+          : 'Show only the ads we already have at least one article for on this domain.'}
+        style={s(`display:flex;align-items:center;gap:9px;width:100%;margin-top:9px;padding:4px 0;background:transparent;border:none;cursor:${canOnly ? 'pointer' : 'default'};text-align:left;opacity:${canOnly ? 1 : .4}`)}>
         <span style={s(`width:11px;height:11px;flex-shrink:0;border:1px solid ${only ? '#3FB27F' : 'rgba(255,255,255,.2)'};background:${only ? '#3FB27F' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:8px;color:#0B0C0E;line-height:1`)}>{only ? '✓' : ''}</span>
         <span style={s(`flex:1;font-size:11.5px;color:${only ? '#E7E8EA' : '#9CA0A6'}`)}>Only ads we have an article for</span>
       </button>
@@ -1236,7 +1247,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
           onClear={clearFilters}
           loading={serverMode && !serverFacets}
           top={<OurDomainPicker domains={ourDomains} chosen={filters.ourDomain} onChoose={setOurDomain}
-            only={filters.hasOurArticle} onToggleOnly={toggleHasOurArticle} />}
+            only={filters.hasOurArticle} onToggleOnly={toggleHasOurArticle} canFilter={serverMode} />}
         />
 
         {/* feed */}
