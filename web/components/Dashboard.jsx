@@ -917,7 +917,11 @@ function OurArticleList({ items, ad, canEdit, updateLocal, commit }) {
             <div style={s('display:flex;align-items:center;gap:8px;flex-wrap:wrap')}>
               <span style={s(`font-family:${MONO};font-size:9.5px;color:#8A8E94`)}>{v.domain || '-'}</span>
               {(v.country || v.language) && <span style={s(`font-family:${MONO};font-size:9px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:1px 5px`)}>{[v.country, v.language].filter(Boolean).join(' · ')}</span>}
-              {v.vertical && <span style={s(`font-family:${MONO};font-size:9px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:1px 5px`)}>{v.vertical}</span>}
+              {(v.vertical || v.match_vertical) && <span style={s(`font-family:${MONO};font-size:9px;color:#6C7076;border:1px solid rgba(255,255,255,.12);padding:1px 5px`)}>{v.vertical || v.match_vertical}</span>}
+              {/* Reached through the sister family rather than its own metadata - worth saying,
+                  because this article's own row carries no country, language or vertical. */}
+              {v.via_sister && <span title="Found through its sister family: the same article cloned onto this domain. Its own row carries no locale, so it is placed by the sibling that matched."
+                style={s(`font-family:${MONO};font-size:9px;color:#6FA8DC;border:1px solid rgba(111,168,220,.4);padding:1px 5px`)}>SISTER</span>}
               {linked && <span style={s(`font-family:${MONO};font-size:9px;color:#3FB27F;border:1px solid #3FB27F55;padding:1px 5px`)}>LINKED</span>}
             </div>
             {v.headline && <div style={s('font-size:12px;color:#C6C9CE;line-height:1.4')}>{v.headline}</div>}

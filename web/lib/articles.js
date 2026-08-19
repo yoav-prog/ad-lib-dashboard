@@ -375,28 +375,76 @@ const OUR_CHUNK = 250;
 // So the locale groups are OR-ed into one statement on one connection. The window functions
 // partition by (country, language, vertical) rather than vertical alone, so each locale still
 // gets its own newest-N and its own true total.
+// Two ways an article on the chosen domain can count for an ad (Amit's ask):
+//
+//   direct   the article carries the ad's country, language and one of its verticals itself.
+//   sister   the article is a SISTER of one that does - the same piece cloned onto another
+//            domain, tied by articles.sister_family_id.
+//
+// The sister leg is not a nicety. Sisters routinely carry no metadata of their own: of 111,988
+// of our articles in a family (16,046 families spanning several domains, 4.92 on average),
+// 311,396 sibling pairs sit on different domains with differing metadata, and the common shape
+// is a fully-populated original beside a sister with country, language and vertical all NULL.
+// Measured live, findingfrenzy.com had 2 direct matches for an Italian kitchen ad and 8 through
+// its sisters - the article was there the whole time, invisible because its own row said
+// nothing. That is exactly "we made it for MYTIPS and cloned it elsewhere, so that domain has
+// it too".
+//
+// A sister is admitted only when its own country/language do not CONTRADICT the ad's - NULL
+// means inherit from the sibling that matched. Deliberately narrower than trusting the family
+// outright, because 265 families do span languages: the chain fills gaps, it never overrides a
+// locale we can actually read.
+//
+// Each candidate is then attributed to exactly ONE (country, language, vertical) via
+// `distinct on (id)`. Without that a sister whose family matched several of the ad's verticals
+// would land in several partitions and be counted once per partition, inflating the "118
+// articles" figure the row and panel report.
 function ourArticlesQuery(sql, domain, plan) {
-  const group = (p) => sql`(a.country = ${p.country} and a.language = ${p.language}
-                            and a.vertical = any(${p.verticals.slice(0, OUR_MAX_VERTICALS)}))`;
-  const locales = plan.map(group).reduce((acc, g) => sql`${acc} or ${g}`);
+  const group = (alias) => (p) => sql`(${alias}.country = ${p.country} and ${alias}.language = ${p.language}
+                            and ${alias}.vertical = any(${p.verticals.slice(0, OUR_MAX_VERTICALS)}))`;
+  const localesFor = (alias) => plan.map(group(alias)).reduce((acc, g) => sql`${acc} or ${g}`);
   // Only the fields the row chip and the detail panel actually render. network / category /
   // keyword are deliberately absent: nothing displays them here and they were about half the
   // bytes on a busy locale.
   return sql`
-    select t.id, t.url, t.headline, t.domain, t.country, t.language, t.vertical,
-           t.published_at, t.total
-    from (
+    with fam as (
+      select distinct s.sister_family_id, s.country as mc, s.language as ml, s.vertical as mv
+        from articles s
+       where s.is_external = false and s.url like 'http%'
+         and s.sister_family_id is not null
+         and (${localesFor(sql`s`)})
+    ),
+    cand as (
       select a.id, a.url, a.headline, a.domain, a.country, a.language, a.vertical, a.published_at,
-             row_number() over (partition by a.country, a.language, a.vertical
-                                order by a.published_at desc nulls last, a.id desc) as rn,
-             count(*) over (partition by a.country, a.language, a.vertical)::int as total
-      from articles a
-      where a.domain = ${domain}
-        and a.is_external = false
-        and a.url like 'http%'
-        and (${locales})
-    ) t
-    where t.rn <= ${OUR_PER_VERTICAL}
+             a.country as mc, a.language as ml, a.vertical as mv, false as via_sister
+        from articles a
+       where a.domain = ${domain} and a.is_external = false and a.url like 'http%'
+         and (${localesFor(sql`a`)})
+      union all
+      select b.id, b.url, b.headline, b.domain, b.country, b.language, b.vertical, b.published_at,
+             fam.mc, fam.ml, fam.mv, true as via_sister
+        from fam
+        join articles b on b.sister_family_id = fam.sister_family_id
+       where b.domain = ${domain} and b.is_external = false and b.url like 'http%'
+         and (b.country is null or b.country = fam.mc)
+         and (b.language is null or b.language = fam.ml)
+    ),
+    one as (
+      -- A direct hit wins over the same article reached through a sister, so via_sister is
+      -- honest about how the article was actually found.
+      select distinct on (c.id) c.* from cand c order by c.id, c.via_sister, c.mv
+    ),
+    ranked as (
+      select o.*,
+             row_number() over (partition by o.mc, o.ml, o.mv
+                                order by o.published_at desc nulls last, o.id desc) as rn,
+             count(*) over (partition by o.mc, o.ml, o.mv)::int as total
+        from one o
+    )
+    select r.id, r.url, r.headline, r.domain, r.country, r.language, r.vertical,
+           r.published_at, r.total, r.mc, r.ml, r.mv, r.via_sister
+      from ranked r
+     where r.rn <= ${OUR_PER_VERTICAL}
   `;
 }
 
@@ -412,6 +460,11 @@ export async function getOurArticlesForAds(rows, domain) {
     id: r.id, url: r.url, headline: r.headline, domain: r.domain,
     country: r.country, language: r.language, vertical: r.vertical, total: r.total,
     published_at: r.published_at ? new Date(r.published_at).toISOString() : null,
+    // How this article was reached: its own metadata, or a sibling's. match_* is the locale and
+    // vertical it was matched ON, which for a sister is inherited from that sibling and is the
+    // only thing that can place it against an ad - its own fields are frequently NULL.
+    match_country: r.mc, match_language: r.ml, match_vertical: r.mv,
+    via_sister: Boolean(r.via_sister),
   }));
   console.info('[our articles] fetched', { domain: dom, locales: plan.length, articles: out.length });
   return out;

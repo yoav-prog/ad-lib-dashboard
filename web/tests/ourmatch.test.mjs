@@ -188,6 +188,40 @@ test('groupOurArticles sinks undated articles and breaks ties on id', () => {
   );
 });
 
+test('groupOurArticles places a sister that carries no metadata of its own', () => {
+  // The shape that made this necessary, from live data: an article cloned onto another domain
+  // is routinely stored with country, language and vertical all NULL. Keyed on its own fields
+  // it is unplaceable; keyed on what it was MATCHED on (its sibling's locale) it lands.
+  const rows = [{ ad_archive_id: 'it', country: 'IT', language: 'Italian', article_verticals: ['Kitchen Deals'] }];
+  const sister = article({
+    id: 7, url: 'https://findingfrenzy.com/home-garden/modern-kitchen-it-it',
+    domain: 'findingfrenzy.com', country: null, language: null, vertical: null,
+    match_country: 'IT', match_language: 'it', match_vertical: 'Kitchen Deals', via_sister: true,
+  });
+  assert.deepEqual(groupOurArticles(rows, [sister]).get('it').map((a) => a.id), [7]);
+});
+
+test('groupOurArticles still refuses a sister matched into the wrong locale', () => {
+  // match_* is authoritative, so it has to be wrong for the ad, not merely absent.
+  const rows = [{ ad_archive_id: 'it', country: 'IT', language: 'Italian', article_verticals: ['Kitchen Deals'] }];
+  const wrong = article({
+    id: 8, country: null, language: null, vertical: null,
+    match_country: 'DE', match_language: 'de', match_vertical: 'Kitchen Deals', via_sister: true,
+  });
+  assert.equal(groupOurArticles(rows, [wrong]).size, 0);
+});
+
+test('countOurArticles counts a sister under the vertical it was matched on', () => {
+  // Its own vertical is null; without match_vertical every sister would collapse into one
+  // ""-keyed bucket and the totals would be wrong.
+  const hits = [
+    article({ id: 1, vertical: null, match_vertical: 'Kitchen Deals', total: 12 }),
+    article({ id: 2, vertical: null, match_vertical: 'Kitchen Deals', total: 12 }),
+    article({ id: 3, vertical: null, match_vertical: 'Furniture', total: 4 }),
+  ];
+  assert.equal(countOurArticles(hits), 16);
+});
+
 test('groupOurArticles on empty input returns an empty map', () => {
   assert.equal(groupOurArticles([], []).size, 0);
   assert.equal(groupOurArticles(null, null).size, 0);

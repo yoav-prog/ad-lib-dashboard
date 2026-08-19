@@ -57,6 +57,13 @@ export function isMatchable(ad) {
 
 export const localeKey = (country, language) => `${country}|${language}`;
 
+// What an article was matched ON. lib/articles.js sets match_* on every row it returns; the
+// article's own field is the fallback so these stay usable for a plain article object (and so
+// the tests can pass one). See groupOurArticles for why the distinction matters.
+const matchCountry = (a) => (a && a.match_country != null ? a.match_country : (a && a.country));
+const matchLanguage = (a) => (a && a.match_language != null ? a.match_language : (a && a.language));
+const matchVertical = (a) => String((a && a.match_vertical != null ? a.match_vertical : (a && a.vertical)) || '');
+
 // Collapse a page of feed rows into the smallest query that can answer all of them: one
 // bucket per locale, each carrying the union of that locale's verticals. A page of 100 ads is
 // typically 5-15 locales, so this turns 100 lookups into one IN-list per locale rather than
@@ -82,8 +89,8 @@ export function ourQueryPlan(rows) {
 export function countOurArticles(hits) {
   const totals = new Map();
   for (const h of hits || []) {
-    const v = String(h.vertical || '');
-    if (!totals.has(v)) totals.set(v, Number.isFinite(h.total) ? h.total : (hits || []).filter((x) => String(x.vertical || '') === v).length);
+    const v = matchVertical(h);
+    if (!totals.has(v)) totals.set(v, Number.isFinite(h.total) ? h.total : (hits || []).filter((x) => matchVertical(x) === v).length);
   }
   let n = 0;
   for (const t of totals.values()) n += t;
@@ -100,9 +107,15 @@ export function groupOurArticles(rows, articles) {
 
   // Index our articles by locale + vertical once, so each ad is a handful of map reads
   // rather than a scan of the whole result set.
+  //
+  // Keyed on what the article was MATCHED on, not on its own fields. For a direct hit the two
+  // are the same. For one reached through its sister family they are not: a sister is very
+  // often stored with country, language and vertical all NULL, and the locale it belongs to is
+  // the one its matched sibling carries. Reading a.country here would drop exactly the rows the
+  // sister chain exists to find.
   const index = new Map();
   for (const a of articles) {
-    const key = `${localeKey(countryKey(a.country), languageKey(a.language))}|${String(a.vertical || '')}`;
+    const key = `${localeKey(countryKey(matchCountry(a)), languageKey(matchLanguage(a)))}|${String(matchVertical(a))}`;
     const list = index.get(key);
     if (list) list.push(a); else index.set(key, [a]);
   }
