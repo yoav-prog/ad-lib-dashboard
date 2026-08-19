@@ -7,7 +7,7 @@ import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getS
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf, langCode } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
-import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, attachOwned, attachOurArticles, isOurDomain, articlesConfigured } from '@/lib/articles';
+import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, attachOwned, attachOurArticles, articlesConfigured } from '@/lib/articles';
 
 const AD_FIELDS = ['status', 'owner', 'notes', 'is_saved', 'linked_article_url', 'brand'];
 const DOMAIN_FIELDS = ['query', 'country', 'active_status', 'max_ads', 'interval_days', 'enabled', 'feed'];
@@ -85,18 +85,28 @@ export async function refreshSecondaryCounts() {
 export async function loadFeedPage(params) {
   const user = await getCurrentUser();
   if (!user) throw new Error('Forbidden: sign in required');
-  // The domain reaches SQL (the "only ads we have an article for" filter) and the articles DB,
-  // so it is validated against the real list of our domains rather than trusted. An unknown
-  // value is dropped entirely: the page then renders with no our-articles enrichment and no
-  // filter, which is the same thing the user sees before they pick a domain.
-  const clean = await withCleanDomain(params);
+  const clean = withCleanDomain(params);
   const ourDomain = clean.filters.ourDomain;
   const { rows, total, page, pageSize } = await getFeedPage(clean);
-  // Badge the rows we already have our own article for (best-effort; never blocks the feed).
-  // attachOwned is the exact-clone lineage signal; attachOurArticles is the domain-scoped
-  // country+language+vertical match the rail's domain picker drives.
-  const owned = await attachOwned(rows);
-  const enriched = await attachOurArticles(owned, ourDomain);
+  // Both enrichments read the same remote database, and neither needs the other's output, so
+  // they go together rather than one after the next. This used to be four round trips in
+  // series - validate, feed, owned, our-articles - which on a cold instance measured over
+  // eight seconds and pushed the whole action past the function's time limit; the action then
+  // rejected and the browser silently kept the un-enriched server-rendered page, so the
+  // feature looked like it was returning nothing. attachOwned is the exact-clone lineage
+  // signal, attachOurArticles the domain-scoped country+language+vertical match. Both are
+  // best-effort and never block the feed.
+  const [owned, ours] = await Promise.all([
+    attachOwned(rows),
+    attachOurArticles(rows, ourDomain),
+  ]);
+  // Each returns a copy of every row, so fold the two enrichments back into one list. Index by
+  // position: both preserve the input order and neither adds or drops rows.
+  const enriched = owned.map((r, i) => {
+    const o = ours[i];
+    if (!o || !('our_articles' in o)) return r;
+    return { ...r, our_articles: o.our_articles, our_articles_count: o.our_articles_count };
+  });
   return { ok: true, rows: enriched, total, page, pageSize };
 }
 
@@ -105,10 +115,19 @@ export async function loadFeedPage(params) {
 // filter keeps. Returns the same params with `filters.ourDomain` either a real domain of ours
 // or null - an unknown value is dropped rather than queried for, and an unreachable articles DB
 // degrades to "no domain chosen" instead of breaking the feed. Never throws.
-async function withCleanDomain(params) {
+// A hostname, shape-checked. This is deliberately NOT a lookup against the real domain list:
+// that list lives in the articles database in eu-west-1 while the app runs in bom1, so an
+// authoritative check costs a cross-region round trip (measured cold: 1.3s from a much closer
+// machine) and it was sitting SERIALLY in front of every feed page load. Nothing needs it to
+// be authoritative - the value only ever reaches SQL as a bound parameter on both databases,
+// and a domain we do not publish on simply matches no articles, which is the correct answer
+// for it anyway. So the hot path checks the shape and the database decides the rest.
+const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i;
+
+function withCleanDomain(params) {
   const p = params || {};
-  const dom = String(p.filters?.ourDomain || '').trim();
-  const ok = dom && articlesConfigured() && await isOurDomain(dom);
+  const dom = String(p.filters?.ourDomain || '').trim().toLowerCase();
+  const ok = dom.length <= 253 && HOSTNAME_RE.test(dom) && articlesConfigured();
   return { ...p, filters: { ...(p.filters || {}), ourDomain: ok ? dom : null } };
 }
 
@@ -152,7 +171,7 @@ export async function loadFeedTicker() {
 export async function loadFeedExport(params) {
   const user = await getCurrentUser();
   if (!user) throw new Error('Forbidden: sign in required');
-  const clean = await withCleanDomain(params);
+  const clean = withCleanDomain(params);
   const rows = await getFeedExport(clean);
   // The CSV carries the same Our Articles columns the table shows, so a download is not a
   // downgrade of what is on screen.
@@ -167,7 +186,7 @@ export async function loadFeedExport(params) {
 export async function loadFeedIds(params) {
   const user = await getCurrentUser();
   if (!user) throw new Error('Forbidden: sign in required');
-  const ids = await getFeedIds(await withCleanDomain(params));
+  const ids = await getFeedIds(withCleanDomain(params));
   return { ok: true, ids };
 }
 
@@ -632,7 +651,7 @@ export async function exportToSheet({ spreadsheetId, tabName, adIds, columnKeys,
   // Same for our own articles: the Our Articles / Our Article URL / Our Headline columns are
   // built from a live lookup, so an exported sheet says what the table said. Validated the
   // same way the feed validates it - an unknown domain leaves the columns blank.
-  const { filters: exportFilters } = await withCleanDomain({ filters: { ourDomain } });
+  const { filters: exportFilters } = withCleanDomain({ filters: { ourDomain } });
   const enriched = await attachOurArticles(ads, exportFilters.ourDomain);
 
   const { columns, rows } = buildSheetData(enriched, Date.now(), keys.length ? keys : DEFAULT_SHEET_COLUMN_KEYS);

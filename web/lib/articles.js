@@ -27,7 +27,13 @@ export function getArticlesSql() {
     const raw = process.env.ARTICLES_DATABASE_URL;
     if (!raw) throw new Error('ARTICLES_DATABASE_URL is not set (see ../.env.example)');
     const url = raw.replace(/^postgresql\+\w+:\/\//, 'postgresql://').replace(/^postgres\+\w+:\/\//, 'postgres://');
-    _sql = postgres(url, { prepare: false, ssl: 'require' });
+    // A bounded pool, deliberately small. This pooler runs in SESSION mode with a hard cap of
+    // 40 clients and it belongs to the Mega Uploader app, not to us - we are a read-only guest
+    // on someone else's production database. postgres.js otherwise opens up to 10 connections
+    // per instance and every serverless instance gets its own client, so a busy feed could take
+    // the whole cap and lock the owning app out of its own data. Five is ample for the handful
+    // of reads any one request makes now that the page-scoped lookup is a single query.
+    _sql = postgres(url, { prepare: false, ssl: 'require', max: 5 });
   }
   return _sql;
 }
@@ -356,8 +362,23 @@ const OUR_CHUNK = 250;
 // wire. country/language are compared directly rather than through upper()/lower(): both
 // columns are already stored normalized here (verified - zero rows deviate), so the plain
 // comparison is both correct and able to use ix_articles_country / ix_articles_language.
-async function ourArticlesForLocale(sql, domain, { country, language, verticals }) {
-  const verts = verticals.slice(0, OUR_MAX_VERTICALS);
+// ONE query for the whole page, not one per locale.
+//
+// This used to fan out a query per locale through Promise.all - up to 25 at once. postgres.js
+// opens a connection per concurrent query, and this database is a Supabase pooler in SESSION
+// mode capped at 40 clients, SHARED with the Mega Uploader app that owns it. A single feed page
+// could exhaust that pool on its own: every query then failed with EMAXCONNSESSION, both
+// enrichments hit their catch, and the feed rendered with no articles at all - a dash on every
+// row, indistinguishable from "we have nothing". It could also have starved the Uploader app,
+// which is not ours to break.
+//
+// So the locale groups are OR-ed into one statement on one connection. The window functions
+// partition by (country, language, vertical) rather than vertical alone, so each locale still
+// gets its own newest-N and its own true total.
+function ourArticlesQuery(sql, domain, plan) {
+  const group = (p) => sql`(a.country = ${p.country} and a.language = ${p.language}
+                            and a.vertical = any(${p.verticals.slice(0, OUR_MAX_VERTICALS)}))`;
+  const locales = plan.map(group).reduce((acc, g) => sql`${acc} or ${g}`);
   // Only the fields the row chip and the detail panel actually render. network / category /
   // keyword are deliberately absent: nothing displays them here and they were about half the
   // bytes on a busy locale.
@@ -366,16 +387,14 @@ async function ourArticlesForLocale(sql, domain, { country, language, verticals 
            t.published_at, t.total
     from (
       select a.id, a.url, a.headline, a.domain, a.country, a.language, a.vertical, a.published_at,
-             row_number() over (partition by a.vertical
+             row_number() over (partition by a.country, a.language, a.vertical
                                 order by a.published_at desc nulls last, a.id desc) as rn,
-             count(*) over (partition by a.vertical)::int as total
+             count(*) over (partition by a.country, a.language, a.vertical)::int as total
       from articles a
       where a.domain = ${domain}
         and a.is_external = false
         and a.url like 'http%'
-        and a.country = ${country}
-        and a.language = ${language}
-        and a.vertical = any(${verts})
+        and (${locales})
     ) t
     where t.rn <= ${OUR_PER_VERTICAL}
   `;
@@ -389,8 +408,7 @@ export async function getOurArticlesForAds(rows, domain) {
   const plan = ourQueryPlan(rows).slice(0, OUR_MAX_LOCALES);
   if (!plan.length) return [];
   const sql = getArticlesSql();
-  const batches = await Promise.all(plan.map((p) => ourArticlesForLocale(sql, dom, p)));
-  const out = batches.flat().map((r) => ({
+  const out = (await ourArticlesQuery(sql, dom, plan)).map((r) => ({
     id: r.id, url: r.url, headline: r.headline, domain: r.domain,
     country: r.country, language: r.language, vertical: r.vertical, total: r.total,
     published_at: r.published_at ? new Date(r.published_at).toISOString() : null,
@@ -429,17 +447,10 @@ export async function attachOurArticles(rows, domain, { perRow = 6 } = {}) {
   }
 }
 
-// Is this a domain we actually publish on? The choice arrives from the browser and reaches
-// SQL, so it is checked against the real list rather than trusted - a value that is not one of
-// ours is refused outright instead of quietly running a query for it.
-export async function isOurDomain(domain) {
-  const dom = String(domain || '').trim();
-  if (!dom) return false;
-  try {
-    const domains = await listOurDomains();
-    return domains.some((d) => d.domain === dom);
-  } catch (e) {
-    console.warn('[our articles] domain check failed', String(e?.message || e));
-    return false;
-  }
-}
+// There is deliberately no isOurDomain() here any more. Checking a browser-supplied domain
+// against the real list means querying this database, which lives in eu-west-1 while the app
+// runs in bom1, and it sat serially in front of every feed page load. Nothing needed it to be
+// authoritative: the value only ever reaches SQL as a bound parameter, and a domain we do not
+// publish on matches no articles, which is the right answer for it. actions.withCleanDomain
+// checks the hostname shape instead and lets the query decide. Do not reinstate it in a
+// request path.
