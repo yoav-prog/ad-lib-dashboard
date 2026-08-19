@@ -80,7 +80,17 @@ export async function syncCampaignMetrics(nowMs = Date.now()) {
     } catch (e) {
       console.error('[metrics sync] campaign_url_key resolution failed (metrics still synced)', { message: String(e?.message || e) });
     }
-    const stats = { upserted: rows.length, pruned, adsMatched: resolved.matched, adsRewritten: resolved.updated, ms: Date.now() - t0 };
+    // With the keys resolved, the GEOS split can be read back onto the ads it belongs to and
+    // used to correct their country. Same guard as above: this runs after the metrics are
+    // safely written, so a failure here (e.g. deployed before migration 0018) leaves the sync
+    // successful rather than rolling back real data.
+    let corrected = 0;
+    try {
+      corrected = await correctCountriesFromGeos(sql);
+    } catch (e) {
+      console.error('[metrics sync] country correction failed (metrics still synced)', { message: String(e?.message || e) });
+    }
+    const stats = { upserted: rows.length, pruned, adsMatched: resolved.matched, adsRewritten: resolved.updated, countriesCorrected: corrected, ms: Date.now() - t0 };
     console.info('[metrics sync]', stats);
     return stats;
   }
@@ -89,6 +99,52 @@ export async function syncCampaignMetrics(nowMs = Date.now()) {
   const stats = { upserted: 0, pruned: 0, skipped: 'empty-read', ms: Date.now() - t0 };
   console.warn('[metrics sync] sheet returned no campaigns; left campaign_metrics untouched', stats);
   return stats;
+}
+
+// Amit's rule: an ad's country is a GPT guess from its landing article, while GEOS is the
+// measured revenue split, so where the split is decisive and the money is real, the split
+// wins. Dominant country must hold MORE than half (a 50/50 tie decides nothing) and the ad
+// must have earned at least $50 (below that a "100%" split is one lucky click).
+export const GEO_MIN_SHARE = 50;
+export const GEO_MIN_REVENUE = 50;
+
+// One statement, run after every metrics sync so a correction lands within 30 minutes of the
+// numbers that justify it - and re-lands by itself if a re-scrape overwrites the country with
+// a fresh guess. Idempotent: `is distinct from` means an already-correct ad is not touched, so
+// re-running writes nothing and country_scraped keeps the value actually replaced.
+//
+// geos is "CC-pct,CC-pct" sorted biggest-first (see metrics.geoBreakdown), so the first
+// element is the dominant country. It is parsed with an anchored regexp rather than
+// split_part on '-' so a code that itself contains a dash cannot silently take the wrong half.
+async function correctCountriesFromGeos(sql) {
+  const rows = await sql`
+    with split as (
+      select cm.url_key, cm.revenue,
+             (regexp_match(split_part(cm.geos, ',', 1), '^(.+)-([0-9]+)$')) as m
+        from campaign_metrics cm
+       where cm.geos is not null and cm.geos <> ''
+    ),
+    dominant as (
+      select url_key, upper(m[1]) as cc, (m[2])::int as pct, revenue
+        from split
+       where m is not null
+    )
+    update ads a
+       set country_scraped = a.country,
+           country = d.cc
+      from dominant d
+     where a.campaign_url_key = d.url_key
+       and d.pct > ${GEO_MIN_SHARE}
+       and d.revenue >= ${GEO_MIN_REVENUE}
+       and d.cc is distinct from upper(coalesce(a.country, ''))
+    returning a.ad_archive_id
+  `;
+  if (rows.length) {
+    console.info('[metrics sync] country corrected from GEOS', {
+      ads: rows.length, minShare: GEO_MIN_SHARE, minRevenue: GEO_MIN_REVENUE,
+    });
+  }
+  return rows.length;
 }
 
 // Fill ads.campaign_url_key for every tonic rsoc ad from the current set of campaign keys,

@@ -1562,7 +1562,13 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                 )}
                 {cols.has('country') && (
                   <div key="country" style={s('width:58px;flex-shrink:0;text-align:center')}>
-                    <div style={s(`font-family:${MONO};font-size:11px;color:#B6B9BE`)}>{a.country || '-'}</div>
+                    {/* A corrected country is marked, never silently swapped: the dot says the
+                        value came from the revenue split rather than the article, and the
+                        tooltip names what it replaced. */}
+                    <div style={s(`font-family:${MONO};font-size:11px;color:${a.country_scraped ? '#6FA8DC' : '#B6B9BE'}`)}
+                      title={a.country_scraped ? `Corrected from ${a.country_scraped} - the GEOS revenue split says this ad earns in ${a.country}.` : ''}>
+                      {a.country || '-'}{a.country_scraped ? <span style={s('color:#6FA8DC')}>&nbsp;&bull;</span> : null}
+                    </div>
                     <div style={s(`font-family:${MONO};font-size:9px;color:#5A5E64`)} title={a.language || ''}>{langCode(a.language)}</div>
                   </div>
                 )}
