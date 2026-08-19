@@ -68,7 +68,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     // Which of OUR domains the "do we already have an article for this?" column reports on,
     // and whether the feed is narrowed to the ads that have one. Both are single values, not
     // chip sets, so they live beside the numeric ranges rather than in checkboxGroups.
-    ourDomain: '', hasOurArticle: false,
+    ourDomain: '', ourArticle: '',
   });
 
   // The 47 domains we publish on, for the rail's picker. Fetched once, and only when the
@@ -97,13 +97,16 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   }, [ourDomains]);
 
   const setOurDomain = useCallback((domain) => {
-    setFilters((p) => ({ ...p, ourDomain: domain, hasOurArticle: domain ? p.hasOurArticle : false }));
+    setFilters((p) => ({ ...p, ourDomain: domain, ourArticle: domain ? p.ourArticle : '' }));
     try { window.localStorage.setItem(OUR_DOMAIN_LS, domain || ''); } catch { /* ignore */ }
     console.info('[our articles] domain chosen', { domain: domain || null });
   }, []);
 
-  const toggleHasOurArticle = useCallback(() => {
-    setFilters((p) => (p.ourDomain ? { ...p, hasOurArticle: !p.hasOurArticle } : p));
+  // '' = every ad, 'have' = only the ones covered on this domain, 'missing' = only the gaps.
+  // One control rather than two checkboxes: "have" and "missing" are mutually exclusive, and a
+  // pair of tickboxes that silently cancel each other out is a trap.
+  const setOurArticle = useCallback((mode) => {
+    setFilters((p) => (p.ourDomain ? { ...p, ourArticle: p.ourArticle === mode ? '' : mode } : p));
   }, []);
   const [dateRange, setDateRange] = useState('all');
   const [page, setPage] = useState(0);
@@ -648,8 +651,8 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
           page={page} pageSize={pageSize} setPageSize={setPageSize} goPage={goPage}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
-          clearFilters={() => { setFilters((p) => ({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], rsoc: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '', ourDomain: p.ourDomain, hasOurArticle: false })); setDateRange('all'); setSelIndex(0); }}
-          ourDomains={ourDomains} setOurDomain={setOurDomain} toggleHasOurArticle={toggleHasOurArticle}
+          clearFilters={() => { setFilters((p) => ({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], rsoc: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '', ourDomain: p.ourDomain, ourArticle: '' })); setDateRange('all'); setSelIndex(0); }}
+          ourDomains={ourDomains} setOurDomain={setOurDomain} setOurArticle={setOurArticle}
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
           setSort={(id) => setSortDir((prev) => (sort === id && prev === 'desc' ? 'asc' : 'desc')) || setSort(id)}
@@ -966,12 +969,18 @@ function OurArticleCell({ ad, domain }) {
 // `domains` is null while the list is loading and [] when the articles DB is not wired up -
 // in the latter case the whole block is hidden, since offering a control that cannot work is
 // worse than not offering it.
-function OurDomainPicker({ domains, chosen, onChoose, only, onToggleOnly, canFilter = true }) {
+const OUR_ARTICLE_MODES = [
+  { key: '', label: 'ALL', hint: 'Every ad, whether or not we have an article for it.' },
+  { key: 'have', label: 'HAVE', hint: 'Only the ads we already have at least one article for on this domain.' },
+  { key: 'missing', label: 'MISSING', hint: 'Only the ads we have NO article for on this domain - the gaps worth writing. Ads the backfill has not looked at yet are left out, since "not checked" is not the same as "we have nothing".' },
+];
+
+function OurDomainPicker({ domains, chosen, onChoose, mode, onMode, canFilter = true }) {
   if (Array.isArray(domains) && domains.length === 0) return null;
   const loading = domains == null;
   // The narrowing is a SQL filter on the materialized column, so it only exists on the
-  // server-side feed. On the rollback path (SERVER_SIDE_FEED=0) the checkbox would tick and
-  // change nothing, so it is disabled and says why instead.
+  // server-side feed. On the rollback path (SERVER_SIDE_FEED=0) the buttons would light up and
+  // change nothing, so they are disabled and say why instead.
   const canOnly = Boolean(chosen) && canFilter;
   return (
     <div style={s('border-bottom:1px solid rgba(255,255,255,.06);padding:11px 14px 12px')}>
@@ -985,14 +994,28 @@ function OurDomainPicker({ domains, chosen, onChoose, only, onToggleOnly, canFil
         <option value="">{loading ? 'loading domains...' : 'choose a domain...'}</option>
         {(domains || []).map((d) => <option key={d.domain} value={d.domain}>{d.domain} ({fmtInt(d.total)})</option>)}
       </select>
-      <button onClick={onToggleOnly} disabled={!canOnly}
-        title={!chosen ? 'Pick a domain first.'
-          : !canFilter ? 'Unavailable on the client-side feed path (SERVER_SIDE_FEED=0).'
-          : 'Show only the ads we already have at least one article for on this domain.'}
-        style={s(`display:flex;align-items:center;gap:9px;width:100%;margin-top:9px;padding:4px 0;background:transparent;border:none;cursor:${canOnly ? 'pointer' : 'default'};text-align:left;opacity:${canOnly ? 1 : .4}`)}>
-        <span style={s(`width:11px;height:11px;flex-shrink:0;border:1px solid ${only ? '#3FB27F' : 'rgba(255,255,255,.2)'};background:${only ? '#3FB27F' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:8px;color:#0B0C0E;line-height:1`)}>{only ? '✓' : ''}</span>
-        <span style={s(`flex:1;font-size:11.5px;color:${only ? '#E7E8EA' : '#9CA0A6'}`)}>Only ads we have an article for</span>
-      </button>
+      {/* Segmented, not two checkboxes: HAVE and MISSING cannot both be true, and a pair of
+          tickboxes that cancel each other out is a trap. Matches the DATE RANGE control below
+          it, so the rail has one way of expressing a three-way choice. */}
+      <div style={s('margin-top:10px')}>
+        <div style={s(`display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;opacity:${canOnly ? 1 : .4}`)}>
+          <span style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>Our Article</span>
+        </div>
+        <div style={s(`display:flex;gap:1px;background:rgba(255,255,255,.06);opacity:${canOnly ? 1 : .4}`)}>
+          {OUR_ARTICLE_MODES.map((m) => {
+            const on = (mode || '') === m.key;
+            return (
+              <button key={m.key || 'all'} onClick={() => canOnly && onMode(m.key)} disabled={!canOnly}
+                title={!chosen ? 'Pick a domain first.'
+                  : !canFilter ? 'Unavailable on the client-side feed path (SERVER_SIDE_FEED=0).'
+                  : m.hint}
+                style={s(`flex:1;padding:5px 0;background:${on ? '#1A1C20' : '#0D0E11'};border:none;color:${on ? '#3FB27F' : '#8A8E94'};font-family:${MONO};font-size:9.5px;letter-spacing:.3px;cursor:${canOnly ? 'pointer' : 'default'}`)}>
+                {m.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
       {!chosen && !loading && (
         <div style={s('margin-top:8px;font-size:10px;color:#5A5E64;line-height:1.5')}>
           Pick a domain to fill the <span style={s('color:#8A8E94')}>Our Article</span> column.
@@ -1002,7 +1025,7 @@ function OurDomainPicker({ domains, chosen, onChoose, only, onToggleOnly, canFil
   );
 }
 
-function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = null, serverFacets = null, serverTicker = null, feedLoading = false, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, addSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, fetchAllIds, fetchExportRows, exportSaEmail, onRefreshMetrics, ourDomains = [], setOurDomain, toggleHasOurArticle }) {
+function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = null, serverFacets = null, serverTicker = null, feedLoading = false, page, pageSize, setPageSize, goPage, filters, toggleFilter, setRange, clearFilters, dateRange, setDateRange, sort, sortDir, setSort, selIndex, setSelIndex, openDetail, lastRunStart, canEdit, canExport, canRefresh, selected, toggleSel, addSel, setSelection, clearSel, bulkDelete, bulkSet, bulkRefresh, fetchAllIds, fetchExportRows, exportSaEmail, onRefreshMetrics, ourDomains = [], setOurDomain, setOurArticle }) {
   // Selection serves two masters: bulk edits (edit_ads) and exports (export_data), so
   // the checkboxes show for either. Each toolbar action still answers to its own gate.
   const canSelect = canEdit || canExport;
@@ -1171,7 +1194,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
     + (filters.daysMin !== '' || filters.daysMax !== '' ? 1 : 0)
     + (filters.rankMin !== '' || filters.rankMax !== '' ? 1 : 0)
     // The chosen domain is a lens, not a filter, so only the narrowing counts here.
-    + (filters.hasOurArticle ? 1 : 0);
+    + (filters.ourArticle ? 1 : 0);
   const maxDays = Math.max(1, ...ads.map((a) => daysRunning(a, NOW)));
 
   const sortDefs = [
@@ -1251,7 +1274,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
           onClear={clearFilters}
           loading={serverMode && !serverFacets}
           top={<OurDomainPicker domains={ourDomains} chosen={filters.ourDomain} onChoose={setOurDomain}
-            only={filters.hasOurArticle} onToggleOnly={toggleHasOurArticle} canFilter={serverMode} />}
+            mode={filters.ourArticle} onMode={setOurArticle} canFilter={serverMode} />}
         />
 
         {/* feed */}
