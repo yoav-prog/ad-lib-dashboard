@@ -23,7 +23,8 @@ Why this exists
     ScrapingBee fetch (cheap first, JS-rendered only if that came back too short - see
     scrape_article), and the result is written back so it is never fetched twice.
     An ad whose landing page has no article at all - an RSOC search page, a dead link -
-    is classified from its own creative copy instead, never from an error stub.
+    is classified from the vertical the pipeline already assigned it, plus a short slice
+    of its own copy; never from an error stub.
 
 Usage
     python backfill_article_verticals.py                  # derive + map everything outstanding
@@ -32,6 +33,7 @@ Usage
     python backfill_article_verticals.py --dry-run        # print, write nothing, call no LLM
     python backfill_article_verticals.py --no-scrape      # skip ads with no stored article
     python backfill_article_verticals.py --domains-only   # pass 2 only (after new articles land)
+    python backfill_article_verticals.py --no-article-only --no-scrape   # redo just the RSOC rows
     python backfill_article_verticals.py --model gpt-4o-mini   # cheaper, ~3x less
 
 Needs DATABASE_URL, ARTICLES_DATABASE_URL, OPENAI_API_KEY, and (unless --no-scrape)
@@ -246,18 +248,27 @@ def scrape_article(url):
 # ═════════════════════════════════════════════════════════════════════════════
 # ADINTEL DATABASE
 # ═════════════════════════════════════════════════════════════════════════════
-def fetch_ads(do_all, limit):
+def fetch_ads(do_all, limit, no_article_only=False):
     """Approved ads needing a vertical family. Approved only: the feed shows nothing
     else, so classifying a pending or rejected ad would spend money on a row nobody
-    can see. Newest first, so a capped run works on what matters most."""
+    can see. Newest first, so a capped run works on what matters most.
+
+    `no_article_only` selects exactly the ads with no readable landing article,
+    whether or not they already have a family. That is the re-run to reach for after
+    the fallback itself changes: the ~3.4k RSOC rows are the only ones it affects, and
+    re-deriving all 30k to fix them would cost thirty times as much.
+    """
     sql = """
         select ad_archive_id, article_title, article_content, link_url, resolved_url,
-               title, body_text, caption, country, language, creative_language
+               title, body_text, caption, vertical, country, language, creative_language
           from ads
          where review_status = 'approved'
     """
     params: list = []
-    if not do_all:
+    if no_article_only:
+        sql += ' and (article_content is null or length(article_content) <= %s)'
+        params.append(MIN_ARTICLE_CHARS)
+    elif not do_all:
         sql += ' and article_verticals is null'
     sql += ' order by first_seen_at desc nulls last'
     if limit:
@@ -302,20 +313,20 @@ def write_domains(updates):
 def excerpt_for(row):
     """The text we classify one ad from.
 
-    The landing article when we have a real one - that is the whole point of the feature,
-    and it is what the user asked for. When we do not (an RSOC search page, a dead link, a
-    render that still came back empty), fall back to the ad's OWN creative copy rather than
-    giving up: it is genuine signal about the offer, and it is the same fallback the live
-    scraper's gpt_detect_vertical uses. A stored body under MIN_ARTICLE_CHARS is treated as
-    absent, so a "JavaScript Required" interstitial never gets classified as if it were an
-    article about JavaScript.
+    The landing article when we have a real one - that is the whole point of the feature.
+    When we do not (an RSOC search page, a dead link, a render that still came back empty),
+    fall back to the ad's already-assigned VERTICAL, plus a short slice of its own copy; see
+    article_verticals.fallback_excerpt for why the vertical leads. A stored body under
+    MIN_ARTICLE_CHARS is treated as absent, so a "JavaScript Required" interstitial never
+    gets classified as if it were an article about JavaScript.
     """
     content = row.get('article_content') or ''
     if len(content) >= MIN_ARTICLE_CHARS:
         return av.article_excerpt(row.get('article_title') or row.get('title'), content)
-    copy = ' . '.join(p.strip() for p in (row.get('title'), row.get('body_text'), row.get('caption'))
-                      if isinstance(p, str) and p.strip())
-    return av.article_excerpt(None, copy)
+    return av.fallback_excerpt(
+        row.get('vertical'),
+        (row.get('title'), row.get('body_text'), row.get('caption')),
+    )
 
 
 def landing_url(row):
@@ -332,8 +343,9 @@ def landing_url(row):
 async def derive_families(args):
     import numpy as np
 
-    rows = fetch_ads(args.all, args.limit)
-    label = '' if args.all else ' (no family yet)'
+    rows = fetch_ads(args.all, args.limit, args.no_article_only)
+    label = (' with no readable landing article' if args.no_article_only
+             else '' if args.all else ' (no family yet)')
     print(f'{len(rows)} approved ad(s) to classify{label}', flush=True)
     if not rows:
         return 0
@@ -500,6 +512,7 @@ if __name__ == '__main__':
     p.add_argument('--limit', type=int, default=0, help='cap how many ads pass 1 processes')
     p.add_argument('--dry-run', action='store_true', help='print what would happen, write nothing')
     p.add_argument('--no-scrape', action='store_true', help='never call ScrapingBee; skip ads with no stored article')
+    p.add_argument('--no-article-only', action='store_true', help='re-derive only the ads with no readable landing article (the RSOC rows), family or not')
     p.add_argument('--domains-only', action='store_true', help='run pass 2 only (after new articles are published)')
     p.add_argument('--model', default=av.VERTICAL_MODEL, help=f'chat model for the family choice (default {av.VERTICAL_MODEL})')
     asyncio.run(main(p.parse_args()))

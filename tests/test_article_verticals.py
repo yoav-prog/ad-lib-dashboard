@@ -122,6 +122,47 @@ def test_article_excerpt_drops_bare_urls_and_setext_rules():
     assert av.article_excerpt(None, body) == 'Best Tires 2026 Read today'
 
 
+# ── fallback_excerpt: the RSOC path, where there is no article to read ────────
+def test_fallback_leads_with_the_vertical():
+    # RSOC search-arbitrage ads land on a search page, so there is nothing to scrape.
+    # The vertical the pipeline already assigned is the strongest signal they carry
+    # (98.5% of them have one), so it goes first and the copy only disambiguates.
+    out = av.fallback_excerpt('Abandoned Houses', ('Cheap homes near you', 'See listings'))
+    assert out.startswith('Topic hint: Abandoned Houses')
+    assert 'Cheap homes near you' in out
+
+
+def test_fallback_ignores_the_placeholder_verticals():
+    # ads.vertical stores the literal string 'None' for 722 rows - not a NULL. Treating
+    # it as a topic would classify those ads as being about "None".
+    for junk in ('None', 'none', '', '   ', 'n/a', '-', 'unknown'):
+        out = av.fallback_excerpt(junk, ('Cheap homes near you',))
+        assert not out.startswith('Topic hint:')
+        assert out == 'Cheap homes near you'
+
+
+def test_fallback_caps_the_copy_so_the_vertical_still_dominates():
+    out = av.fallback_excerpt('Tires', ('x' * 5000,))
+    assert out.startswith('Topic hint: Tires')
+    assert len(out) < av.FALLBACK_COPY_CHARS + 60
+
+
+def test_fallback_strips_markdown_from_the_copy_too():
+    out = av.fallback_excerpt('Tires', ('See [our deals](https://x.test/a)',))
+    assert out == 'Topic hint: Tires . See our deals'
+
+
+def test_fallback_with_a_vertical_and_no_copy_at_all():
+    assert av.fallback_excerpt('24/7 Nurse', ()) == 'Topic hint: 24/7 Nurse'
+    assert av.fallback_excerpt('24/7 Nurse', (None, '', '  ')) == 'Topic hint: 24/7 Nurse'
+
+
+def test_fallback_with_nothing_usable_is_empty():
+    # An empty excerpt means the ad is written as an empty family rather than guessed at.
+    assert av.fallback_excerpt(None, ()) == ''
+    assert av.fallback_excerpt('None', (None,)) == ''
+
+
 # ── build_messages ────────────────────────────────────────────────────────────
 def test_build_messages_returns_none_without_an_article_or_candidates():
     assert av.build_messages('', ['Tires']) is None

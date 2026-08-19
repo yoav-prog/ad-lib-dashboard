@@ -62,6 +62,19 @@ For every approved ad, once:
 
 This is domain-independent, so one backfill serves all 47 domains.
 
+**When there is no article to read (RSOC).** About 3,400 approved ads are search-arbitrage:
+they land on a search page, not an advertorial, so there is nothing to scrape and never will
+be. Those are classified from the vertical the pipeline already assigned them (98.5% carry one)
+plus a 400-character slice of their own ad copy, then through the identical shortlist + model
+stages. The vertical is labelled `Topic hint:` rather than stated as fact, and the system prompt
+says to trust the text over the hint where they disagree: sampled live, a meaningful minority of
+those verticals are plainly wrong for their ad — `AARP membership` on an ad for a small electric
+car for seniors, `Accountant Jobs` on one for security-services work. A right hint still does the
+work; a wrong one cannot drag the whole family off-topic on its own.
+
+`--no-article-only` re-derives exactly this set, so improving the fallback costs ~3.4k calls
+rather than re-running all 30k.
+
 ### 2. Materialize which of our domains actually have a match (same job, second pass)
 
 For each ad with a family, ask the articles DB which domains hold at least one article with
@@ -115,6 +128,11 @@ live per page, so they are always current:
   answers the only question SQL needs to answer, and the live query answers everything else.
 - **Soft country fallback** (language-only when the country has nothing). Rejected by Yoav in
   favour of the strict country+language gate; a US ad must not be offered an AU article.
+- **Classifying RSOC ads from their creative copy alone** (the first cut). Ad copy is mostly
+  hype per token and often names no subject at all; the assigned vertical is the more specific
+  signal, so it leads and the copy disambiguates.
+- **Trusting `ads.vertical` outright for RSOC.** Too often wrong to state as fact — hence the
+  `Topic hint:` framing rather than either extreme.
 
 ## Architecture / boundaries
 
