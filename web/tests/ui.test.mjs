@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, cleanLink, cleanLinkKey, uniqueCleanLinks, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -386,6 +386,93 @@ test('the shared Query column flows through buildSheetData and buildCsv for both
   const [header, row] = buildCsv([visymoAd], NOW).split('\r\n');
   assert.ok(header.includes('"Query"'));
   assert.ok(row.includes('"cirugía para eliminar la papada"'));
+});
+
+// ── cleanLink: the shareable landing link with its tracking params stripped ─────
+test('cleanLink: strips every query param and the fragment for a regular feed', () => {
+  const ad = { feed: 'Tarzo', link_url: 'https://www.personalwatercraft.com/dcg/602896/deliver-medical-supplies-with-your-own-car?cid=abc123&utm_source=fb#top' };
+  assert.equal(cleanLink(ad), 'https://www.personalwatercraft.com/dcg/602896/deliver-medical-supplies-with-your-own-car');
+});
+
+test('cleanLink: prefers the followed destination (resolved_url) over the raw link', () => {
+  const ad = { feed: 'Iceland', link_url: 'https://track.example.com/teleport?x=1', resolved_url: 'https://mywebanswers.com/some-article?channel=99' };
+  assert.equal(cleanLink(ad), 'https://mywebanswers.com/some-article');
+});
+
+test('cleanLink: Predicto keeps only the search param, from whichever URL carries it', () => {
+  // Direct format: the phrase (raw, id suffix and all - the link must still open) is on link_url.
+  assert.equal(cleanLink(predictoDirect),
+    'https://tunefulsoul.com/asrsearch?search=understanding-bladder-cancer-surgery-a-comprehensive-guide-to-the-procedure-and-recovery-process-c29903');
+  // Redirect format: only the stored resolved_url exposes it.
+  assert.equal(cleanLink(predictoRedirect),
+    'https://searchpredictor.com/asrsearch/?search=Startup%20Grants%20Guide%202026%20en');
+});
+
+test('cleanLink: a Predicto ad with no search param falls back to a plain strip', () => {
+  assert.equal(cleanLink({ feed: 'Predicto', link_url: 'https://healthsite.com/article/stairlifts?utm_campaign=x', resolved_url: '' }),
+    'https://healthsite.com/article/stairlifts');
+});
+
+test('cleanLink: Visymo keeps only the q param, dropping rac and the other tracking', () => {
+  assert.equal(cleanLink(visymoAd), 'https://www.clueblog.com/dsr?q=cirug%C3%ADa%20para%20eliminar%20la%20papada');
+});
+
+test('cleanLink: first destination of a DCO pipe-joined link_url; blank on junk', () => {
+  assert.equal(cleanLink({ feed: 'Tarzo', link_url: 'https://a.com/one?x=1 | https://b.com/two?y=2' }), 'https://a.com/one');
+  assert.equal(cleanLink({ feed: 'Tarzo', link_url: 'not a url' }), '');
+  assert.equal(cleanLink({ feed: 'Tarzo', link_url: '' }), '');
+  assert.equal(cleanLink({}), '');
+});
+
+// The dedupe grain: raw-param keys overcount (tracking suffixes), path-only keys
+// undercount (every Predicto phrase shares /asrsearch) - measured live before this
+// shipped: 915 raw vs 788 normalized Predicto phrases.
+test('cleanLinkKey: tracking-suffix and host-case variants of one phrase share one key', () => {
+  const k = (link_url) => cleanLinkKey({ feed: 'Predicto', link_url });
+  assert.equal(k('https://tunefulsoul.com/asrsearch?search=wear-perfume-7a075c'),
+    k('https://Tunefulsoul.com/asrsearch/?search=wear-perfume-cf4572'));
+  // Different phrases on the same endpoint stay distinct.
+  assert.notEqual(k('https://x.com/asrsearch?search=a-topic'), k('https://x.com/asrsearch?search=b-topic'));
+});
+
+test('cleanLinkKey: www/trailing-slash/scheme variants collapse; distinct paths do not', () => {
+  const k = (u) => cleanLinkKey({ feed: 'Tarzo', link_url: u });
+  assert.equal(k('https://www.upgradedhome.com/dcg/1057273/phone-plan?cid=1'),
+    k('http://upgradedhome.com/dcg/1057273/phone-plan/'));
+  assert.notEqual(k('https://a.com/article-one'), k('https://a.com/article-two'));
+  assert.equal(cleanLinkKey({ feed: 'Tarzo', link_url: 'not a url' }), null);
+  assert.equal(cleanLinkKey({ feed: 'Tarzo', link_url: '' }), null);
+});
+
+test('uniqueCleanLinks: one entry per link with counts, busiest first, junk skipped', () => {
+  const rows = [
+    { feed: 'Tarzo', link_url: 'https://www.a.com/story?cid=1' },
+    { feed: 'Tarzo', link_url: 'https://a.com/story/?cid=2' },
+    { feed: 'Tarzo', link_url: 'https://b.com/other?utm_source=fb' },
+    { feed: 'Tarzo', link_url: '' },
+    { feed: 'Predicto', link_url: 'https://t.com/asrsearch?search=wear-perfume-7a075c' },
+    { feed: 'Predicto', link_url: 'https://t.com/asrsearch?search=wear-perfume-cf4572' },
+  ];
+  // Ties in count break by link, so the order is stable between fetches. The first
+  // sighting's link is the one kept for a merged group.
+  assert.deepEqual(uniqueCleanLinks(rows).map((l) => [l.link, l.host, l.count]), [
+    ['https://t.com/asrsearch?search=wear-perfume-7a075c', 't.com', 2],
+    ['https://www.a.com/story', 'a.com', 2],
+    ['https://b.com/other', 'b.com', 1],
+  ]);
+  assert.deepEqual(uniqueCleanLinks([]), []);
+  assert.deepEqual(uniqueCleanLinks(null), []);
+});
+
+test('the Clean Link column flows through buildSheetData and buildCsv', () => {
+  const { columns, rows } = buildSheetData([predictoDirect, visymoAd, imageAd], NOW, ['clean_link']);
+  assert.deepEqual(columns.map((c) => c.header), ['Clean Link']);
+  assert.equal(rows[0].cells[0].value,
+    'https://tunefulsoul.com/asrsearch?search=understanding-bladder-cancer-surgery-a-comprehensive-guide-to-the-procedure-and-recovery-process-c29903');
+  assert.equal(rows[1].cells[0].value, 'https://www.clueblog.com/dsr?q=cirug%C3%ADa%20para%20eliminar%20la%20papada');
+  assert.equal(rows[2].cells[0].value, ''); // no landing link -> empty cell
+  const [header] = buildCsv([visymoAd], NOW).split('\r\n');
+  assert.ok(header.includes('"Clean Link"'));
 });
 
 // ── prohibited-content: the Filtered view's queue filter + label map ───────────
