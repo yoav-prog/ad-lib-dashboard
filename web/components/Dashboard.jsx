@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, isPredicto, isVisymo, searchQuery, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, brandLabel, brandColor, BRAND_OPTIONS, rsocTierColor, rsocTierLabel, rsocTierHint, rsocAreaLabel, RSOC_TIER_ORDER, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, isPredicto, isVisymo, searchQuery, cleanLink, uniqueCleanLinks, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, brandLabel, brandColor, BRAND_OPTIONS, rsocTierColor, rsocTierLabel, rsocTierHint, rsocAreaLabel, RSOC_TIER_ORDER, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnsManager, { useColumnLayout } from '@/components/ColumnsManager';
@@ -551,8 +551,10 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   // Client mode reads its own memory (current sort order first, then any selected rows the
   // filters no longer show); server mode re-reads from the database with the same
   // predicate, join and sort as the table. A selection exports whole, current filters or
-  // not: "37 selected" always downloads those 37 rows.
-  const fetchExportRows = useCallback(async (ids) => {
+  // not: "37 selected" always downloads those 37 rows. `overrides` lets a caller pin one
+  // filter regardless of what the table shows (the unique-links modal forces MISSING);
+  // server mode only, since the pinned filter is SQL-only.
+  const fetchExportRows = useCallback(async (ids, overrides = null) => {
     if (!serverFeed) {
       if (!ids) return filtered;
       const want = new Set(ids);
@@ -562,7 +564,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     }
     const r = ids
       ? await loadFeedExport({ sort, dir: sortDir, ids })
-      : await loadFeedExport({ filters, dateRange, search: query, sort, dir: sortDir });
+      : await loadFeedExport({ filters: overrides ? { ...filters, ...overrides } : filters, dateRange, search: query, sort, dir: sortDir });
     return r?.ok ? r.rows : [];
   }, [serverFeed, ads, filtered, filters, dateRange, query, sort, sortDir]);
 
@@ -886,6 +888,7 @@ const FRESH_COLS = [
   { key: 'creative_language', label: 'Creative Lang', w: 100 },
   { key: 'rsoc',     label: 'Policy',             w: 132 },
   { key: 'url',      label: 'URL',                w: 168 },
+  { key: 'clean_link', label: 'Clean Link',       w: 190 },
   { key: 'revenue',  label: 'Revenue Prediction', w: 96 },
   { key: 'clicks',   label: 'Clicks',             w: 76 },
   { key: 'rpc',      label: 'RPC',                w: 60 },
@@ -1049,6 +1052,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
   const canSelect = canEdit || canExport;
   const selCount = selected ? selected.size : 0;
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [uniqueOpen, setUniqueOpen] = useState(false);
   const [csvBusy, setCsvBusy] = useState(false);
   const [selBusy, setSelBusy] = useState(false);
   const visibleIds = paged.map((a) => a.ad_archive_id);
@@ -1367,6 +1371,16 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                       title={`Send these ${fmtInt(count)} ad(s) to a Google Sheet, exactly the rows your filters and search leave showing. Tick rows first to send only those.`}
                       style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${count ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${count ? 'pointer' : 'default'}`)}>&#8599; EXPORT TO SHEET ({fmtInt(count)})</button>
                   )}
+                  {/* The article gaps as links. Hidden entirely when the articles DB is not wired
+                      up (same rule as the rail's domain picker); disabled on the client-side feed
+                      path, where the MISSING filter it pins does not exist. */}
+                  {(!Array.isArray(ourDomains) || ourDomains.length > 0) && (
+                    <button onClick={() => serverMode && setUniqueOpen(true)} disabled={!serverMode}
+                      title={serverMode
+                        ? 'The unique landing links among the ads we have NO article for on your chosen domain - cleaned, deduplicated, ready to paste into an article tool.'
+                        : 'Unavailable on the client-side feed path (SERVER_SIDE_FEED=0).'}
+                      style={s(`background:#101216;border:1px solid rgba(255,255,255,.12);color:${serverMode ? '#C6C9CE' : '#45484D'};font-family:${MONO};font-size:10px;letter-spacing:.3px;padding:4px 9px;cursor:${serverMode ? 'pointer' : 'default'}`)}>&#8801; UNIQUE LINKS</button>
+                  )}
                   <span style={s('color:#2E3136;margin:0 4px')}>|</span>
                   <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>J</kbd>
                   <kbd style={s('border:1px solid rgba(255,255,255,.1);padding:1px 4px')}>K</kbd>
@@ -1396,6 +1410,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
             <div key="headline" style={s('flex:1;min-width:0')}>Headline</div>
             {cols.has('our_article') && <div key="our_article" title="The newest article we already have on the domain you picked, for this ad's country, language and topic. Open the ad to see the rest." style={s('width:230px;flex-shrink:0;padding-left:16px')}>Our Article</div>}
             {cols.has('url') && <div key="url" style={s('width:168px;flex-shrink:0')}>URL</div>}
+            {cols.has('clean_link') && <div key="clean_link" title="The landing link with its tracking params stripped. Predicto & Visymo keep their search phrase, which identifies the article." style={s('width:190px;flex-shrink:0;padding-left:16px')}>Clean Link</div>}
             {showSlug && <div key="slug" style={s('width:150px;flex-shrink:0;padding-left:16px')}>Slug</div>}
             {showQuery && <div key="query" title="The searched phrase behind the landing link (Predicto & Visymo feeds)" style={s('width:240px;flex-shrink:0;padding-left:16px')}>Query</div>}
             {cols.has('revenue') && <div key="revenue" title="Revenue prediction from the campaign metrics sheet" style={s('width:96px;flex-shrink:0;text-align:right')}>Rev. Predict</div>}
@@ -1422,6 +1437,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
             const isSel = selected ? selected.has(a.ad_archive_id) : false;
             const vid = isVideo(a);
             const url = firstUrl(a.link_url);
+            const clean = cols.has('clean_link') ? cleanLink(a) : '';
             const slug = showSlug ? tarzoSlug(a) : '';
             const query = showQuery ? searchQuery(a) : '';
             return (
@@ -1486,6 +1502,17 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                       ? <a href={url} target="_blank" rel="noreferrer" title={url} onClick={(e) => e.stopPropagation()}
                           style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
                           <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{url}</span>
+                          <span style={s('color:#5A5E64;font-size:9px;flex-shrink:0')}>&#8599;</span>
+                        </a>
+                      : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
+                  </CopyCell>
+                )}
+                {cols.has('clean_link') && (
+                  <CopyCell key="clean_link" value={clean} style={s('width:190px;flex-shrink:0;padding-left:16px;padding-right:12px;min-width:0')}>
+                    {clean
+                      ? <a href={clean} target="_blank" rel="noreferrer" title={clean} onClick={(e) => e.stopPropagation()}
+                          style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
+                          <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{clean}</span>
                           <span style={s('color:#5A5E64;font-size:9px;flex-shrink:0')}>&#8599;</span>
                         </a>
                       : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
@@ -1614,6 +1641,13 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
           saEmail={exportSaEmail}
           ourDomain={filters.ourDomain}
           onClose={() => setSheetOpen(false)}
+        />
+      )}
+      {uniqueOpen && (
+        <UniqueLinksModal
+          domain={filters.ourDomain}
+          fetchRows={() => fetchExportRows(null, { ourArticle: 'missing' })}
+          onClose={() => setUniqueOpen(false)}
         />
       )}
     </div>
@@ -1842,6 +1876,172 @@ function SheetExportModal({ count, selection = false, resolveIds, saEmail, ourDo
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// UNIQUE LINKS (the article gaps, as links)
+// ═════════════════════════════════════════════════════════════════════════════
+const UNIQUE_LS_DOMAINS = 'adintel.uniquelinks.domains';
+
+// Modal: every unique landing link among the ads we have NO article for on the chosen
+// domain. MISSING is pinned in its own fetch rather than inherited from the table, so the
+// list can never silently be built from the wrong view; the rail's other filters and the
+// search still apply and the intro says so. Links are cleaned (cleanLink) and deduplicated
+// (cleanLinkKey via uniqueCleanLinks), then narrowed to the competitor domains the writer
+// marked relevant - click-to-toggle chips with counts, remembered in localStorage. No
+// selection means all domains, said out loud rather than silently. COPY ALL puts one link
+// per line on the clipboard - the fastest hand-off into an article tool; the CSV
+// (Link, Domain, Ads) is the paper trail.
+function UniqueLinksModal({ domain, fetchRows, onClose }) {
+  const [rows, setRows] = useState(null);   // null while loading
+  const [err, setErr] = useState('');
+  const [chosen, setChosen] = useState(() => {
+    try {
+      const arr = JSON.parse(window.localStorage.getItem(UNIQUE_LS_DOMAINS));
+      return Array.isArray(arr) ? arr.filter((d) => typeof d === 'string') : [];
+    } catch { return []; }
+  });
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef(null);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  // One fetch per open: the modal snapshots the view as of the click.
+  useEffect(() => {
+    if (!domain) return;
+    let alive = true;
+    fetchRows()
+      .then((r) => { if (alive) setRows(r || []); })
+      .catch((e) => { console.error('[unique links] fetch failed', e); if (alive) { setRows([]); setErr('Could not load the rows. Close and try again.'); } });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Remember the domain choice as soon as it changes, like the sheet-export settings.
+  useEffect(() => { try { window.localStorage.setItem(UNIQUE_LS_DOMAINS, JSON.stringify(chosen)); } catch { /* ignore */ } }, [chosen]);
+
+  const links = useMemo(() => uniqueCleanLinks(rows || []), [rows]);
+  // Chip data: every host present in the links, busiest first, plus any remembered host
+  // that is absent today - kept visible with a zero count so the filter is never invisible.
+  const hosts = useMemo(() => {
+    const m = new Map();
+    for (const l of links) if (l.host) m.set(l.host, (m.get(l.host) || 0) + 1);
+    for (const d of chosen) if (!m.has(d)) m.set(d, 0);
+    return [...m.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+  }, [links, chosen]);
+  const narrowing = chosen.length > 0;
+  const shown = narrowing ? links.filter((l) => chosen.includes(l.host)) : links;
+  const toggleHost = (h) => setChosen((p) => (p.includes(h) ? p.filter((x) => x !== h) : [...p, h]));
+
+  const copyAll = async () => {
+    if (!shown.length) return;
+    try {
+      await navigator.clipboard.writeText(shown.map((l) => l.link).join('\n'));
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1600);
+      console.info('[unique links] copied', { links: shown.length });
+    } catch (e) {
+      console.warn('[unique links] copy failed', String(e));
+      setErr('Copy failed - the browser blocked clipboard access. Use the CSV instead.');
+    }
+  };
+
+  const downloadCsv = () => {
+    if (!shown.length) return;
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = ['Link,Domain,Ads', ...shown.map((l) => [esc(l.link), esc(l.host), l.count].join(','))];
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `unique-links-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const loading = Boolean(domain) && rows == null;
+  const canAct = !loading && shown.length > 0;
+  return (
+    <div onClick={onClose} style={s('position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;padding:40px;animation:fadein .12s ease-out')}>
+      <div onClick={(e) => e.stopPropagation()} style={s('width:640px;max-width:100%;max-height:88vh;display:flex;flex-direction:column;background:#101216;border:1px solid rgba(255,255,255,.14);box-shadow:0 24px 60px rgba(0,0,0,.6)')}>
+        <div style={s('display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.08)')}>
+          <span style={s(`font-family:${MONO};font-size:11px;letter-spacing:1px;color:#E7E8EA`)}>&#8801; UNIQUE LINKS &middot; NO ARTICLE YET</span>
+          <button onClick={onClose} style={s(`font-family:${MONO};font-size:10px;color:#8A8E94;background:none;border:1px solid rgba(255,255,255,.14);padding:4px 9px;cursor:pointer`)}>CLOSE</button>
+        </div>
+        <div style={s('padding:18px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;min-height:0')}>
+          {!domain ? (
+            <div style={s('font-size:11.5px;color:#9CA0A6;line-height:1.6')}>
+              Pick one of <b style={s('color:#C6C9CE')}>our domains</b> in the filter rail first. This list is the ads we have <b style={s('color:#C6C9CE')}>no article for</b> on that domain, and there is nothing to measure the gap against until one is chosen.
+            </div>
+          ) : (
+            <>
+              <div style={s('font-size:11.5px;color:#9CA0A6;line-height:1.6')}>
+                {loading
+                  ? <>Collecting the ads we have no article for on <span style={s(`color:${A}`)}>{domain}</span>...</>
+                  : <><span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{fmtInt(shown.length)}</span> unique landing link{shown.length === 1 ? '' : 's'} from <span style={s(`color:${A};font-variant-numeric:tabular-nums`)}>{fmtInt((rows || []).length)}</span> ad{(rows || []).length === 1 ? '' : 's'} with no article on <span style={s(`color:${A}`)}>{domain}</span> (your other filters and search still apply). Tracking params are stripped; Predicto &amp; Visymo links keep their search phrase, which names the article to write.</>}
+              </div>
+              {!loading && hosts.length > 1 && (
+                <div>
+                  <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:8px')}>
+                    <div style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>Relevant domains</div>
+                    {narrowing && <button onClick={() => setChosen([])} style={s(`font-family:${MONO};font-size:9px;letter-spacing:.5px;color:#8A8E94;background:none;border:none;cursor:pointer`)}>SHOW ALL</button>}
+                  </div>
+                  <div style={s('display:flex;flex-wrap:wrap;gap:6px')}>
+                    {hosts.map(([h, n]) => {
+                      const on = chosen.includes(h);
+                      return (
+                        <button key={h} onClick={() => toggleHost(h)}
+                          title={on ? 'Click to drop this domain from the list' : 'Click to keep only your marked domains'}
+                          style={s(`font-family:${MONO};font-size:10px;padding:4px 8px;cursor:pointer;border:1px solid ${on ? A : 'rgba(255,255,255,.12)'};background:${on ? 'rgba(232,163,61,.12)' : '#0B0C0E'};color:${on ? A : '#8A8E94'}`)}>
+                          {on ? '✓ ' : ''}{h} ({fmtInt(n)})
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={s('margin-top:6px;font-size:10px;color:#5A5E64;line-height:1.5')}>
+                    {narrowing
+                      ? <>Showing your <span style={s('color:#8A8E94')}>{chosen.length}</span> marked domain{chosen.length === 1 ? '' : 's'} - remembered for next time.</>
+                      : <>Showing ALL domains. Click the ones you write for to keep only those; the choice is remembered.</>}
+                  </div>
+                </div>
+              )}
+              {!loading && (
+                shown.length ? (
+                  <div style={s('border:1px solid rgba(255,255,255,.08);background:#0B0C0E;max-height:44vh;overflow-y:auto')}>
+                    {shown.map((l) => (
+                      <CopyCell key={l.link} value={l.link} style={s('display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid rgba(255,255,255,.045);min-width:0')}>
+                        <a href={l.link} target="_blank" rel="noreferrer" title={l.link} onClick={(e) => e.stopPropagation()}
+                          style={s(`flex:1;min-width:0;font-family:${MONO};font-size:10.5px;color:#9CA0A6;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{l.link}</a>
+                        {l.count > 1 && <span title={`${fmtInt(l.count)} ads point at this link`} style={s(`font-family:${MONO};font-size:9px;color:#5A5E64;flex-shrink:0`)}>&times;{fmtInt(l.count)}</span>}
+                      </CopyCell>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={s('font-size:11.5px;color:#9CA0A6;line-height:1.6')}>
+                    {(rows || []).length === 0
+                      ? <>No ads are marked MISSING for <span style={s(`color:${A}`)}>{domain}</span> under the current filters - either the gaps are covered or the backfill has not checked these ads yet.</>
+                      : narrowing
+                        ? <>None of the {fmtInt(links.length)} links sit on your marked domains. SHOW ALL above lifts the narrowing.</>
+                        : <>The matching ads carry no usable landing links.</>}
+                  </div>
+                )
+              )}
+              {err && <div style={s('font-size:11.5px;line-height:1.5;color:#ff8a80')}>{err}</div>}
+            </>
+          )}
+        </div>
+        <div style={s('display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid rgba(255,255,255,.08)')}>
+          <button onClick={downloadCsv} disabled={!canAct}
+            title="Download these links as a CSV (Link, Domain, Ads)"
+            style={s(`font-family:${MONO};font-size:10px;color:${canAct ? '#C6C9CE' : '#45484D'};background:#101216;border:1px solid rgba(255,255,255,.14);padding:6px 12px;cursor:${canAct ? 'pointer' : 'default'}`)}>&#8595; CSV</button>
+          <button onClick={copyAll} disabled={!canAct}
+            title="Copy every link below, one per line"
+            style={s(`font-family:${MONO};font-size:10px;color:#0B0C0E;background:${copied ? '#86C99A' : A};border:none;padding:6px 14px;cursor:${canAct ? 'pointer' : 'default'};opacity:${canAct ? '1' : '.6'}`)}>
+            {copied ? '✓ COPIED' : `COPY ALL${canAct ? ` (${fmtInt(shown.length)})` : ''}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // CREATIVE DETAIL
 // ═════════════════════════════════════════════════════════════════════════════
 function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdit = true, lastRunStart, ourDomain = '' }) {
@@ -1852,6 +2052,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
   const fresh = lastRunStart ? new Date(ad.last_seen_at || ad.first_seen_at).getTime() >= lastRunStart : hoursSince(ad.last_seen_at || ad.first_seen_at, NOW) <= 24;
   const slug = tarzoSlug(ad);
   const query = searchQuery(ad);
+  const clean = cleanLink(ad);
   const statuses = ['idea', 'drafting', 'published'];
   const owners = ['Mara K.', 'Devin R.', 'Priya S.', 'Ari L.'];
 
@@ -1985,6 +2186,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
               {ad.link_url && <a href={ad.link_url.split(' | ')[0]} target="_blank" rel="noreferrer" style={s(`font-family:${MONO};font-size:11px;color:#E8A33D;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px`)}>{ad.link_url} &#8599;</a>}
               {isTarzo(ad) && slug && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>SLUG &middot; <span style={s('color:#C6C9CE')}>{slug}</span></span>}
               {(isPredicto(ad) || isVisymo(ad)) && query && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>QUERY &middot; <span style={s('color:#C6C9CE')}>{query}</span></span>}
+              {clean && <span title="The landing link with its tracking params stripped. Predicto & Visymo keep their search phrase, which identifies the article." style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px`)}>CLEAN &middot; <a href={clean} target="_blank" rel="noreferrer" style={s('color:#C6C9CE;text-decoration:none')}>{clean}</a></span>}
             </div>
           </div>
 

@@ -24,6 +24,7 @@ export const COLUMN_CATALOGS = {
     { key: 'headline', label: 'Headline', pinned: true },
     { key: 'our_article', label: 'Our Article' },
     { key: 'url', label: 'URL' },
+    { key: 'clean_link', label: 'Clean Link' },
     { key: 'slug', label: 'Slug', auto: true },
     { key: 'query', label: 'Query', auto: true },
     { key: 'revenue', label: 'Rev. Predict' },

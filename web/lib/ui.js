@@ -118,6 +118,74 @@ export function visymoQuery(ad) {
 // other feed yields '' (blank cell, NULL in exports).
 export const searchQuery = (ad) => predictoQuery(ad) || visymoQuery(ad);
 
+// The one query param that still identifies the ARTICLE on a search-arbitrage
+// landing page, per feed. Every other feed keeps its article in the URL path
+// (verified against all 35k approved ads, 2026-08-30: the params that vary there
+// are pure tracking - cid, channel, utm_*, subid4, mbid...), so nothing survives
+// the strip. A third arbitrage feed is one line here.
+const CLEAN_KEEP_PARAM = { predicto: 'search', visymo: 'q' };
+
+function parseUrl(url) {
+  const t = String(url || '').trim();
+  if (!t) return null;
+  try { return new URL(t.includes('://') ? t : `https://${t}`); } catch { return null; }
+}
+
+// A shareable "clean link" for an ad's landing page: the followed destination
+// (resolved_url first, like ownedCandidateUrls) stripped to origin + path, with
+// every tracking param dropped. Predicto/Visymo keep exactly their one meaningful
+// param - without it those links are a generic search endpoint - reading it from
+// whichever candidate URL actually carries it (Predicto's redirect format only
+// exposes `search` on resolved_url). The raw param value is kept so the link
+// still opens the same page; the dedupe NORMALIZATION lives in cleanLinkKey.
+// '' when nothing parses - degrade to blank, never guess.
+export function cleanLink(ad) {
+  const keep = CLEAN_KEEP_PARAM[(ad.feed || '').toLowerCase()];
+  let first = null;
+  for (const cand of [ad.resolved_url, firstUrl(ad.link_url)]) {
+    const u = parseUrl(cand);
+    if (!u) continue;
+    if (keep) {
+      const v = u.searchParams.get(keep);
+      if (v) return `${u.origin}${u.pathname}?${keep}=${encodeURIComponent(v)}`;
+    }
+    if (!first) first = u;
+  }
+  return first ? first.origin + first.pathname : '';
+}
+
+// The grain one clean link occupies when deduplicating: host (lowercased, no
+// www.) + path (no trailing slash) + the NORMALIZED searched phrase for the
+// arbitrage feeds. The phrase comes from searchQuery, not the raw param, so
+// Predicto's tracking suffixes (-c29903, -5e30a1) collapse instead of inflating
+// the "unique" count - against live data that is 915 raw vs 788 real phrases.
+// null when the ad has no usable link.
+export function cleanLinkKey(ad) {
+  const u = parseUrl(cleanLink(ad));
+  if (!u) return null;
+  let host = u.hostname.toLowerCase();
+  if (host.startsWith('www.')) host = host.slice(4);
+  const phrase = searchQuery(ad).toLowerCase();
+  return host + u.pathname.replace(/\/+$/, '') + (phrase ? `?${phrase}` : '');
+}
+
+// Fold feed rows into the distinct clean links they point at, most-shared first
+// (ties by link, so the order is stable between fetches). Each entry carries the
+// bare host for the domain filter and how many ads share the link. Rows with no
+// usable link are skipped rather than emitting a blank line.
+export function uniqueCleanLinks(rows) {
+  const seen = new Map();
+  for (const a of rows || []) {
+    const key = cleanLinkKey(a);
+    if (!key) continue;
+    const hit = seen.get(key);
+    if (hit) { hit.count += 1; continue; }
+    const link = cleanLink(a);
+    seen.set(key, { link, host: hostOf(link), count: 1 });
+  }
+  return [...seen.values()].sort((x, y) => y.count - x.count || (x.link < y.link ? -1 : 1));
+}
+
 export const titleCase = (v) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v);
 export const pad = (n, w = 2) => String(n).padStart(w, '0');
 
@@ -280,6 +348,7 @@ export const SHEET_COLUMNS = [
   { key: 'caption',   header: 'Caption',          kind: 'text',  get: (a) => a.caption,                                             width: 180, align: 'LEFT',   wrap: true  },
   { key: 'cta',       header: 'CTA',              kind: 'text',  get: (a) => a.cta_text,                                            width: 90,  align: 'LEFT',   wrap: false },
   { key: 'link',      header: 'Link',             kind: 'text',  get: (a) => a.link_url,                                            width: 170, align: 'LEFT',   wrap: false },
+  { key: 'clean_link', header: 'Clean Link',      kind: 'text',  get: (a) => cleanLink(a),                                          width: 260, align: 'LEFT',   wrap: false },
   { key: 'slug',      header: 'Slug',             kind: 'text',  get: (a) => tarzoSlug(a),                                          width: 150, align: 'LEFT',   wrap: false },
   { key: 'query',     header: 'Query',            kind: 'text',  get: (a) => searchQuery(a),                                        width: 260, align: 'LEFT',   wrap: true  },
   { key: 'revenue',   header: 'Revenue Prediction', kind: 'text', get: (a) => fmtDec(a.sheet_revenue),                              width: 110, align: 'RIGHT',  wrap: false },
