@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { s } from '@/lib/style';
-import { A, MONO, relTime, pad } from '@/lib/ui';
+import { A, MONO, relTime, pad, dispatchFailMessage } from '@/lib/ui';
 import { addDomain, updateDomain, deleteDomain, bulkUpdateDomains, deleteDomains, addFeed } from '@/app/actions';
 import TableScroll from '@/components/TableScroll';
 
@@ -137,7 +137,7 @@ export default function ControlRoom({
       const r = await onRunNow();
       if (r?.dispatched) setRunMsg('Scrape dispatched. The runner is spinning up now; live status appears below in a moment.');
       else if (r?.reason === 'no-dispatch-token') setRunMsg('All active domains marked due. Set GH_DISPATCH_TOKEN + GH_REPO to fire instantly, otherwise the scheduled runner picks them up on its next tick.');
-      else setRunMsg(`Could not dispatch (status ${r?.status ?? '?'}). Domains were still marked due.`);
+      else setRunMsg(dispatchFailMessage(r?.reason, r?.status, 'active domains'));
     } catch (e) {
       setRunMsg('Run failed: ' + String(e));
     }
@@ -183,9 +183,8 @@ export default function ControlRoom({
       const r = await onRunDomains([...sel]);
       if (r?.dispatched) setSelMsg(`Dispatched a run for ${n} selected ${rows}. Live status appears at the top in a moment.`);
       else if (r?.reason === 'no-dispatch-token') setSelMsg(`${n} ${rows} marked due. Set GH_DISPATCH_TOKEN + GH_REPO to fire instantly; otherwise the scheduled runner picks them up on its next tick.`);
-      else if (r?.reason === 'dispatch-failed') setSelMsg(`Could not dispatch (status ${r?.status ?? '?'}); the workflow input may not be on main yet. Marked the ${rows} due instead.`);
       else if (r?.reason === 'no-ids') setSelMsg('No valid rows to run.');
-      else setSelMsg('Run request sent.');
+      else setSelMsg(dispatchFailMessage(r?.reason, r?.status, rows));
     } catch (e) {
       setSelMsg('Run failed: ' + String(e));
     }

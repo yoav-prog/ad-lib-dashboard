@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, cleanLink, cleanLinkKey, uniqueCleanLinks, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, cleanLink, cleanLinkKey, uniqueCleanLinks, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS, dispatchFailReason, dispatchFailMessage } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -589,4 +589,39 @@ test('the feed query selects the rsoc columns and mapAd maps them', () => {
     assert.ok(src.includes(`'${col}'`), `FEED_COLUMNS must select ${col}`);
     assert.ok(src.includes(`${col}: r.${col}`), `mapAd must map ${col}`);
   }
+});
+
+// ── dispatch failure messaging: a "Run now" click that GitHub refuses must name
+// the real cause. Before this, every failure blamed "the workflow input may not be
+// on main yet" - flat wrong for a 401 (bad token), which sent the user chasing the
+// branch instead of rotating the secret.
+test('dispatchFailReason maps GitHub status codes to a stable cause', () => {
+  assert.equal(dispatchFailReason(401), 'bad-token');
+  assert.equal(dispatchFailReason(403), 'forbidden');
+  assert.equal(dispatchFailReason(404), 'repo-not-found');
+  assert.equal(dispatchFailReason(422), 'input-missing');
+  assert.equal(dispatchFailReason(500), 'dispatch-failed');
+  assert.equal(dispatchFailReason(200), 'dispatch-failed');
+});
+
+test('dispatchFailMessage points a 401 at the token, not at main', () => {
+  const msg = dispatchFailMessage('bad-token', 401, 'row');
+  assert.match(msg, /401/);
+  assert.match(msg, /GH_DISPATCH_TOKEN/);
+  assert.doesNotMatch(msg, /on main/);        // the old misdiagnosis is gone
+  assert.match(msg, /Marked the row due/);    // fallback is still reported
+});
+
+test('dispatchFailMessage blames the workflow input only for a 422', () => {
+  const msg = dispatchFailMessage('input-missing', 422, 'rows');
+  assert.match(msg, /422/);
+  assert.match(msg, /doesn't accept these inputs/);
+  assert.doesNotMatch(msg, /token/i);         // a 422 is not an auth problem
+  assert.match(msg, /Marked the rows due/);
+});
+
+test('dispatchFailMessage falls back to the raw status for anything unmapped', () => {
+  const msg = dispatchFailMessage('dispatch-failed', 500, 'active domains');
+  assert.match(msg, /status 500/);
+  assert.match(msg, /Marked the active domains due/);
 });
