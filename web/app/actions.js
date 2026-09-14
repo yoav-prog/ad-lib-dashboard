@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
 import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getTakenOurUrls, getMetaCreativesByHosts } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
-import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf, langCode } from '@/lib/ui';
+import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf, langCode, dispatchFailReason } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
 import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, attachOwned, attachOurArticles, articlesConfigured } from '@/lib/articles';
 
@@ -306,6 +306,35 @@ export async function bulkUpdateAds(ids, patch) {
   revalidatePath('/');
 }
 
+// Single place that fires the scrape workflow via GitHub's workflow_dispatch API,
+// so token handling, error logging, and the status-to-reason mapping live in one
+// spot instead of being copy-pasted across every "run" action. `inputs` is the
+// optional workflow_dispatch inputs object (e.g. { domain_ids: '...' }). Returns:
+//   { configured: false }                                  - no token/repo set
+//   { configured: true, ok: true, status }                 - dispatched
+//   { configured: true, ok: false, status, reason, detail } - GitHub refused
+// Network errors throw; callers wrap the call so they can still mark rows due.
+// The token/repo are trimmed: a value pasted with a trailing newline is a real
+// cause of the 401 "Bad credentials" this maps, and trimming fixes it outright.
+async function dispatchScrapeWorkflow(inputs) {
+  const token = process.env.GH_DISPATCH_TOKEN?.trim();
+  const repo = process.env.GH_REPO?.trim();
+  if (!token || !repo) return { configured: false };
+  const r = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/scrape.yml/dispatches`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+    body: JSON.stringify(inputs ? { ref: 'main', inputs } : { ref: 'main' }),
+  });
+  if (r.ok) return { configured: true, ok: true, status: r.status };
+  // Surface GitHub's own explanation ("Bad credentials", "Resource not accessible
+  // by personal access token", ...) - the line that was missing when a click just
+  // said "401" with nothing to diagnose from. Never logs the token itself.
+  const detail = await r.text().catch(() => '');
+  const reason = dispatchFailReason(r.status);
+  console.error('[scrape dispatch] failed', { repo, status: r.status, reason, detail: detail.slice(0, 500) });
+  return { configured: true, ok: false, status: r.status, reason, detail };
+}
+
 // Re-scrape the domains behind the given ads so their rank / last_seen refresh.
 // The pipeline is per-query, so this marks the matching tracked domains due (and
 // dispatches the workflow if configured); the scrape then upserts fresh data.
@@ -337,20 +366,12 @@ export async function refreshAds(ids) {
   }
   revalidatePath('/');
 
-  const token = process.env.GH_DISPATCH_TOKEN;
-  const repo = process.env.GH_REPO;
   let dispatched = false;
-  if (token && repo) {
-    try {
-      const r = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/scrape.yml/dispatches`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
-        body: JSON.stringify({ ref: 'main' }),
-      });
-      dispatched = r.ok;
-    } catch {
-      // ignore
-    }
+  try {
+    const d = await dispatchScrapeWorkflow();
+    dispatched = Boolean(d.ok);
+  } catch (e) {
+    console.error('[scrape dispatch] error', String(e));
   }
   return { ok: true, matched: tracked.size + added, added, dispatched, doms };
 }
@@ -474,24 +495,16 @@ export async function triggerScrape() {
   await sql`update domains set next_run_at = now() where enabled`;
   revalidatePath('/');
 
-  const token = process.env.GH_DISPATCH_TOKEN;
-  const repo = process.env.GH_REPO; // e.g. "yoav-prog/ad-lib-dashboard"
-  if (!token || !repo) {
-    return { ok: true, dispatched: false, reason: 'no-dispatch-token' };
-  }
+  // Domains are already marked due above, so any dispatch outcome still leaves the
+  // click meaningful; report the reason honestly so the UI can say what to fix.
   try {
-    const r = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/scrape.yml/dispatches`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-      body: JSON.stringify({ ref: 'main' }),
-    });
-    return { ok: r.ok, dispatched: r.ok, status: r.status };
+    const d = await dispatchScrapeWorkflow();
+    if (!d.configured) return { ok: true, dispatched: false, reason: 'no-dispatch-token' };
+    if (d.ok) return { ok: true, dispatched: true, status: d.status };
+    return { ok: true, dispatched: false, reason: d.reason, status: d.status };
   } catch (e) {
-    return { ok: false, dispatched: false, reason: String(e) };
+    console.error('[scrape dispatch] error', String(e));
+    return { ok: true, dispatched: false, reason: 'dispatch-failed', error: String(e) };
   }
 }
 
@@ -515,26 +528,22 @@ export async function runDomains(ids) {
     revalidatePath('/');
   };
 
-  const token = process.env.GH_DISPATCH_TOKEN;
-  const repo = process.env.GH_REPO;
-  if (!token || !repo) {
-    await markDue();
-    return { ok: true, dispatched: false, count: clean.length, reason: 'no-dispatch-token' };
-  }
   try {
-    const r = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/scrape.yml/dispatches`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
-      body: JSON.stringify({ ref: 'main', inputs: { domain_ids: clean.join(',') } }),
-    });
-    if (r.ok) return { ok: true, dispatched: true, count: clean.length, status: r.status };
-    // Non-ok (e.g. 422 when main has not merged the domain_ids input yet): degrade
-    // to marking due so the click is never a no-op.
+    const d = await dispatchScrapeWorkflow({ domain_ids: clean.join(',') });
+    if (!d.configured) {
+      await markDue();
+      return { ok: true, dispatched: false, count: clean.length, reason: 'no-dispatch-token' };
+    }
+    if (d.ok) return { ok: true, dispatched: true, count: clean.length, status: d.status };
+    // Dispatch refused (bad token, wrong repo, input not on main, ...): degrade to
+    // marking due so the click is never a no-op, and pass the real reason up so the
+    // UI names the actual cause instead of guessing "not on main yet".
     await markDue();
-    return { ok: true, dispatched: false, count: clean.length, reason: 'dispatch-failed', status: r.status };
+    return { ok: true, dispatched: false, count: clean.length, reason: d.reason, status: d.status };
   } catch (e) {
+    console.error('[scrape dispatch] error', String(e));
     await markDue();
-    return { ok: true, dispatched: false, count: clean.length, reason: String(e) };
+    return { ok: true, dispatched: false, count: clean.length, reason: 'dispatch-failed', error: String(e) };
   }
 }
 

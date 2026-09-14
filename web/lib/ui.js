@@ -189,6 +189,36 @@ export function uniqueCleanLinks(rows) {
 export const titleCase = (v) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v);
 export const pad = (n, w = 2) => String(n).padStart(w, '0');
 
+// When a "Run now" / "Run selected" click fails to dispatch the scrape workflow,
+// GitHub's HTTP status says *why*. Map it to a stable reason code so the server
+// and the UI agree on the cause. 401 = the token is rejected (bad/expired), 403 =
+// the token is valid but can't trigger Actions, 404 = the repo/workflow is not
+// found (wrong GH_REPO), 422 = the workflow on main doesn't accept the inputs.
+export const dispatchFailReason = (status) =>
+  status === 401 ? 'bad-token'
+  : status === 403 ? 'forbidden'
+  : status === 404 ? 'repo-not-found'
+  : status === 422 ? 'input-missing'
+  : 'dispatch-failed';
+
+// The human, actionable sentence for a failed dispatch. `subject` is what was
+// meant to run ('row', 'rows', 'active domains'); every message ends by noting the
+// rows were still marked due, so a failed click is never a silent no-op. The point
+// of this over a single hardcoded string: a 401 is an auth problem, not a "not on
+// main yet" problem, and telling the user the wrong cause wastes their time.
+export const dispatchFailMessage = (reason, status, subject = 'rows') => {
+  const tail = `Marked the ${subject} due instead, so the scheduled runner still picks them up.`;
+  if (reason === 'bad-token')
+    return `Could not dispatch (401): the GitHub token is invalid or expired. Rotate GH_DISPATCH_TOKEN (it needs the "workflow" scope). ${tail}`;
+  if (reason === 'forbidden')
+    return `Could not dispatch (403): the token can't trigger Actions. Give GH_DISPATCH_TOKEN the "workflow" scope (or Actions: read & write). ${tail}`;
+  if (reason === 'repo-not-found')
+    return `Could not dispatch (404): GitHub can't find the repo or workflow. Check GH_REPO points at the right repo. ${tail}`;
+  if (reason === 'input-missing')
+    return `Could not dispatch (422): the workflow on main doesn't accept these inputs yet. ${tail}`;
+  return `Could not dispatch (status ${status ?? '?'}). ${tail}`;
+};
+
 // The scraper stores a language NAME ("Spanish", "Portuguese"). For the compact
 // badge we want the ISO 639-1 code (ES, PT), so it reads as a real language code
 // and lines up with the two-letter country above it. Multi-word names ("Brazilian
