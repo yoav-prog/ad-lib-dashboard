@@ -95,6 +95,27 @@ Check the links themselves.
   article. Only 200 counts as a conclusive "opens"; only 404/410 as dead.
 - Tarzo's backfill runs from GitHub Actions (fresh runner IPs) after merge, not locally.
 
+## Follow-up: walled sites (approved 2026-10-05, after Oz's second report)
+
+Oz turned on HIDE DEAD and still saw dead Tarzo links (Tarzo + No Brand + Green, sorted by
+revenue). Two reasons: Tarzo's backfill had not run yet (it needed the merge), and three Tarzo
+sites (sousvideguy, thesleepjudge, tirereviewsandmore) put a JavaScript proof-of-work challenge
+(202) in front of EVERY page - homepage and made-up URLs alike - so a plain request can never
+get a verdict there, from any IP.
+
+Chosen: an automatic ScrapingBee fallback for 202 only. JS rendering solves the challenge and
+reports the real status (verified: 404 on /dcg/, 200 on the live homepage). Its answer is kept
+only when conclusive, and an answer without `Spb-Initial-Status-Code` is ScrapingBee's own error,
+never read as the page's. `--spb-max` (default 2000 lookups = 10k credits) caps each run.
+
+Cost (checked live 2026-10-05): plan is 1M credits/month, 122k used; 5 credits per lookup. First
+run on sousvideguy: 304 lookups, ~1.5k credits, all 304 dead. Many TONIC 202s turned out to be
+burst reactions that answer 200 at the gentle pace, so the ongoing spend should sit below the
+~50-75k credits/month estimate.
+
+Rejected: a one-time ScrapingBee pass only (new walled ads would stay unknown), and no
+ScrapingBee with a '?' marker (Oz's view stays broken).
+
 ## Known limits
 
 - A "soft 404" (a 200 page that says not found) is not detected.

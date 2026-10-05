@@ -2,9 +2,11 @@ name: check-links
 
 # Daily dead-link sweep: requests each ad's landing URL and records the status
 # (check_links.py), so the dashboard can mark pages a competitor has deleted as
-# DEAD. Only new links and links last checked over a week ago are requested, so a
-# normal day is a few minutes. Plain HTTP, no paid API. Safe to re-run any time:
-# every result is committed as it lands. Requires migration 0019.
+# DEAD. Only new links, links last checked over a week ago, and yesterday's
+# inconclusive answers are requested. Plain HTTP first (free); only links behind a
+# JavaScript challenge page (202) go through ScrapingBee, capped at --spb-max per
+# run (default 2000 lookups = 10k credits). Safe to re-run any time: every result
+# is committed as it lands. Requires migration 0019.
 on:
   schedule:
     - cron: '43 4 * * *'   # daily, off the hour and clear of the scrape's :17
@@ -49,3 +51,4 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           FEED: ${{ inputs.feed }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SCRAPINGBEE_API_KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}

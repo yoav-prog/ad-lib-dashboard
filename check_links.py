@@ -9,8 +9,15 @@ Why this exists
     dashboard marks 404/410 as DEAD (rule: link_health.py).
 
 How it works
-    - Plain requests, no ScrapingBee: free. Redirects are followed like a browser
-      would; the body is never downloaded (stream=True, then closed).
+    - Plain requests first: free. Redirects are followed like a browser would;
+      the body is never downloaded (stream=True, then closed).
+    - A site that puts a JavaScript challenge in front of every page (202,
+      link_health.CHALLENGE_STATUSES) can never be read that way, so those links
+      alone are re-asked through ScrapingBee with JS rendering (5 credits each),
+      which solves the challenge and reports the real status. Its answer is kept
+      only when conclusive (200/404/410); otherwise the 202 stands. --spb-max caps
+      the paid lookups per run so a surprise can never run up the bill, and
+      --no-scrapingbee (or no SCRAPINGBEE_API_KEY) skips them entirely.
     - One request per distinct URL, written to every ad that shares it.
     - Never-checked links first, then the stalest. A conclusive answer (the page
       opens, or it is 404/410) is re-checked after --recheck-days, so a page that
@@ -35,15 +42,20 @@ Usage
     python check_links.py --dry-run          # request + print, write nothing
     python check_links.py --limit 200        # at most 200 distinct URLs
     python check_links.py --feed tarzo       # one feed only
+    python check_links.py --domain sousvideguy.com   # one tracked domain only
     python check_links.py --minutes 40       # stop starting new work after 40 min
     python check_links.py --host-gap 2       # gentler on rate-limited sites
+    python check_links.py --no-scrapingbee   # free checks only, challenge pages stay unknown
+    python check_links.py --retry-hours 0    # re-ask every inconclusive link now
 
-Needs DATABASE_URL (from .env / .env.local or the environment).
+Needs DATABASE_URL, and SCRAPINGBEE_API_KEY for the challenge fallback (from
+.env / .env.local or the environment).
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import threading
 import time
 from collections import Counter, defaultdict, deque
@@ -61,7 +73,8 @@ except ImportError:
 import requests
 
 import db
-from link_health import RETRY_STATUSES, group_by_url, host_of, is_conclusive, is_dead
+from link_health import (CHALLENGE_STATUSES, RETRY_STATUSES, group_by_url, host_of,
+                         is_conclusive, is_dead)
 
 # A real browser's headers. Several competitor CMSs answer a bare python-requests
 # UA with a bot wall, which would read as "unknown" for every link on that site.
@@ -81,6 +94,14 @@ HTTP_TIMEOUT = (10, 20)
 # per-minute rate window to reopen most of the way, short enough not to stall a run.
 RETRY_PAUSE = 15
 
+# ScrapingBee: their page timeout (ms, a query param) and our socket timeout, which
+# must sit above it or a stalled render hangs the worker forever (the `timeout`
+# param is theirs, not requests'). block_resources keeps the render cheap; the
+# challenge only needs its own script to run.
+SPB_PARAMS = {'render_js': True, 'block_resources': True, 'timeout': 30000}
+SPB_TIMEOUT = (15, 90)
+SPB_CREDITS_PER_LOOKUP = 5
+
 
 def fetch_status(session: requests.Session, url: str) -> int | None:
     """The final HTTP status for url after redirects, or None when the host never
@@ -91,6 +112,21 @@ def fetch_status(session: requests.Session, url: str) -> int | None:
             return resp.status_code
     except requests.RequestException:
         return None
+
+
+def spb_status(client, url: str) -> int | None:
+    """The target's real status as seen through ScrapingBee's JS-rendering browser,
+    or None when ScrapingBee itself failed. ScrapingBee forwards the target's status
+    and stamps every proxied answer with Spb-Initial-Status-Code; an answer without
+    it is ScrapingBee's own error (bad key, out of credits, could not render), which
+    says nothing about the page."""
+    try:
+        resp = client.get(url, params=SPB_PARAMS, timeout=SPB_TIMEOUT)
+    except Exception:
+        return None
+    if 'Spb-Initial-Status-Code' not in resp.headers:
+        return None
+    return resp.status_code
 
 
 def interleave_by_host(urls: list[str]) -> list[str]:
@@ -114,16 +150,37 @@ def main():
     ap.add_argument('--dry-run', action='store_true', help='request and print, write nothing')
     ap.add_argument('--limit', type=int, help='check at most N distinct URLs')
     ap.add_argument('--feed', help='only this feed (case-insensitive)')
+    ap.add_argument('--domain', help='only this tracked domain (ads.domain, case-insensitive)')
     ap.add_argument('--recheck-days', type=int, default=7, help='re-check a conclusive answer older than this (default 7)')
     ap.add_argument('--retry-hours', type=int, default=20, help='re-check an inconclusive answer older than this (default 20)')
     ap.add_argument('--workers', type=int, default=24, help='concurrent requests overall (default 24)')
     ap.add_argument('--per-host', type=int, default=1, help='concurrent requests per site (default 1)')
     ap.add_argument('--host-gap', type=float, default=1.0, help='seconds between requests to one site, per slot (default 1)')
     ap.add_argument('--minutes', type=float, default=40, help='stop starting new work after this long (default 40)')
+    ap.add_argument('--no-scrapingbee', action='store_true', help='never use the paid fallback for challenge pages')
+    ap.add_argument('--spb-max', type=int, default=2000,
+                    help=f'paid ScrapingBee lookups per run, at most (default 2000 = {2000 * SPB_CREDITS_PER_LOOKUP:,} credits)')
+    ap.add_argument('--spb-workers', type=int, default=10, help='concurrent ScrapingBee lookups (default 10)')
     args = ap.parse_args()
 
+    spb = None
+    if not args.no_scrapingbee and os.environ.get('SCRAPINGBEE_API_KEY'):
+        from scrapingbee import ScrapingBeeClient
+        spb = ScrapingBeeClient(api_key=os.environ['SCRAPINGBEE_API_KEY'])
+    spb_slots = threading.Semaphore(max(1, args.spb_workers))
+    spb_lock = threading.Lock()
+    spb_used = [0]
+
+    def spb_take() -> bool:
+        """Claim one paid lookup from this run's --spb-max budget."""
+        with spb_lock:
+            if spb_used[0] >= args.spb_max:
+                return False
+            spb_used[0] += 1
+            return True
+
     deadline = time.monotonic() + args.minutes * 60
-    feed_sql = 'and lower(a.feed) = lower(%(feed)s)' if args.feed else ''
+    feed_sql = ('and lower(a.feed) = lower(%(feed)s) ' if args.feed else '')         + ('and lower(a.domain) = lower(%(domain)s)' if args.domain else '')
 
     with db.connect() as conn:
         rows = conn.execute(
@@ -137,7 +194,7 @@ def main():
                            and a.link_checked_at < now() - make_interval(hours => %(hours)s)))
                   {feed_sql}
                 order by a.link_checked_at asc nulls first, a.last_seen_at desc nulls last""",
-            {'days': args.recheck_days, 'hours': args.retry_hours, 'feed': args.feed},
+            {'days': args.recheck_days, 'hours': args.retry_hours, 'feed': args.feed, 'domain': args.domain},
         ).fetchall()
 
         # dict preserves the query order, so the stalest URLs come first.
@@ -147,7 +204,8 @@ def main():
             urls = urls[:args.limit]
         urls = interleave_by_host(urls)
         hosts = {host_of(u) for u in urls}
-        scope = f"feed '{args.feed}'" if args.feed else 'all feeds'
+        scope = ' '.join(filter(None, [f"feed '{args.feed}'" if args.feed else '',
+                                       f"domain '{args.domain}'" if args.domain else ''])) or 'all feeds'
         print(f'{len(rows)} ad(s) due ({scope}) -> {len(by_url)} distinct URL(s); '
               f'checking {len(urls)} across {len(hosts)} site(s)'
               f'{" [DRY RUN]" if args.dry_run else ""}', flush=True)
@@ -157,7 +215,7 @@ def main():
 
         def check(url: str):
             if time.monotonic() > deadline:
-                return url, 'skipped'
+                return url, 'skipped', False
             if not hasattr(local, 'session'):
                 local.session = requests.Session()
             with slots[host_of(url)]:
@@ -168,14 +226,21 @@ def main():
                 # Spacing is enforced while still holding the slot, so the site's next
                 # request cannot start until the gap has passed.
                 time.sleep(args.host_gap)
-                return url, status
+            # The paid fallback runs outside the site's slot: ScrapingBee's own
+            # proxies make the request, so it does not count against our pacing.
+            if status in CHALLENGE_STATUSES and spb and time.monotonic() < deadline and spb_take():
+                with spb_slots:
+                    real = spb_status(spb, url)
+                if is_conclusive(real):
+                    return url, real, True
+            return url, status, False
 
         tally: Counter = Counter()
         dead_by_host: Counter = Counter()
         done = 0
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
             for fut in as_completed([pool.submit(check, u) for u in urls]):
-                url, status = fut.result()
+                url, status, via_spb = fut.result()
                 if status == 'skipped':
                     tally['skipped (time budget)'] += 1
                     continue
@@ -186,6 +251,8 @@ def main():
                     conn.execute(
                         'update ads set link_status = %s, link_checked_at = now() '
                         'where ad_archive_id = any(%s)', (status, ids))
+                if via_spb:
+                    tally['  of which answered through ScrapingBee'] += 1
                 if is_dead(status):
                     tally['dead (404/410)'] += 1
                     dead_by_host[host_of(url)] += 1
@@ -203,6 +270,10 @@ def main():
     print(f'\n{verb} {done} URL(s):', flush=True)
     for k, n in tally.most_common():
         print(f'  {n:>6}  {k}')
+    if spb_used[0]:
+        print(f'ScrapingBee lookups: {spb_used[0]} (~{spb_used[0] * SPB_CREDITS_PER_LOOKUP:,} credits)')
+    elif not spb:
+        print('ScrapingBee fallback off (--no-scrapingbee or no SCRAPINGBEE_API_KEY): challenge pages stay unknown')
     if dead_by_host:
         print('dead links by site:')
         for h, n in dead_by_host.most_common(25):

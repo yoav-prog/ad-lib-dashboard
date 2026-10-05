@@ -24,6 +24,13 @@ DEAD_STATUSES = frozenset({404, 410})
 # because the real answer behind them is usually a plain 200 or 404.
 RETRY_STATUSES = frozenset({406, 429, 503})
 
+# A JavaScript proof-of-work wall, served with 202 in front of EVERY page of a site
+# (sousvideguy.com answers its homepage and a made-up URL identically). A plain
+# request can never see past it from any IP, so check_links.py re-asks these
+# through ScrapingBee with JS rendering, which solves it and reports the real
+# status.
+CHALLENGE_STATUSES = frozenset({202})
+
 
 def first_url(link_url: str | None) -> str:
     """The canonical destination of a (possibly ' | '-joined DCO) link_url - the
