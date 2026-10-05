@@ -162,23 +162,39 @@ class _SpbClient:
         return self.result
 
 
+def test_spb_mode_renders_challenges_and_proxies_blocks():
+    assert link_health.spb_mode(202) == 'js'
+    for status in (None, 406, 429, 503):
+        assert link_health.spb_mode(status) == 'plain', status
+    # A settled answer, or one ScrapingBee cannot improve, is never paid for.
+    for status in (200, 404, 410, 301, 400, 403, 500):
+        assert link_health.spb_mode(status) is None, status
+
+
 def test_spb_status_reports_the_targets_status_with_a_real_timeout():
     client = _SpbClient(_SpbResp(404, {'Spb-Initial-Status-Code': '404', 'Spb-Cost': '5'}))
-    assert check_links.spb_status(client, 'https://a.com/x') == 404
+    assert check_links.spb_status(client, 'https://a.com/x', 'js') == 404
     # JS rendering solves the challenge; a real socket timeout keeps a stalled render
     # from hanging the worker (the `timeout` in params is ScrapingBee's, not ours).
     assert client.kwargs['params']['render_js'] is True
     assert client.kwargs['timeout'] == check_links.SPB_TIMEOUT
     redirected = _SpbClient(_SpbResp(200, {'Spb-Initial-Status-Code': '301'}))
-    assert check_links.spb_status(redirected, 'https://a.com/') == 200
+    assert check_links.spb_status(redirected, 'https://a.com/', 'js') == 200
+
+
+def test_spb_status_plain_mode_skips_the_render():
+    client = _SpbClient(_SpbResp(404, {'Spb-Initial-Status-Code': '404', 'Spb-Cost': '1'}))
+    assert check_links.spb_status(client, 'https://a.com/x', 'plain') == 404
+    assert client.kwargs['params']['render_js'] is False
+    assert check_links.SPB_CREDITS == {'js': 5, 'plain': 1}
 
 
 def test_spb_status_never_mistakes_scrapingbees_own_failure_for_the_page():
     # No Spb-Initial-Status-Code: ScrapingBee's own error (bad key, no credits,
     # render failed). A 404 or 500 from them says nothing about the page.
     for status in (401, 404, 429, 500):
-        assert check_links.spb_status(_SpbClient(_SpbResp(status, {})), 'https://a.com/x') is None
-    assert check_links.spb_status(_SpbClient(TimeoutError()), 'https://a.com/x') is None
+        assert check_links.spb_status(_SpbClient(_SpbResp(status, {})), 'https://a.com/x', 'js') is None
+    assert check_links.spb_status(_SpbClient(TimeoutError()), 'https://a.com/x', 'plain') is None
 
 
 # ── a re-scrape with a new link_url drops the old link's status ───────────────

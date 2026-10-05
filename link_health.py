@@ -32,6 +32,21 @@ RETRY_STATUSES = frozenset({406, 429, 503})
 CHALLENGE_STATUSES = frozenset({202})
 
 
+def spb_mode(status: int | None) -> str | None:
+    """How check_links.py should re-ask a link the free request could not settle:
+    'js' for a JavaScript challenge (ScrapingBee renders it, 5 credits), 'plain'
+    for a block or no answer at all (ScrapingBee's proxy alone gets through, 1
+    credit - Tarzo's network blocks datacenter IPs, GitHub's runners included),
+    None when the free answer stands. Verified 2026-10-05: through ScrapingBee,
+    406'd and timed-out Tarzo /dcg/ links read 404 and a 406'd live page reads
+    200, so the fallback reports the page, not the block."""
+    if status in CHALLENGE_STATUSES:
+        return 'js'
+    if status is None or status in RETRY_STATUSES:
+        return 'plain'
+    return None
+
+
 def first_url(link_url: str | None) -> str:
     """The canonical destination of a (possibly ' | '-joined DCO) link_url - the
     first one, matching web/lib/ui.js firstUrl and the dashboard's URL column."""

@@ -11,18 +11,22 @@ Why this exists
 How it works
     - Plain requests first: free. Redirects are followed like a browser would;
       the body is never downloaded (stream=True, then closed).
-    - A site that puts a JavaScript challenge in front of every page (202,
-      link_health.CHALLENGE_STATUSES) can never be read that way, so those links
-      alone are re-asked through ScrapingBee with JS rendering (5 credits each),
-      which solves the challenge and reports the real status. Its answer is kept
-      only when conclusive (200/404/410); otherwise the 202 stands. --spb-max caps
-      the paid lookups per run so a surprise can never run up the bill, and
-      --no-scrapingbee (or no SCRAPINGBEE_API_KEY) skips them entirely.
+    - A link the free request cannot settle is re-asked through ScrapingBee
+      (link_health.spb_mode): a JavaScript challenge page (202) with JS rendering
+      (5 credits), a block or no answer at all (406/429/503/timeout, after the
+      free retry) through their proxy alone (1 credit). Tarzo's network blocks
+      datacenter IPs outright, GitHub's runners included, so without this most of
+      its links would never get a verdict. ScrapingBee's answer is kept only when
+      conclusive (200/404/410); otherwise the free answer stands. --spb-credits
+      caps the spend per run so a surprise can never run up the bill, and
+      --no-scrapingbee (or no SCRAPINGBEE_API_KEY) skips it entirely.
     - One request per distinct URL, written to every ad that shares it.
-    - Never-checked links first, then the stalest. A conclusive answer (the page
-      opens, or it is 404/410) is re-checked after --recheck-days, so a page that
-      comes back stops being marked dead. An inconclusive one (bot wall, rate
-      limit, error, silence) is asked again after --retry-hours instead.
+    - Never-checked links first, then the stalest. A page that opened is
+      re-checked after --recheck-days, a dead one after --recheck-dead-days (a
+      deleted page almost never comes back, and re-asking thousands of them every
+      week through the paid fallback would be the bulk of the bill), so a page
+      that does come back stops being marked dead. An inconclusive answer (bot
+      wall, rate limit, error, silence) is asked again after --retry-hours.
     - At most --per-host requests in flight per site, and the queue is
       interleaved across hosts, so no competitor gets hammered and one huge site
       cannot starve the rest. Each slot also waits --host-gap seconds before
@@ -45,10 +49,11 @@ Usage
     python check_links.py --domain sousvideguy.com   # one tracked domain only
     python check_links.py --minutes 40       # stop starting new work after 40 min
     python check_links.py --host-gap 2       # gentler on rate-limited sites
-    python check_links.py --no-scrapingbee   # free checks only, challenge pages stay unknown
+    python check_links.py --no-scrapingbee   # free checks only, walled/blocked links stay unknown
+    python check_links.py --spb-credits 2000 # spend at most 2,000 ScrapingBee credits
     python check_links.py --retry-hours 0    # re-ask every inconclusive link now
 
-Needs DATABASE_URL, and SCRAPINGBEE_API_KEY for the challenge fallback (from
+Needs DATABASE_URL, and SCRAPINGBEE_API_KEY for the paid fallback (from
 .env / .env.local or the environment).
 """
 
@@ -73,8 +78,7 @@ except ImportError:
 import requests
 
 import db
-from link_health import (CHALLENGE_STATUSES, RETRY_STATUSES, group_by_url, host_of,
-                         is_conclusive, is_dead)
+from link_health import RETRY_STATUSES, group_by_url, host_of, is_conclusive, is_dead, spb_mode
 
 # A real browser's headers. Several competitor CMSs answer a bare python-requests
 # UA with a bot wall, which would read as "unknown" for every link on that site.
@@ -96,11 +100,12 @@ RETRY_PAUSE = 15
 
 # ScrapingBee: their page timeout (ms, a query param) and our socket timeout, which
 # must sit above it or a stalled render hangs the worker forever (the `timeout`
-# param is theirs, not requests'). block_resources keeps the render cheap; the
+# param is theirs, not requests'). block_resources keeps a render cheap; a
 # challenge only needs its own script to run.
-SPB_PARAMS = {'render_js': True, 'block_resources': True, 'timeout': 30000}
+SPB_PARAMS = {'block_resources': True, 'timeout': 30000}
 SPB_TIMEOUT = (15, 90)
-SPB_CREDITS_PER_LOOKUP = 5
+# Credits per lookup, by link_health.spb_mode.
+SPB_CREDITS = {'js': 5, 'plain': 1}
 
 
 def fetch_status(session: requests.Session, url: str) -> int | None:
@@ -114,14 +119,15 @@ def fetch_status(session: requests.Session, url: str) -> int | None:
         return None
 
 
-def spb_status(client, url: str) -> int | None:
-    """The target's real status as seen through ScrapingBee's JS-rendering browser,
-    or None when ScrapingBee itself failed. ScrapingBee forwards the target's status
+def spb_status(client, url: str, mode: str) -> int | None:
+    """The target's real status as seen through ScrapingBee ('js' renders the page,
+    'plain' only routes the request through their proxy), or None when ScrapingBee
+    itself failed. ScrapingBee forwards the target's status
     and stamps every proxied answer with Spb-Initial-Status-Code; an answer without
     it is ScrapingBee's own error (bad key, out of credits, could not render), which
     says nothing about the page."""
     try:
-        resp = client.get(url, params=SPB_PARAMS, timeout=SPB_TIMEOUT)
+        resp = client.get(url, params={**SPB_PARAMS, 'render_js': mode == 'js'}, timeout=SPB_TIMEOUT)
     except Exception:
         return None
     if 'Spb-Initial-Status-Code' not in resp.headers:
@@ -151,15 +157,15 @@ def main():
     ap.add_argument('--limit', type=int, help='check at most N distinct URLs')
     ap.add_argument('--feed', help='only this feed (case-insensitive)')
     ap.add_argument('--domain', help='only this tracked domain (ads.domain, case-insensitive)')
-    ap.add_argument('--recheck-days', type=int, default=7, help='re-check a conclusive answer older than this (default 7)')
+    ap.add_argument('--recheck-days', type=int, default=7, help='re-check a page that opened after this long (default 7)')
+    ap.add_argument('--recheck-dead-days', type=int, default=30, help='re-check a dead link after this long (default 30)')
     ap.add_argument('--retry-hours', type=int, default=20, help='re-check an inconclusive answer older than this (default 20)')
     ap.add_argument('--workers', type=int, default=24, help='concurrent requests overall (default 24)')
     ap.add_argument('--per-host', type=int, default=1, help='concurrent requests per site (default 1)')
     ap.add_argument('--host-gap', type=float, default=1.0, help='seconds between requests to one site, per slot (default 1)')
     ap.add_argument('--minutes', type=float, default=40, help='stop starting new work after this long (default 40)')
-    ap.add_argument('--no-scrapingbee', action='store_true', help='never use the paid fallback for challenge pages')
-    ap.add_argument('--spb-max', type=int, default=2000,
-                    help=f'paid ScrapingBee lookups per run, at most (default 2000 = {2000 * SPB_CREDITS_PER_LOOKUP:,} credits)')
+    ap.add_argument('--no-scrapingbee', action='store_true', help='never use the paid fallback')
+    ap.add_argument('--spb-credits', type=int, default=10000, help='ScrapingBee credits to spend per run, at most (default 10000)')
     ap.add_argument('--spb-workers', type=int, default=10, help='concurrent ScrapingBee lookups (default 10)')
     args = ap.parse_args()
 
@@ -169,14 +175,16 @@ def main():
         spb = ScrapingBeeClient(api_key=os.environ['SCRAPINGBEE_API_KEY'])
     spb_slots = threading.Semaphore(max(1, args.spb_workers))
     spb_lock = threading.Lock()
-    spb_used = [0]
+    spb_spent: Counter = Counter()   # credits, and lookups by mode
 
-    def spb_take() -> bool:
-        """Claim one paid lookup from this run's --spb-max budget."""
+    def spb_take(mode: str) -> bool:
+        """Claim one lookup's credits from this run's --spb-credits budget."""
+        cost = SPB_CREDITS[mode]
         with spb_lock:
-            if spb_used[0] >= args.spb_max:
+            if spb_spent['credits'] + cost > args.spb_credits:
                 return False
-            spb_used[0] += 1
+            spb_spent['credits'] += cost
+            spb_spent[mode] += 1
             return True
 
     deadline = time.monotonic() + args.minutes * 60
@@ -188,13 +196,17 @@ def main():
                 where a.review_status = 'approved'
                   and a.link_url is not null and a.link_url <> ''
                   and (a.link_checked_at is null
-                       or a.link_checked_at < now() - make_interval(days => %(days)s)
+                       or (a.link_status = 200
+                           and a.link_checked_at < now() - make_interval(days => %(days)s))
+                       or (a.link_status in (404, 410)
+                           and a.link_checked_at < now() - make_interval(days => %(dead_days)s))
                        -- inconclusive answers (link_health.is_conclusive is false) come back sooner
                        or (not coalesce(a.link_status in (200, 404, 410), false)
                            and a.link_checked_at < now() - make_interval(hours => %(hours)s)))
                   {feed_sql}
                 order by a.link_checked_at asc nulls first, a.last_seen_at desc nulls last""",
-            {'days': args.recheck_days, 'hours': args.retry_hours, 'feed': args.feed, 'domain': args.domain},
+            {'days': args.recheck_days, 'dead_days': args.recheck_dead_days, 'hours': args.retry_hours,
+             'feed': args.feed, 'domain': args.domain},
         ).fetchall()
 
         # dict preserves the query order, so the stalest URLs come first.
@@ -228,9 +240,10 @@ def main():
                 time.sleep(args.host_gap)
             # The paid fallback runs outside the site's slot: ScrapingBee's own
             # proxies make the request, so it does not count against our pacing.
-            if status in CHALLENGE_STATUSES and spb and time.monotonic() < deadline and spb_take():
+            mode = spb_mode(status)
+            if mode and spb and time.monotonic() < deadline and spb_take(mode):
                 with spb_slots:
-                    real = spb_status(spb, url)
+                    real = spb_status(spb, url, mode)
                 if is_conclusive(real):
                     return url, real, True
             return url, status, False
@@ -270,10 +283,11 @@ def main():
     print(f'\n{verb} {done} URL(s):', flush=True)
     for k, n in tally.most_common():
         print(f'  {n:>6}  {k}')
-    if spb_used[0]:
-        print(f'ScrapingBee lookups: {spb_used[0]} (~{spb_used[0] * SPB_CREDITS_PER_LOOKUP:,} credits)')
+    if spb_spent['credits']:
+        print(f"ScrapingBee: {spb_spent['plain']} proxy + {spb_spent['js']} JS lookups, "
+              f"~{spb_spent['credits']:,} credits (budget {args.spb_credits:,})")
     elif not spb:
-        print('ScrapingBee fallback off (--no-scrapingbee or no SCRAPINGBEE_API_KEY): challenge pages stay unknown')
+        print('ScrapingBee fallback off (--no-scrapingbee or no SCRAPINGBEE_API_KEY): walled/blocked links stay unknown')
     if dead_by_host:
         print('dead links by site:')
         for h, n in dead_by_host.most_common(25):
