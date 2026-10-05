@@ -135,6 +135,52 @@ def test_fetch_status_maps_network_failures_to_none():
         assert check_links.fetch_status(_Session(exc), 'https://a.com/x') is None
 
 
+# ── the paid fallback for challenge pages ─────────────────────────────────────
+def test_only_the_challenge_status_goes_to_scrapingbee():
+    assert link_health.CHALLENGE_STATUSES == frozenset({202})
+    # A challenge is never a verdict on its own.
+    for status in link_health.CHALLENGE_STATUSES:
+        assert not link_health.is_dead(status)
+        assert not link_health.is_conclusive(status)
+
+
+class _SpbResp:
+    def __init__(self, status, headers):
+        self.status_code = status
+        self.headers = headers
+
+
+class _SpbClient:
+    def __init__(self, result):
+        self.result = result
+        self.kwargs = None
+
+    def get(self, url, **kwargs):
+        self.kwargs = kwargs
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def test_spb_status_reports_the_targets_status_with_a_real_timeout():
+    client = _SpbClient(_SpbResp(404, {'Spb-Initial-Status-Code': '404', 'Spb-Cost': '5'}))
+    assert check_links.spb_status(client, 'https://a.com/x') == 404
+    # JS rendering solves the challenge; a real socket timeout keeps a stalled render
+    # from hanging the worker (the `timeout` in params is ScrapingBee's, not ours).
+    assert client.kwargs['params']['render_js'] is True
+    assert client.kwargs['timeout'] == check_links.SPB_TIMEOUT
+    redirected = _SpbClient(_SpbResp(200, {'Spb-Initial-Status-Code': '301'}))
+    assert check_links.spb_status(redirected, 'https://a.com/') == 200
+
+
+def test_spb_status_never_mistakes_scrapingbees_own_failure_for_the_page():
+    # No Spb-Initial-Status-Code: ScrapingBee's own error (bad key, no credits,
+    # render failed). A 404 or 500 from them says nothing about the page.
+    for status in (401, 404, 429, 500):
+        assert check_links.spb_status(_SpbClient(_SpbResp(status, {})), 'https://a.com/x') is None
+    assert check_links.spb_status(_SpbClient(TimeoutError()), 'https://a.com/x') is None
+
+
 # ── a re-scrape with a new link_url drops the old link's status ───────────────
 def test_upsert_clears_the_link_check_only_when_the_link_changes():
     import db
