@@ -355,7 +355,10 @@ def upsert_ads(conn, run_id, ads: list[dict]) -> tuple[int, int]:
     Upsert a batch of ad dicts (keys = AD_COLUMNS; missing keys default to NULL).
 
     first_seen_at / first_run_id are set only on insert; last_seen_at /
-    last_run_id are refreshed on every sighting. Returns (found, new); a row is
+    last_run_id are refreshed on every sighting. When a sighting brings a
+    different link_url, the stored link check (link_status / link_checked_at,
+    migration 0019) described the OLD link, so it is cleared and
+    check_links.py re-checks the new one. Returns (found, new); a row is
     counted 'new' when Postgres reports it as a fresh insert (xmax = 0).
 
     Array columns (original_image_urls, extra_image_urls, extra_video_urls,
@@ -373,6 +376,10 @@ def upsert_ads(conn, run_id, ads: list[dict]) -> tuple[int, int]:
         values ({placeholders})
         on conflict (ad_archive_id) do update
            set {update_set},
+               link_status     = case when ads.link_url is distinct from excluded.link_url
+                                      then null else ads.link_status end,
+               link_checked_at = case when ads.link_url is distinct from excluded.link_url
+                                      then null else ads.link_checked_at end,
                last_seen_at = now(),
                last_run_id  = excluded.last_run_id
         returning (xmax = 0) as inserted

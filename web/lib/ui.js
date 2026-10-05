@@ -31,6 +31,20 @@ export function hostOf(url) {
   }
 }
 
+// Whether an ad's landing page is gone, from the status check_links.py recorded. Only 404 and
+// 410 count - the same rule as link_health.py and the feed SQL; change all three together. A
+// bot wall (202/403/429), a server error or no answer at all says nothing about the page, so
+// those are never called dead.
+export const isDeadLink = (ad) => ad?.link_status === 404 || ad?.link_status === 410;
+
+// The rail's Landing Page filter: '' every ad, 'live' hides the dead ones (unchecked rows stay,
+// since "not checked yet" is not "dead"), 'dead' keeps only them. Unknown modes keep everything.
+export function matchesLinkHealth(ad, mode) {
+  if (mode === 'live') return !isDeadLink(ad);
+  if (mode === 'dead') return isDeadLink(ad);
+  return true;
+}
+
 // Review-queue facets. The destination host doubles as a filter value, so ads
 // with no destination need a stable non-empty label to group and filter by.
 export const reviewDestOf = (ad) => hostOf(firstUrl(ad.link_url)) || '(no link)';

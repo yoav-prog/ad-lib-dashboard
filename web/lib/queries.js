@@ -54,6 +54,10 @@ function mapAd(r) {
     article_verticals: r.article_verticals || [],
     // Set only when the GEOS revenue split overrode the article's guessed country (0018).
     country_scraped: r.country_scraped ?? null,
+    // The landing page's last HTTP status from check_links.py (0019). NULL = not checked or no
+    // answer; only 404/410 mean dead (isDeadLink in lib/ui).
+    link_status: r.link_status ?? null,
+    link_checked_at: iso(r.link_checked_at),
   };
 }
 
@@ -72,6 +76,7 @@ const FEED_COLUMNS = [
   'brand', 'creative_language', 'content_flag', 'rsoc_tier', 'rsoc_policy_area', 'rsoc_reason',
   'first_seen_at', 'last_seen_at', 'status', 'owner', 'linked_article_url',
   'is_saved', 'tags', 'notes', 'review_status', 'article_verticals', 'country_scraped',
+  'link_status', 'link_checked_at',
 ];
 
 // A row is prohibited-content when its content_flag is a real category (anything but
@@ -214,6 +219,17 @@ function feedConditions(sql, { filters = {}, dateRange = 'all', search = '', ids
   } else if (f.ourDomain && f.ourArticle === 'missing') {
     conds.push(sql`a.article_verticals is not null
       and not coalesce(${String(f.ourDomain)} = any(a.our_article_domains), false)`);
+  }
+
+  // Landing page alive or gone, from the status check_links.py recorded (migration 0019). Only
+  // 404/410 count as dead, the same rule as link_health.py and isDeadLink. "live" keeps every
+  // other row, including the never-checked and the bot-walled: "not known to be dead" is what
+  // hiding dead links promises, and an unchecked ad must not vanish before the job reaches it.
+  // Any other value is ignored, so the filter cannot be steered into arbitrary SQL.
+  if (f.linkHealth === 'live') {
+    conds.push(sql`(a.link_status is null or a.link_status not in (404, 410))`);
+  } else if (f.linkHealth === 'dead') {
+    conds.push(sql`a.link_status in (404, 410)`);
   }
 
   // GEOS: cm.geos is "CC-pct,CC-pct"; keep a row if any selected country appears as a token.
