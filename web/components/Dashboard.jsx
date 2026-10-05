@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { s } from '@/lib/style';
-import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isTarzo, tarzoSlug, isPredicto, isVisymo, searchQuery, cleanLink, uniqueCleanLinks, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, brandLabel, brandColor, BRAND_OPTIONS, rsocTierColor, rsocTierLabel, rsocTierHint, rsocAreaLabel, RSOC_TIER_ORDER, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
+import { A, MONO, hoursSince, daysRunning, isVideo, thumbOf, firstUrl, isDeadLink, matchesLinkHealth, isTarzo, tarzoSlug, isPredicto, isVisymo, searchQuery, cleanLink, uniqueCleanLinks, titleCase, tint, paras, relTime, pad, fmtDate, fmtInt, fmtDec, geoCountries, buildCsv, parseSheetId, langCode, brandLabel, brandColor, BRAND_OPTIONS, rsocTierColor, rsocTierLabel, rsocTierHint, rsocAreaLabel, RSOC_TIER_ORDER, SHEET_COLUMN_META, DEFAULT_SHEET_COLUMN_KEYS } from '@/lib/ui';
 import Thumb from '@/components/Thumb';
 import CopyCell from '@/components/CopyCell';
 import ColumnsManager, { useColumnLayout } from '@/components/ColumnsManager';
@@ -69,6 +69,9 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     // and whether the feed is narrowed to the ads that have one. Both are single values, not
     // chip sets, so they live beside the numeric ranges rather than in checkboxGroups.
     ourDomain: '', ourArticle: '',
+    // Landing page alive or gone ('' all, 'live' hide dead, 'dead' only dead). A single value
+    // like the two above, so it lives beside them rather than in checkboxGroups.
+    linkHealth: '',
   });
 
   // The 47 domains we publish on, for the rail's picker. Fetched once, and only when the
@@ -468,6 +471,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
       if (f.format.length && !f.format.includes(a.display_format)) return false;
       if (f.feed.length && !f.feed.includes(a.feed)) return false;
       if (f.status.length && !f.status.includes(a.status)) return false;
+      if (!matchesLinkHealth(a, f.linkHealth)) return false;
       const days = daysRunning(a, NOW);
       if (f.daysMin !== '' && days < Number(f.daysMin)) return false;
       if (f.daysMax !== '' && days > Number(f.daysMax)) return false;
@@ -667,7 +671,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
           page={page} pageSize={pageSize} setPageSize={setPageSize} goPage={goPage}
           filters={filters} toggleFilter={toggleFilter}
           setRange={(key, val) => { setFilters((s2) => ({ ...s2, [key]: val })); setSelIndex(0); }}
-          clearFilters={() => { setFilters((p) => ({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], rsoc: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '', ourDomain: p.ourDomain, ourArticle: '' })); setDateRange('all'); setSelIndex(0); }}
+          clearFilters={() => { setFilters((p) => ({ domain: [], feed: [], vertical: [], country: [], geos: [], language: [], creative_language: [], brand: [], rsoc: [], format: [], status: [], daysMin: '', daysMax: '', rankMin: '', rankMax: '', ourDomain: p.ourDomain, ourArticle: '', linkHealth: '' })); setDateRange('all'); setSelIndex(0); }}
           ourDomains={ourDomains} setOurDomain={setOurDomain} setOurArticle={setOurArticle}
           dateRange={dateRange} setDateRange={(d) => { setDateRange(d); setSelIndex(0); }}
           sort={sort} sortDir={sortDir}
@@ -945,6 +949,29 @@ function OurArticleList({ items, ad, canEdit, updateLocal, commit }) {
   );
 }
 
+// The plain-words reason a landing link is marked dead, for the grid's tooltips: what came
+// back, when, and whether a copy of the article survives in the ad's detail. It says only what
+// the check proves - the link does not open - and not WHY: a deleted article (Tarzo's /dcg/), an
+// expired tracker (TONIC) and a link stored without its search term (bare Predicto /asrsearch)
+// all look the same from here.
+const deadLinkNote = (ad) =>
+  `Dead link: it returned ${ad.link_status} when checked on ${fmtDate(ad.link_checked_at)}, so it no longer opens a page. `
+  + (ad.has_article
+    ? 'Open the ad to read the article text we saved while it was live.'
+    : 'No copy of the article was saved.');
+
+// A red DEAD marker in front of a landing link whose page no longer exists, so nobody has to
+// click through to a 404 to find out. Renders nothing for a live or unchecked link.
+function DeadLinkChip({ ad }) {
+  if (!isDeadLink(ad)) return null;
+  return (
+    <span title={deadLinkNote(ad)}
+      style={s(`flex-shrink:0;font-family:${MONO};font-size:8.5px;letter-spacing:.6px;color:#E5575B;border:1px solid #E5575B66;padding:0 4px;line-height:14px`)}>
+      DEAD
+    </span>
+  );
+}
+
 // One row's answer to "do we already have an article for this?". Five distinct states, each
 // worded so nobody has to guess which one they are looking at: no domain picked, the lookup
 // never ran for this row, the ad has never been classified (the backfill has not reached it),
@@ -1042,6 +1069,40 @@ function OurDomainPicker({ domains, chosen, onChoose, mode, onMode, canFilter = 
           Pick a domain to fill the <span style={s('color:#8A8E94')}>Our Article</span> column.
         </div>
       )}
+    </div>
+  );
+}
+
+// ── LANDING PAGE ───────────────────────────────────────────────────────────────
+// Whether the competitor's landing page still exists, from the daily check_links.py sweep.
+// Competitors delete whole sections (Tarzo dropped every /dcg/ article in Aug 2026), and a
+// stopped ad with a deleted page otherwise looks exactly like a live one. Defaults to ALL:
+// hiding dead rows silently would change every count and hide winners whose copy is still
+// worth reading, so the URL cell marks them instead and hiding is one click away. Unlike the
+// Our Article control this works on both feed paths, since the status rides on every row.
+const LINK_HEALTH_MODES = [
+  { key: '', label: 'ALL', hint: 'Every ad, whether or not its landing link still opens.' },
+  { key: 'live', label: 'HIDE DEAD', hint: 'Hide the ads whose landing link no longer opens a page (404). Ads not checked yet stay in.' },
+  { key: 'dead', label: 'ONLY DEAD', hint: 'Only the ads whose landing link no longer opens a page (404). Their saved article copy, when we have one, is in the ad detail.' },
+];
+
+function LinkHealthPicker({ mode, onMode }) {
+  return (
+    <div style={s('border-bottom:1px solid rgba(255,255,255,.06);padding:11px 14px 12px')}>
+      <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:6px')}>
+        <span style={s('font-size:9.5px;letter-spacing:1.2px;color:#5A5E64;text-transform:uppercase')}>Landing Page</span>
+      </div>
+      <div style={s('display:flex;gap:1px;background:rgba(255,255,255,.06)')}>
+        {LINK_HEALTH_MODES.map((m) => {
+          const on = (mode || '') === m.key;
+          return (
+            <button key={m.key || 'all'} onClick={() => onMode(m.key)} title={m.hint}
+              style={s(`flex:1;padding:5px 0;background:${on ? '#1A1C20' : '#0D0E11'};border:none;color:${on ? A : '#8A8E94'};font-family:${MONO};font-size:9.5px;letter-spacing:.3px;cursor:pointer`)}>
+              {m.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1216,7 +1277,8 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
     + (filters.daysMin !== '' || filters.daysMax !== '' ? 1 : 0)
     + (filters.rankMin !== '' || filters.rankMax !== '' ? 1 : 0)
     // The chosen domain is a lens, not a filter, so only the narrowing counts here.
-    + (filters.ourArticle ? 1 : 0);
+    + (filters.ourArticle ? 1 : 0)
+    + (filters.linkHealth ? 1 : 0);
   const maxDays = Math.max(1, ...ads.map((a) => daysRunning(a, NOW)));
 
   const sortDefs = [
@@ -1295,8 +1357,11 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
           chosenCount={activeFilterCount}
           onClear={clearFilters}
           loading={serverMode && !serverFacets}
-          top={<OurDomainPicker domains={ourDomains} chosen={filters.ourDomain} onChoose={setOurDomain}
-            mode={filters.ourArticle} onMode={setOurArticle} canFilter={serverMode} />}
+          top={<>
+            <OurDomainPicker domains={ourDomains} chosen={filters.ourDomain} onChoose={setOurDomain}
+              mode={filters.ourArticle} onMode={setOurArticle} canFilter={serverMode} />
+            <LinkHealthPicker mode={filters.linkHealth} onMode={(m) => setRange('linkHealth', m)} />
+          </>}
         />
 
         {/* feed */}
@@ -1437,6 +1502,7 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
             const isSel = selected ? selected.has(a.ad_archive_id) : false;
             const vid = isVideo(a);
             const url = firstUrl(a.link_url);
+            const dead = isDeadLink(a);
             const clean = cols.has('clean_link') ? cleanLink(a) : '';
             const slug = showSlug ? tarzoSlug(a) : '';
             const query = showQuery ? searchQuery(a) : '';
@@ -1499,9 +1565,10 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                 {cols.has('url') && (
                   <CopyCell key="url" value={url} style={s('width:168px;flex-shrink:0;padding-right:12px;min-width:0')}>
                     {url
-                      ? <a href={url} target="_blank" rel="noreferrer" title={url} onClick={(e) => e.stopPropagation()}
+                      ? <a href={url} target="_blank" rel="noreferrer" title={dead ? deadLinkNote(a) : url} onClick={(e) => e.stopPropagation()}
                           style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
-                          <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{url}</span>
+                          <DeadLinkChip ad={a} />
+                          <span style={s(`font-family:${MONO};font-size:10.5px;color:${dead ? '#5A5E64' : '#8A8E94'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{url}</span>
                           <span style={s('color:#5A5E64;font-size:9px;flex-shrink:0')}>&#8599;</span>
                         </a>
                       : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
@@ -1510,9 +1577,10 @@ function FreshFinds({ ads, filtered, paged, NOW, serverMode = false, total = nul
                 {cols.has('clean_link') && (
                   <CopyCell key="clean_link" value={clean} style={s('width:190px;flex-shrink:0;padding-left:16px;padding-right:12px;min-width:0')}>
                     {clean
-                      ? <a href={clean} target="_blank" rel="noreferrer" title={clean} onClick={(e) => e.stopPropagation()}
+                      ? <a href={clean} target="_blank" rel="noreferrer" title={dead ? deadLinkNote(a) : clean} onClick={(e) => e.stopPropagation()}
                           style={s('display:flex;align-items:center;gap:4px;min-width:0;text-decoration:none')}>
-                          <span style={s(`font-family:${MONO};font-size:10.5px;color:#8A8E94;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{clean}</span>
+                          <DeadLinkChip ad={a} />
+                          <span style={s(`font-family:${MONO};font-size:10.5px;color:${dead ? '#5A5E64' : '#8A8E94'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap`)}>{clean}</span>
                           <span style={s('color:#5A5E64;font-size:9px;flex-shrink:0')}>&#8599;</span>
                         </a>
                       : <span style={s(`font-family:${MONO};font-size:10.5px;color:#45484D`)}>-</span>}
@@ -2053,6 +2121,7 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
   const slug = tarzoSlug(ad);
   const query = searchQuery(ad);
   const clean = cleanLink(ad);
+  const dead = isDeadLink(ad);
   const statuses = ['idea', 'drafting', 'published'];
   const owners = ['Mara K.', 'Devin R.', 'Priya S.', 'Ari L.'];
 
@@ -2183,7 +2252,16 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
             <span style={s('background:#E7E8EA;color:#0B0C0E;font-size:12px;font-weight:600;padding:8px 16px')}>{ad.cta_text || 'Learn More'}</span>
             <div style={s('display:flex;flex-direction:column;gap:2px;min-width:0')}>
               <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>CTA_TYPE &middot; {ad.cta_type || '-'}</span>
-              {ad.link_url && <a href={ad.link_url.split(' | ')[0]} target="_blank" rel="noreferrer" style={s(`font-family:${MONO};font-size:11px;color:#E8A33D;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px`)}>{ad.link_url} &#8599;</a>}
+              {ad.link_url && <a href={ad.link_url.split(' | ')[0]} target="_blank" rel="noreferrer" style={s(`font-family:${MONO};font-size:11px;color:${dead ? '#6C7076' : '#E8A33D'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px`)}>{ad.link_url} &#8599;</a>}
+              {dead && (
+                <span style={s(`display:flex;align-items:center;gap:6px;font-family:${MONO};font-size:9.5px;color:#E5575B;letter-spacing:.3px`)}>
+                  <DeadLinkChip ad={ad} />
+                  <span>
+                    Dead link: returned {ad.link_status} when checked on {fmtDate(ad.link_checked_at)}.
+                    {ad.has_article ? ' The article we saved while it was live is below.' : ' No copy of the article was saved.'}
+                  </span>
+                </span>
+              )}
               {isTarzo(ad) && slug && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>SLUG &middot; <span style={s('color:#C6C9CE')}>{slug}</span></span>}
               {(isPredicto(ad) || isVisymo(ad)) && query && <span style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px`)}>QUERY &middot; <span style={s('color:#C6C9CE')}>{query}</span></span>}
               {clean && <span title="The landing link with its tracking params stripped. Predicto & Visymo keep their search phrase, which identifies the article." style={s(`font-family:${MONO};font-size:9.5px;color:#6C7076;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px`)}>CLEAN &middot; <a href={clean} target="_blank" rel="noreferrer" style={s('color:#C6C9CE;text-decoration:none')}>{clean}</a></span>}
@@ -2193,13 +2271,14 @@ function Detail({ ad, NOW, back, prev, next, update, updateLocal, commit, canEdi
           {(ad.article_title || ad.article_content || ad.has_article) && (
             <div style={s('margin-top:28px;padding-top:22px;border-top:1px solid rgba(255,255,255,.09)')}>
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:14px')}>
-                <span style={s(`font-family:${MONO};font-size:9.5px;letter-spacing:1.2px;color:#5A5E64`)}>SCRAPED LANDING ARTICLE</span>
+                <span style={s(`font-family:${MONO};font-size:9.5px;letter-spacing:1.2px;color:#5A5E64`)}>{dead ? 'SAVED COPY · THE LINK IS DEAD' : 'SCRAPED LANDING ARTICLE'}</span>
                 <div style={s('flex:1;height:1px;background:rgba(255,255,255,.06)')} />
               </div>
               {ad.article_title && <h2 style={s('font-size:18px;font-weight:600;color:#E7E8EA;line-height:1.35;margin:0 0 14px')}>{ad.article_title}</h2>}
               <div style={s('font-size:13px;line-height:1.72;color:#A8ABB1;max-width:62ch')}>
                 {ad.article_content
-                  ? paras(ad.article_content).slice(0, 12).map((p, i) => <p key={i} style={s('margin:0 0 13px')}>{p}</p>)
+                  // A dead page leaves this as the only copy anywhere, so it is shown whole.
+                  ? paras(ad.article_content).slice(0, dead ? undefined : 12).map((p, i) => <p key={i} style={s('margin:0 0 13px')}>{p}</p>)
                   : !ad.has_article
                     ? null
                     : articleFailedId === ad.ad_archive_id

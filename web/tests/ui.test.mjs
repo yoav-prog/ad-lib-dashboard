@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isVideo, thumbOf, mediaUrlOf, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, cleanLink, cleanLinkKey, uniqueCleanLinks, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS, dispatchFailReason, dispatchFailMessage } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, isDeadLink, matchesLinkHealth, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, cleanLink, cleanLinkKey, uniqueCleanLinks, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS, dispatchFailReason, dispatchFailMessage } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -624,4 +624,31 @@ test('dispatchFailMessage falls back to the raw status for anything unmapped', (
   const msg = dispatchFailMessage('dispatch-failed', 500, 'active domains');
   assert.match(msg, /status 500/);
   assert.match(msg, /Marked the active domains due/);
+});
+
+// ── dead landing links (check_links.py -> ads.link_status) ──────────────────────
+// Only 404/410 are dead. Calling a live page dead would hide a real ad from anyone using
+// HIDE DEAD, so bot walls, errors and never-checked rows must all stay "not dead".
+test('isDeadLink: only 404 and 410', () => {
+  assert.equal(isDeadLink({ link_status: 404 }), true);
+  assert.equal(isDeadLink({ link_status: 410 }), true);
+  for (const status of [null, undefined, 200, 202, 301, 403, 429, 500, 503]) {
+    assert.equal(isDeadLink({ link_status: status }), false, String(status));
+  }
+  assert.equal(isDeadLink({}), false);
+  assert.equal(isDeadLink(null), false);
+});
+
+test('matchesLinkHealth: HIDE DEAD keeps the unchecked, ONLY DEAD keeps only 404/410', () => {
+  const dead = { link_status: 404 };
+  const live = { link_status: 200 };
+  const walled = { link_status: 403 };
+  const unchecked = { link_status: null };
+  const pick = (mode) => [dead, live, walled, unchecked].filter((a) => matchesLinkHealth(a, mode));
+  assert.deepEqual(pick(''), [dead, live, walled, unchecked]);
+  assert.deepEqual(pick('live'), [live, walled, unchecked]);
+  assert.deepEqual(pick('dead'), [dead]);
+  // An unknown mode never narrows the feed.
+  assert.deepEqual(pick('bogus'), [dead, live, walled, unchecked]);
+  assert.deepEqual(pick(undefined), [dead, live, walled, unchecked]);
 });

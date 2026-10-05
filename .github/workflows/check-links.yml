@@ -1,0 +1,51 @@
+name: check-links
+
+# Daily dead-link sweep: requests each ad's landing URL and records the status
+# (check_links.py), so the dashboard can mark pages a competitor has deleted as
+# DEAD. Only new links and links last checked over a week ago are requested, so a
+# normal day is a few minutes. Plain HTTP, no paid API. Safe to re-run any time:
+# every result is committed as it lands. Requires migration 0019.
+on:
+  schedule:
+    - cron: '43 4 * * *'   # daily, off the hour and clear of the scrape's :17
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: print what would change, write nothing'
+        type: boolean
+        default: false
+      feed:
+        description: 'Limit to one feed (blank = all)'
+        required: false
+        default: ''
+
+concurrency:
+  group: check-links
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Belt only: the script stops starting new work at --minutes (40), so this hard
+    # kill should never fire.
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Check landing links
+        # Inputs reach the command through env vars, never through expression
+        # interpolation, so a crafted feed value cannot inject shell.
+        run: |
+          args=(--minutes 40)
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ -n "$FEED" ]; then args+=(--feed "$FEED"); fi
+          python check_links.py "${args[@]}"
+        env:
+          PYTHONUNBUFFERED: '1'
+          DRY_RUN: ${{ inputs.dry_run }}
+          FEED: ${{ inputs.feed }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
