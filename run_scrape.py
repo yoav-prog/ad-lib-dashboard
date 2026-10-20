@@ -306,6 +306,16 @@ def get_bucket():
 # ═════════════════════════════════════════════════════════════════════════════
 # Ad -> database row
 # ═════════════════════════════════════════════════════════════════════════════
+def _text(value) -> str:
+    """A snapshot text field as a plain string. Apify sends some of them (a card's
+    body, an extra_texts entry) as {'text': ...} objects rather than strings, the same
+    shapes fb.ad_copy_text unwraps; joining one raw raised "expected str instance, dict
+    found" and dropped the ad."""
+    if isinstance(value, dict):
+        value = value.get('text', '')
+    return value if isinstance(value, str) else ''
+
+
 def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
                   feed, domain, language, country, vertical, brand, creative_language,
                   content_flag='', review_status='approved',
@@ -322,6 +332,10 @@ def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
     an unscored row (no deny-list hit and a failed/absent model call) writes NULL on all
     three, so it stays visible and the backfill picks it up. rsoc_tier has a check
     constraint (green/yellow/red), so a blank would abort the batch - hence `or None`.
+
+    brand follows the same rule: gpt_detect_brand answers '' for an ad with no copy and
+    no image, and ads_brand_check accepts only NULL or a real bucket, so a blank there
+    failed every run that met such an ad.
     """
     snapshot = ad.get('snapshot', {})
     body = snapshot.get('body', {})
@@ -339,8 +353,9 @@ def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
                            'link_description', 'link_url', 'title')}
     for card in snapshot.get('cards', []):
         for k in dco:
-            if card.get(k):
-                dco[k].append(card[k])
+            value = _text(card.get(k))
+            if value:
+                dco[k].append(value)
     caption = ' | '.join(dco['caption']) or caption
     cta_text = ' | '.join(dco['cta_text']) or cta_text
     body_text = ' | '.join(dco['body']) or body_text
@@ -371,7 +386,7 @@ def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
         'link_description': link_description,
         'link_url': link_url,
         'display_format': snapshot.get('display_format', ''),
-        'extra_texts': ', '.join(snapshot.get('extra_texts', [])),
+        'extra_texts': ', '.join(t for t in map(_text, snapshot.get('extra_texts') or []) if t),
         'original_image_urls': media['main_images'],
         'video_hd_url': media['video_hd'] or None,
         'video_preview_url': media['video_preview'] or None,
@@ -387,7 +402,7 @@ def build_ad_dict(ad, media, article_title, article_content, resolved_url, rank,
         'language': language,
         'country': country,
         'vertical': vertical,
-        'brand': brand,
+        'brand': brand or None,
         'creative_language': creative_language,
         'review_status': review_status,
         'content_flag': content_flag or None,

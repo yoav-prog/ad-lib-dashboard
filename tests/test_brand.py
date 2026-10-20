@@ -1,9 +1,13 @@
 """Brand classification parsing (brand.py) - the single source of truth shared by
 the live scraper (gpt_detect_brand) and the one-off backfill (backfill_brand.py).
 A wrong parse would silently mislabel every ad, so pin the normalization here.
+
+Also guards the db wiring: an unclassified ad must reach the row as NULL rather than
+'' (or ads_brand_check rejects the row and takes the whole run down with it).
 """
 
 import brand
+import run_scrape
 
 
 # ── normalize_brand maps model answers to the three buckets ───────────────────
@@ -84,3 +88,25 @@ def test_prompt_excludes_the_bare_word_brand_and_defaults_to_none():
     prompt = _system_prompt()
     assert 'in any language' in prompt  # the literal word "brand" is not a brand
     assert 'unsure' in prompt           # no specific brand -> none, don't guess
+
+
+# ── the written value must satisfy the column's check constraint ──────────────
+def _row(value):
+    """The db row build_ad_dict makes for a bare ad - only brand matters here."""
+    return run_scrape.build_ad_dict(
+        {'ad_archive_id': 'a-1', 'snapshot': {}}, dict(run_scrape._EMPTY_MEDIA),
+        '', '', '', 1, 'Tarzo', 'tractor.com', '', '', '', value, '',
+    )
+
+
+def test_an_unclassified_ad_is_written_as_null_never_an_empty_string():
+    # gpt_detect_brand answers '' when the ad has no copy and no image to look at.
+    # ads_brand_check takes NULL or a real bucket only, so '' failed every hourly run
+    # that met such an ad (a bare Tractor Supply ad, October 2026).
+    assert _row('')['brand'] is None
+    assert _row(None)['brand'] is None
+
+
+def test_every_valid_bucket_is_written_through_unchanged():
+    for value in brand.BRAND_VALUES:
+        assert _row(value)['brand'] == value
