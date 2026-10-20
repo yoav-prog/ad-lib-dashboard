@@ -777,12 +777,15 @@ export async function getFeeds() {
 // from last_heartbeat_at on the database clock (falling back to started_at before
 // the first heartbeat), never from `status` alone - a crashed run keeps status
 // 'running', so trusting it would make the banner lie for up to 30 minutes.
+// Also carries the seconds left in the run's time budget (null before the runner
+// records it) and the rows queued to run next ("Run selected" during this run).
 export async function getActiveRun() {
   const sql = getSql();
   const rows = await sql`
     select id, status, trigger_source, started_at, current_domain,
            domains_total, domains_done, ads_found_so_far,
            extract(epoch from (now() - started_at)) as elapsed_seconds,
+           extract(epoch from (budget_ends_at - now())) as budget_left_seconds,
            coalesce(last_heartbeat_at, started_at) < now() - interval '90 seconds' as stale
     from runs
     where status = 'running'
@@ -791,6 +794,11 @@ export async function getActiveRun() {
   `;
   const r = rows[0];
   if (!r) return null;
+  const queued = await sql`
+    select query from domains
+    where run_requested_at is not null
+    order by run_requested_at asc
+  `;
   return {
     id: r.id,
     status: r.status,
@@ -801,6 +809,8 @@ export async function getActiveRun() {
     domains_done: r.domains_done,
     ads_found_so_far: r.ads_found_so_far,
     elapsed_seconds: Math.max(0, Math.floor(Number(r.elapsed_seconds) || 0)),
+    budget_left_seconds: r.budget_left_seconds == null ? null : Math.max(0, Math.floor(Number(r.budget_left_seconds))),
+    queued: queued.map((q) => q.query),
     stale: r.stale === true,
   };
 }

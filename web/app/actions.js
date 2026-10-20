@@ -3,7 +3,7 @@
 import { getSql } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
-import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getTakenOurUrls, getMetaCreativesByHosts } from '@/lib/queries';
+import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getTakenOurUrls, getMetaCreativesByHosts, getActiveRun } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
 import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, hostOf, langCode, dispatchFailReason } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
@@ -516,12 +516,34 @@ export async function triggerScrape() {
 // we fall back to marking just those rows due; the scheduled runner then picks
 // them up on its next tick, alongside anything else already due. Returns what it
 // did so the UI can report honestly. Capped at 50 rows per targeted run.
+//
+// While a run is live, a second run could only wait (one run at a time), so the
+// rows are queued instead: run_requested_at is set and the live run takes them
+// before its next competitor, then carries on with its own list. A plain sweep is
+// also dispatched as a backstop: it waits behind the live run and picks up any
+// request that run ends before reaching. Its failure is only logged; the request
+// is already stored and the hourly tick takes it regardless.
 export async function runDomains(ids) {
   await requireCapability('run_scrapes');
   const clean = cleanDomainIds(ids, 50);
   if (!clean.length) return { ok: false, reason: 'no-ids' };
 
   const sql = getSql();
+  const live = await getActiveRun();
+  if (live && !live.stale) {
+    // Cast to uuid[]: id is a uuid column and there is no uuid = text operator.
+    const queued = await sql`update domains set run_requested_at = now() where id = any(${clean}::uuid[]) returning id`;
+    console.info('[run queue] queued rows behind live run', { count: queued.length, runId: live.id, current: live.current_domain });
+    try {
+      const d = await dispatchScrapeWorkflow();
+      console.info('[run queue] backstop dispatch', { configured: d.configured, ok: d.ok ?? null, status: d.status ?? null });
+    } catch (e) {
+      console.error('[run queue] backstop dispatch error', String(e));
+    }
+    revalidatePath('/');
+    return { ok: true, queued: true, dispatched: false, count: queued.length, current: live.current_domain };
+  }
+
   const markDue = async () => {
     // Cast to uuid[]: id is a uuid column and there is no uuid = text operator.
     await sql`update domains set next_run_at = now(), enabled = true where id = any(${clean}::uuid[])`;

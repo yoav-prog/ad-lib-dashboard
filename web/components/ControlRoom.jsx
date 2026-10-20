@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { s } from '@/lib/style';
-import { A, MONO, relTime, pad, dispatchFailMessage } from '@/lib/ui';
+import { A, MONO, relTime, pad, dispatchFailMessage, queuedRunMessage, runEta } from '@/lib/ui';
 import { addDomain, updateDomain, deleteDomain, bulkUpdateDomains, deleteDomains, addFeed } from '@/app/actions';
 import TableScroll from '@/components/TableScroll';
 
@@ -42,6 +42,9 @@ export default function ControlRoom({
   const active = runStatus?.active || null;
   const lastRun = runStatus?.lastRun || null;
   const isBusy = pending || !!active;
+  // A live run takes "Run selected" rows next (between competitors), so the button
+  // stays usable during a run instead of locking until it ends.
+  const canQueue = !!active && !active.stale;
 
   // What a click will actually scrape, so it is never a mystery: every enabled
   // domain, each up to its own Max Ads.
@@ -171,17 +174,19 @@ export default function ControlRoom({
     }
   };
 
-  // Run exactly the selected rows (one or many), isolated from the rest. Disabled
-  // while a run is active - a second run can't claim the lock anyway. Selection is
-  // kept so the outcome message stays visible right where the click happened.
+  // Run exactly the selected rows (one or many), isolated from the rest. During a
+  // live run the rows are queued and the run takes them next instead. Disabled only
+  // while a run is spinning up or stalled. Selection is kept so the outcome message
+  // stays visible right where the click happened.
   const runSelected = async () => {
-    if (isBusy || !onRunDomains || !sel.size) return;
+    if ((isBusy && !canQueue) || !onRunDomains || !sel.size) return;
     const n = sel.size;
     const rows = n === 1 ? 'row' : 'rows';
     setSelMsg('');
     try {
       const r = await onRunDomains([...sel]);
-      if (r?.dispatched) setSelMsg(`Dispatched a run for ${n} selected ${rows}. Live status appears at the top in a moment.`);
+      if (r?.queued) setSelMsg(queuedRunMessage(r.count ?? n, r.current));
+      else if (r?.dispatched) setSelMsg(`Dispatched a run for ${n} selected ${rows}. Live status appears at the top in a moment.`);
       else if (r?.reason === 'no-dispatch-token') setSelMsg(`${n} ${rows} marked due. Set GH_DISPATCH_TOKEN + GH_REPO to fire instantly; otherwise the scheduled runner picks them up on its next tick.`);
       else if (r?.reason === 'no-ids') setSelMsg('No valid rows to run.');
       else setSelMsg(dispatchFailMessage(r?.reason, r?.status, rows));
@@ -370,10 +375,12 @@ export default function ControlRoom({
 
             {canRun && (
               <>
-                <button onClick={runSelected} disabled={isBusy}
-                  title="Scrape only the selected rows, each with its own settings"
-                  style={s(`font-family:${MONO};font-size:10.5px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy ? '#5A5E64' : A};border:none;padding:6px 12px;cursor:${isBusy ? 'default' : 'pointer'};white-space:nowrap`)}>
-                  {isBusy ? 'RUN IN PROGRESS...' : `► RUN ${sel.size}`}
+                <button onClick={runSelected} disabled={isBusy && !canQueue}
+                  title={canQueue
+                    ? 'A run is going. These rows run next, right after the current competitor, then that run carries on'
+                    : 'Scrape only the selected rows, each with its own settings'}
+                  style={s(`font-family:${MONO};font-size:10.5px;letter-spacing:.5px;color:#0B0C0E;background:${isBusy && !canQueue ? '#5A5E64' : A};border:none;padding:6px 12px;cursor:${isBusy && !canQueue ? 'default' : 'pointer'};white-space:nowrap`)}>
+                  {canQueue ? `► RUN ${sel.size} NEXT` : active?.stale ? 'RUN STALLED' : isBusy ? 'STARTING...' : `► RUN ${sel.size}`}
                 </button>
                 <span style={s('font-size:10px;color:#5A5E64;white-space:nowrap')}>up to {selScopeMax} ads</span>
                 <span style={s(bulkSep)}>|</span>
@@ -587,11 +594,12 @@ function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, o
   const pct = total > 0 ? Math.round((done / total) * 100) : (running ? 5 : 0);
   const elapsed = active ? fmtDuration(active.elapsed_seconds) : '';
 
-  let eta = '';
-  if (running && total > 0 && done > 0 && done < total && active.elapsed_seconds > 5) {
-    const remaining = Math.round((active.elapsed_seconds / done) * (total - done));
-    if (remaining > 30) eta = `~${fmtDuration(remaining)} left`;
-  }
+  const est = running
+    ? runEta({ elapsedSeconds: active.elapsed_seconds, done, total, budgetLeftSeconds: active.budget_left_seconds })
+    : null;
+  const eta = est ? `~${fmtDuration(est.seconds)} left` : '';
+  const queued = running ? (active.queued || []) : [];
+  const queuedText = queued.slice(0, 4).join(', ') + (queued.length > 4 ? `, +${queued.length - 4} more` : '');
 
   return (
     <div style={s('padding:18px 24px;border-bottom:1px solid rgba(255,255,255,.06)')}>
@@ -616,12 +624,19 @@ function LiveRunPanel({ active, pending, lastRun, logs, canEdit, onMarkFailed, o
           <LiveStat label="Competitor" value={`${done} / ${total}`} />
           <LiveStat label="Ads Found" value={String(found)} color={A} />
           <LiveStat label="Elapsed" value={elapsed} />
-          {eta && <LiveStat label="Remaining" value={eta} />}
+          {eta && <LiveStat label={est.capped ? 'This run' : 'Remaining'} value={eta} />}
           <div style={s('flex:1;min-width:120px')}>
             <div style={s('height:3px;background:rgba(255,255,255,.08)')}>
               <div style={s(`height:100%;width:${Math.min(100, Math.max(3, pct))}%;background:${stalled ? '#E8A33D' : A};transition:width .4s`)} />
             </div>
           </div>
+        </div>
+      )}
+
+      {(queued.length > 0 || est?.capped) && (
+        <div style={s('display:flex;flex-direction:column;gap:4px;margin:-6px 0 14px;font-size:11px;color:#8A8E94;line-height:1.5')}>
+          {queued.length > 0 && <span>Up next: <span style={s('color:#E7E8EA')}>{queuedText}</span>, then this run carries on.</span>}
+          {est?.capped && <span>This run stops at its time limit. The competitors it doesn&apos;t reach continue automatically in the next run.</span>}
         </div>
       )}
 

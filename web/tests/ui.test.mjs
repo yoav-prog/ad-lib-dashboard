@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isVideo, thumbOf, mediaUrlOf, isDeadLink, matchesLinkHealth, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, cleanLink, cleanLinkKey, uniqueCleanLinks, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS, dispatchFailReason, dispatchFailMessage } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, isDeadLink, matchesLinkHealth, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, cleanLink, cleanLinkKey, uniqueCleanLinks, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS, dispatchFailReason, dispatchFailMessage, queuedRunMessage, runEta } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -651,4 +651,36 @@ test('matchesLinkHealth: HIDE DEAD keeps the unchecked, ONLY DEAD keeps only 404
   // An unknown mode never narrows the feed.
   assert.deepEqual(pick('bogus'), [dead, live, walled, unchecked]);
   assert.deepEqual(pick(undefined), [dead, live, walled, unchecked]);
+});
+
+// ── "Run selected" during a live run, and an honest time left ──────────────────
+test('queuedRunMessage names the competitor the rows wait behind', () => {
+  const msg = queuedRunMessage(3, 'diycentral.com');
+  assert.match(msg, /^Queued: 3 rows run next, right after diycentral\.com finishes\./);
+  assert.match(msg, /carries on by itself/);
+});
+
+test('queuedRunMessage reads right for one row and an unknown current domain', () => {
+  assert.match(queuedRunMessage(1, null), /^Queued: 1 row runs next, right after the current competitor finishes\./);
+});
+
+test('runEta is the per-competitor average times what is left', () => {
+  assert.deepEqual(runEta({ elapsedSeconds: 600, done: 2, total: 5, budgetLeftSeconds: null }), { seconds: 900, capped: false });
+});
+
+test('runEta caps at the time budget (the "~2:58:30 left" on an 87-competitor run)', () => {
+  // 2 of 87 done in 4:12: uncapped that is ~3 hours; the run stops at 45 minutes.
+  const est = runEta({ elapsedSeconds: 252, done: 2, total: 87, budgetLeftSeconds: 2448 });
+  assert.deepEqual(est, { seconds: 2448, capped: true });
+});
+
+test('runEta does not cap when the run will finish inside its budget', () => {
+  assert.deepEqual(runEta({ elapsedSeconds: 600, done: 2, total: 3, budgetLeftSeconds: 2000 }), { seconds: 300, capped: false });
+});
+
+test('runEta shows nothing until there is something honest to say', () => {
+  assert.equal(runEta({ elapsedSeconds: 100, done: 0, total: 5, budgetLeftSeconds: 2000 }), null);
+  assert.equal(runEta({ elapsedSeconds: 100, done: 5, total: 5, budgetLeftSeconds: 2000 }), null);
+  assert.equal(runEta({ elapsedSeconds: 3, done: 1, total: 5, budgetLeftSeconds: 2000 }), null);
+  assert.equal(runEta({ elapsedSeconds: 600, done: 2, total: 5, budgetLeftSeconds: 10 }), null);
 });

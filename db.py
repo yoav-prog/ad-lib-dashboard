@@ -158,6 +158,16 @@ def finish_run(conn, run_id, ads_found: int, ads_new: int, errors: int = 0):
         )
 
 
+def set_run_budget(conn, run_id, minutes: float):
+    """Record when the run's soft time budget runs out, on the DB clock, so the live
+    panel can cap its "time left" there instead of guessing from the full domain list."""
+    with conn.cursor() as cur:
+        cur.execute(
+            'update runs set budget_ends_at = now() + make_interval(secs => %s) where id = %s',
+            (minutes * 60, run_id),
+        )
+
+
 def fail_run(conn, run_id, error_detail):
     """Mark a run failed. Its partial data never becomes the baseline."""
     with conn.cursor() as cur:
@@ -277,12 +287,14 @@ def prune_run_logs(conn, keep_days: int = 30) -> None:
 # DOMAINS - management-zone config + scheduling
 # ═════════════════════════════════════════════════════════════════════════════
 def any_domain_due(conn) -> bool:
-    """Cheap check for the GitHub Actions self-check step: is anything due?"""
+    """Cheap check for the GitHub Actions self-check step: is anything due? A row
+    someone asked to run next (run_requested_at) counts, paused or not, so a request
+    a run's time budget cut off is picked up by the next tick."""
     with conn.cursor() as cur:
         cur.execute(
             """
             select 1 from domains
-             where enabled and next_run_at <= now()
+             where (enabled and next_run_at <= now()) or run_requested_at is not null
              limit 1
             """
         )
@@ -317,6 +329,30 @@ def get_domains_by_ids(conn, ids: list[str]) -> list[dict]:
         # UUIDs upstream, so the cast is safe.
         cur.execute('select * from domains where id = any(%s::uuid[])', (list(ids),))
         return cur.fetchall()
+
+
+def take_next_requested_domain(conn) -> dict | None:
+    """Claim the oldest "run next" request (set by "Run selected" during a live run)
+    and return its domain row, or None when nothing is waiting.
+
+    Clearing the flag in the same statement that reads it means a request is taken
+    exactly once, and `skip locked` keeps a concurrent claimer from blocking on it.
+    Like a targeted run, a request ignores enabled / next_run_at: it is an explicit ask.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update domains
+               set run_requested_at = null
+             where id = (select id from domains
+                          where run_requested_at is not null
+                          order by run_requested_at asc
+                          limit 1
+                          for update skip locked)
+            returning *
+            """
+        )
+        return cur.fetchone()
 
 
 def bump_domain_schedule(conn, domain_id, interval_days: int):
