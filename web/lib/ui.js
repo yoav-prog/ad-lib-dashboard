@@ -233,6 +233,30 @@ export const dispatchFailMessage = (reason, status, subject = 'rows') => {
   return `Could not dispatch (status ${status ?? '?'}). ${tail}`;
 };
 
+// What "Run selected" says when a run is already live: the running job takes the
+// rows next, right after the competitor it is on, then carries on by itself.
+export const queuedRunMessage = (count, currentDomain) => {
+  const rows = count === 1 ? 'row runs' : 'rows run';
+  const after = currentDomain ? `${currentDomain} finishes` : 'the current competitor finishes';
+  return `Queued: ${count} ${rows} next, right after ${after}. The current run then carries on by itself.`;
+};
+
+// The live panel's time left: the average per competitor so far times the ones
+// still to go, capped at the run's time budget. A run stops starting competitors
+// when its budget runs out and hands the rest to the next run, so an uncapped
+// estimate ("~2:58:30 left" on an 87-competitor run) promised hours the run never
+// takes. Returns { seconds, capped }, or null when there is nothing honest to show.
+export function runEta({ elapsedSeconds, done, total, budgetLeftSeconds }) {
+  if (!(total > 0 && done > 0 && done < total && elapsedSeconds > 5)) return null;
+  let seconds = Math.round((elapsedSeconds / done) * (total - done));
+  let capped = false;
+  if (Number.isFinite(budgetLeftSeconds) && budgetLeftSeconds >= 0 && budgetLeftSeconds < seconds) {
+    seconds = Math.round(budgetLeftSeconds);
+    capped = true;
+  }
+  return seconds > 30 ? { seconds, capped } : null;
+}
+
 // The scraper stores a language NAME ("Spanish", "Portuguese"). For the compact
 // badge we want the ISO 639-1 code (ES, PT), so it reads as a real language code
 // and lines up with the two-letter country above it. Multi-word names ("Brazilian

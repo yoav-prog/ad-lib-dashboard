@@ -26,7 +26,8 @@ def _progress():
 
 @pytest.fixture
 def bumped(monkeypatch):
-    """Stub the DB layer: no real connections, schedule bumps recorded."""
+    """Stub the DB layer: no real connections, no "run next" requests waiting,
+    schedule bumps recorded."""
     calls = []
 
     @contextmanager
@@ -36,6 +37,7 @@ def bumped(monkeypatch):
     monkeypatch.setattr(run_scrape.db, 'connect', fake_connect)
     monkeypatch.setattr(run_scrape.db, 'bump_domain_schedule',
                         lambda conn, domain_id, days: calls.append(domain_id))
+    monkeypatch.setattr(run_scrape.db, 'take_next_requested_domain', lambda conn: None)
     return calls
 
 

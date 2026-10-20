@@ -577,19 +577,51 @@ def _time_budget_minutes() -> float:
     return minutes if minutes > 0 else DEFAULT_TIME_BUDGET_MINUTES
 
 
+def _take_requested_domain():
+    """The next "run next" request from the dashboard, or None. Fail-open: a read
+    that errors is logged and treated as no request, so a hiccup here never stops
+    the run; the request stays flagged for the next domain or the next run."""
+    try:
+        with db.connect() as conn:
+            return db.take_next_requested_domain(conn)
+    except Exception as e:
+        print(f'[run queue] could not read run requests ({e}); continuing')
+        return None
+
+
 async def _scrape_domain_rows(run_id, bucket, verticals, existing_ids, rows,
-                              retries, progress, deadline, clock=time.monotonic):
+                              retries, progress, deadline, clock=time.monotonic,
+                              take_requested=_take_requested_domain):
     """Scrape the given domain rows in order until done or `deadline` (a
     `clock()` timestamp; time.monotonic by default) passes. Returns
     (total_found, total_new, deferred_rows): deferred_rows are the rows the
     deadline cut off, which the caller marks due so the next scheduled tick
     continues exactly where this run stopped. The check runs before each
     domain, so a domain is never abandoned midway - the budget bounds when
-    work starts, not how it ends. `clock` is injectable for tests."""
+    work starts, not how it ends.
+
+    Before each domain the run also takes any row someone asked to run next
+    ("Run selected" during a live run) and scrapes it first, then carries on with
+    its own list. A requested row that is also further down the list is dropped
+    there, so it is never scraped twice. Requests the deadline cuts off stay
+    flagged for the next run. `clock` and `take_requested` are injectable for tests."""
     total_found = total_new = 0
-    for i, dom in enumerate(rows):
+    queue = list(rows)
+    while True:
         if clock() >= deadline:
-            return total_found, total_new, rows[i:]
+            return total_found, total_new, queue
+        dom = take_requested()
+        if dom is not None:
+            queued_copy = next((d for d in queue if d['id'] == dom['id']), None)
+            if queued_copy is not None:
+                queue.remove(queued_copy)
+            else:
+                progress['domains_total'] += 1
+            print(f'[run queue] running requested row next: "{dom["query"]}"')
+        elif queue:
+            dom = queue.pop(0)
+        else:
+            break
         progress['current_domain'] = dom['query']
         params = {'query': dom['query'], 'country': dom['country'],
                   'activeStatus': dom['active_status'],
@@ -656,6 +688,12 @@ async def run(args):
     # the workflow's hard timeout killing it mid-scrape.
     budget_minutes = _time_budget_minutes()
     deadline = time.monotonic() + budget_minutes * 60
+    # Fail-open: the budget end only feeds the live panel's "time left".
+    try:
+        with db.connect() as conn:
+            db.set_run_budget(conn, run_id, budget_minutes)
+    except Exception as e:
+        print(f'[budget] could not record the budget end ({e}); continuing', file=sys.__stderr__)
 
     # ── Live visibility: from here on, everything printed is mirrored into
     #    run_logs, the heartbeat stays fresh, and progress streams to the
