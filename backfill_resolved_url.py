@@ -1,34 +1,42 @@
 """
-backfill_resolved_url.py - populate ads.resolved_url for rows scraped before the
-column existed.
+backfill_resolved_url.py - populate ads.resolved_url where the scrape could not.
 
 Why this exists
-    The Predicto feed's searched phrase lives in an ad's post-redirect landing
-    URL. New scrapes capture it (ScrapingBee's Spb-Resolved-Url header, stored in
-    ads.resolved_url); this one-off job fills it in for rows already in the table.
+    An ad's post-redirect landing URL carries what its tracker hides: the Predicto
+    feed's searched phrase, and the article a TONIC RSOC campaign is keyed by in
+    the metrics sheet (web/lib/metrics.js matches on it). New scrapes capture it
+    (ScrapingBee's Spb-Resolved-Url header, stored in ads.resolved_url); this job
+    fills it in for rows that have none - and for rows whose stored landing never
+    left the tracker's own host, which the scraper used to write when ScrapingBee
+    failed (bug #311: such a row is as unresolved as an empty one).
 
-    Each link falls into one of three kinds:
+    Each link falls into one of these kinds:
       direct   - the phrase is already in ?search= (e.g. .../asrsearch?search=x).
                  No network: resolved_url is set to the link itself.
-      redirect - a tracker (wildflares.com/teleport?..., aglisburn.com/cf/r/...?...)
-                 that 302s to the search page. Followed through ScrapingBee - many
-                 of these hosts tarpit/block datacenter IPs and time out on a plain
-                 request, but resolve through ScrapingBee's proxy, the same path
-                 the scraper uses. 1 credit each, render_js off.
+      redirect - a tracker (wildflares.com/teleport?..., checkbeforesearch.com/
+                 cqe7l8k.php?..., trk.s2sengine.com/cf/r/...) that 302s onward.
+                 Walked by hand first, free (landing.resolve_landing), stopping as
+                 soon as a hop points at the ad's own site, so that rate-limited
+                 site is never asked. Hosts that tarpit or block a plain request
+                 fall back to ScrapingBee's proxy, the same path the scraper uses:
+                 1 credit each, render_js off.
+      own      - already on the ad's own tracked site: the link is its own landing,
+                 nothing to resolve. Skipped (reported).
       dead     - a bare .../asrsearch with no query string at all. The search term
                  was injected client-side and never captured, so there is nothing
                  to recover; these are skipped (left null, reported).
 
     Writes are per row and committed immediately (autocommit), so the job is
-    interruptible: stop it any time and re-run to finish - only rows still missing
-    resolved_url are retried, and a resolved row is never re-fetched.
+    interruptible: stop it any time and re-run to finish - only rows still
+    unresolved are retried, and a resolved row is never re-fetched.
 
 Usage
-    python backfill_resolved_url.py                 # Predicto ads, live
-    python backfill_resolved_url.py --dry-run       # resolve + print, write nothing
-    python backfill_resolved_url.py --limit 50      # first 50 rows only
-    python backfill_resolved_url.py --all-feeds     # every feed, not just Predicto
-    python backfill_resolved_url.py --workers 12    # concurrent redirect fetches
+    python backfill_resolved_url.py                      # Predicto ads, live
+    python backfill_resolved_url.py --feed "TONIC RSOC"  # one feed by name
+    python backfill_resolved_url.py --all-feeds          # every feed
+    python backfill_resolved_url.py --dry-run            # resolve + print, write nothing
+    python backfill_resolved_url.py --limit 50           # first 50 unresolved rows only
+    python backfill_resolved_url.py --workers 12         # concurrent redirect fetches
 
 Needs DATABASE_URL and SCRAPINGBEE_API_KEY (from .env / .env.local or the
 environment).
@@ -56,6 +64,8 @@ except ImportError:
 from scrapingbee import ScrapingBeeClient
 
 import db
+from landing import on_site, resolve_landing, site_of
+from link_health import host_of
 
 # A bare search endpoint (no query) can never yield a phrase - it is the search
 # page itself, waiting on a term that was never captured.
@@ -76,9 +86,10 @@ def search_param(url: str) -> str:
         return ''
 
 
-def link_kind(url: str) -> str:
+def link_kind(url: str, site: str = '') -> str:
     """Classify a link: 'direct' (phrase already in ?search=), 'dead' (bare
-    /asrsearch with no query to recover), 'redirect' (a tracker to follow), or
+    /asrsearch with no query to recover), 'own' (already on the ad's own site
+    `site`, so it is its own landing), 'redirect' (a tracker to follow), or
     'skip' (not an http url)."""
     if not url.startswith('http'):
         return 'skip'
@@ -87,7 +98,26 @@ def link_kind(url: str) -> str:
     parts = urlparse(url)
     if not parts.query and _BARE_SEARCH.search(parts.path or ''):
         return 'dead'
+    if on_site(url, site):
+        return 'own'
     return 'redirect'
+
+
+def _host_path(url: str) -> str:
+    try:
+        path = urlparse(url).path
+    except ValueError:
+        path = ''
+    return host_of(url) + path.rstrip('/')
+
+
+def stuck_on_tracker(link: str, landing: str) -> bool:
+    """True when a landing is the link itself (same host and path; the query string
+    may differ, since ScrapingBee re-encodes {{ad.id}}-style macros): what the
+    scraper stored when ScrapingBee failed on a tracker, and what a tracker that
+    will not redirect yields. It names no article, so it counts as unresolved,
+    never as an answer. A redirect to another path on the same host is progress."""
+    return bool(landing) and _host_path(landing) == _host_path(link)
 
 
 def resolve_via_scrapingbee(client: ScrapingBeeClient, url: str) -> str:
@@ -110,39 +140,70 @@ def resolve_via_scrapingbee(client: ScrapingBeeClient, url: str) -> str:
         return ''
 
 
+def resolve(client: ScrapingBeeClient, url: str, site: str) -> tuple[str, bool]:
+    """Where a tracker link lands, and whether a ScrapingBee credit was spent
+    finding out. The free redirect walk goes first, stopping as soon as a hop points
+    at the ad's own site; ScrapingBee's proxy is asked only when that walk gets no
+    answer (hosts that tarpit or block a plain request). The landing is '' when
+    neither can tell, and never the tracker itself (stuck_on_tracker)."""
+    landing = resolve_landing(url, stop_site=site)
+    if landing and not stuck_on_tracker(url, landing):
+        return landing, False
+    landing = resolve_via_scrapingbee(client, url)
+    return ('' if stuck_on_tracker(url, landing) else landing), True
+
+
 def main():
     ap = argparse.ArgumentParser(description='Backfill ads.resolved_url by following link_url redirects')
     ap.add_argument('--dry-run', action='store_true', help='resolve and print, write nothing')
-    ap.add_argument('--limit', type=int, help='process at most N rows')
-    ap.add_argument('--all-feeds', action='store_true', help='every feed, not just Predicto')
+    ap.add_argument('--limit', type=int, help='process at most N unresolved rows')
+    scope_arg = ap.add_mutually_exclusive_group()
+    scope_arg.add_argument('--feed', default='Predicto', help='the one feed to backfill, by name (default: Predicto)')
+    scope_arg.add_argument('--all-feeds', action='store_true', help='every feed')
     ap.add_argument('--workers', type=int, default=8, help='concurrent redirect fetches')
     args = ap.parse_args()
 
     if not os.environ.get('SCRAPINGBEE_API_KEY'):
         raise SystemExit('SCRAPINGBEE_API_KEY is not set (needed to follow redirect trackers). See SETUP.md.')
 
-    where_feed = '' if args.all_feeds else "and lower(feed) = 'predicto'"
-    limit_sql = f'limit {int(args.limit)}' if args.limit else ''
+    where_feed = '' if args.all_feeds else 'and lower(trim(feed)) = lower(trim(%s))'
+    params = () if args.all_feeds else (args.feed,)
 
     with db.connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"select ad_archive_id, link_url from ads "
-                f"where (resolved_url is null or resolved_url = '') "
-                f"  and link_url is not null and link_url <> '' {where_feed} "
-                f"order by last_seen_at desc nulls last {limit_sql}")
+                f"select ad_archive_id, domain, link_url, resolved_url from ads "
+                f"where link_url is not null and link_url <> '' {where_feed} "
+                f"order by last_seen_at desc nulls last", params)
             rows = cur.fetchall()
 
-        buckets = {'direct': [], 'redirect': [], 'dead': [], 'skip': []}
+        # A row needs work when it has no landing, or when a tracker link's stored
+        # landing is the tracker itself. A direct link stored as its own landing is
+        # right by design, so only a 'redirect' can be stuck.
+        todo, echoes = [], 0
         for r in rows:
-            buckets[link_kind(first_url(r['link_url']))].append((r['ad_archive_id'], first_url(r['link_url'])))
-        direct, redirects, dead, skipped = (buckets['direct'], buckets['redirect'],
-                                            buckets['dead'], buckets['skip'])
+            link, site = first_url(r['link_url']), site_of(r['domain'])
+            kind = link_kind(link, site)
+            stored = r['resolved_url'] or ''
+            if stored:
+                if not (kind == 'redirect' and stuck_on_tracker(link, stored)):
+                    continue
+                echoes += 1
+            todo.append((kind, r['ad_archive_id'], link, site))
+        if args.limit:
+            todo = todo[:args.limit]
 
-        scope = 'all feeds' if args.all_feeds else 'Predicto'
-        print(f'{len(rows)} {scope} row(s) with no resolved_url: '
-              f'{len(direct)} direct (free), {len(redirects)} redirects '
-              f'(~{len(redirects)} ScrapingBee credits), '
+        buckets = {'direct': [], 'redirect': [], 'own': [], 'dead': [], 'skip': []}
+        for kind, ad_id, link, site in todo:
+            buckets[kind].append((ad_id, link, site))
+        direct, redirects, own, dead, skipped = (buckets['direct'], buckets['redirect'], buckets['own'],
+                                                 buckets['dead'], buckets['skip'])
+
+        scope = 'all feeds' if args.all_feeds else f'feed {args.feed!r}'
+        print(f'{len(todo)} unresolved row(s) in {scope}, {echoes} of them a tracker stored as its own landing: '
+              f'{len(direct)} direct (free), {len(redirects)} redirects (free walk first, '
+              f'at most {len(redirects)} ScrapingBee credits), '
+              f'{len(own)} already on their own site (skipped), '
               f'{len(dead)} bare /asrsearch with no query (skipped), '
               f'{len(skipped)} non-http (skipped)')
 
@@ -154,23 +215,24 @@ def main():
 
         # Direct links carry the phrase already - store the link as its own resolved
         # URL (free) so re-runs skip them.
-        for ad_id, url in direct:
+        for ad_id, url, _ in direct:
             write(ad_id, url)
         print(f'  direct: set {len(direct)} row(s)')
 
         # Trackers, resolved concurrently and written the moment each returns.
         client = ScrapingBeeClient(api_key=os.environ['SCRAPINGBEE_API_KEY'])
-        resolved = failed = 0
+        resolved = failed = credits = 0
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-            futures = {pool.submit(resolve_via_scrapingbee, client, url): (ad_id, url)
-                       for ad_id, url in redirects}
+            futures = {pool.submit(resolve, client, url, site): (ad_id, url)
+                       for ad_id, url, site in redirects}
             for fut in as_completed(futures):
                 ad_id, src = futures[fut]
-                final = fut.result()
+                final, paid = fut.result()
+                credits += paid
                 if final:
                     write(ad_id, final)
                     resolved += 1
-                    print(f'  [{resolved + failed}/{len(redirects)}] ok    {ad_id}  search={search_param(final)!r}')
+                    print(f'  [{resolved + failed}/{len(redirects)}] ok    {ad_id}  -> {final[:90]}')
                 else:
                     failed += 1
                     print(f'  [{resolved + failed}/{len(redirects)}] FAIL  {ad_id}  {src[:60]}')
@@ -178,7 +240,8 @@ def main():
         verb = 'would set' if args.dry_run else 'set'
         print(f'\n{verb} resolved_url on {len(direct) + resolved} row(s) '
               f'({len(direct)} direct + {resolved} resolved redirects); '
-              f'{failed} redirect(s) unresolved, {len(dead)} dead link(s) left blank')
+              f'{failed} redirect(s) unresolved, {len(dead)} dead link(s) left blank; '
+              f'{credits} ScrapingBee credit(s) used')
 
 
 if __name__ == '__main__':

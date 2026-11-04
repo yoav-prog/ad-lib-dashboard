@@ -38,6 +38,20 @@ test('adUrlKeys splits pipe-joined DCO destinations and dedupes', () => {
   assert.deepEqual(adUrlKeys(null), []);
 });
 
+test('adUrlKeys tries the landing page last, after every link destination', () => {
+  assert.deepEqual(
+    adUrlKeys('https://checkbeforesearch.com/cqe7l8k.php?key=ac1a', 'https://knowrift.com/no/articles/verdien-4299fe?dest=MjRy&subid1=da22'),
+    ['checkbeforesearch.com/cqe7l8k.php', 'knowrift.com/no/articles/verdien-4299fe'],
+  );
+  // A direct link lands on itself: one key, not two.
+  assert.deepEqual(adUrlKeys('https://a.com/x?dest=1', 'https://a.com/x?dest=1&ad_id=%7B%7Bad.id%7D%7D'), ['a.com/x']);
+  // No link, landing only; blank and non-http landings add nothing.
+  assert.deepEqual(adUrlKeys('', 'https://a.com/x'), ['a.com/x']);
+  assert.deepEqual(adUrlKeys('https://a.com/x', ''), ['a.com/x']);
+  assert.deepEqual(adUrlKeys('https://a.com/x', null), ['a.com/x']);
+  assert.deepEqual(adUrlKeys(null, null), []);
+});
+
 // ── buildMetricsIndex ─────────────────────────────────────────────────────────
 
 const HEADER = ['network_normalized', 'offer', 'country', 'adtitle', 'campaign_target_url', 'revenue_prediction_finalized', 'click_count', 'RPC', 'top_10_keywords'];
@@ -158,15 +172,33 @@ test('attachSheetMetrics matches via any pipe-joined DCO destination', () => {
   assert.equal(ads[0].sheet_revenue, 1500.5);
 });
 
+test('attachSheetMetrics matches a tracker-linked ad through where its link landed', () => {
+  const ad = {
+    ad_archive_id: '2b', feed: 'TONIC RSOC',
+    link_url: 'https://qcviwxfqmc.com/17?sc=hYwyvdbJ&subid1={{campaign.id}}&ad_id={{ad.id}}',
+    resolved_url: 'https://glossingrey.com/en/articles/illinois-state-surplus-equipment-usco?dest=a200&dpco=1&network=facebook',
+  };
+  const { ads, matched } = attachSheetMetrics([ad], index);
+  assert.equal(matched, 1);
+  assert.equal(ads[0].sheet_revenue, 1500.5);
+});
+
+test('attachSheetMetrics leaves a tracker stored as its own landing unmatched', () => {
+  const tracker = 'https://trk.s2sengine.com/cf/r/6aabb1dd89177f0012a101c5?ad_id={{ad.id}}';
+  const { ads, matched } = attachSheetMetrics([{ ad_archive_id: '2c', feed: 'TONIC RSOC', link_url: tracker, resolved_url: tracker }], index);
+  assert.equal(matched, 0);
+  assert.equal(ads[0].sheet_revenue, null);
+});
+
 test('attachSheetMetrics never matches ads outside the TONIC RSOC feed', () => {
   const matchingUrl = 'https://glossingrey.com/en/articles/illinois-state-surplus-equipment-usco';
   const { ads, matched } = attachSheetMetrics([
     { ad_archive_id: 't1', feed: 'Tarzo', link_url: matchingUrl },
     { ad_archive_id: 't2', feed: null, link_url: matchingUrl },
+    { ad_archive_id: 't3', feed: 'Tarzo', link_url: 'https://tracker.com/r', resolved_url: matchingUrl },
   ], index);
   assert.equal(matched, 0);
-  assert.equal(ads[0].sheet_revenue, null);
-  assert.equal(ads[1].sheet_revenue, null);
+  for (const a of ads) assert.equal(a.sheet_revenue, null);
 });
 
 test('attachSheetMetrics leaves unmatched and linkless ads with nulls', () => {
@@ -197,26 +229,36 @@ test('attachSheetMetrics survives a null index (Sheets outage) and empty input',
 // present in the campaign set wins. A drift here would join an ad to the wrong campaign (or
 // none) once the feed sorts/filters by metrics in SQL.
 const KEYS = new Set(['a.com/x', 'b.com/y', 'shop.example.com/deal']);
+const ad = (feed, link_url, resolved_url = null) => ({ feed, link_url, resolved_url });
 
 test('resolveCampaignKey returns the matching key for a tonic rsoc ad', () => {
-  assert.equal(resolveCampaignKey('tonic rsoc', 'https://a.com/x?utm=1', KEYS), 'a.com/x');
-  assert.equal(resolveCampaignKey('TONIC RSOC ', 'https://www.b.com/y/', KEYS), 'b.com/y'); // feed case/space + www/slash tolerant
+  assert.equal(resolveCampaignKey(ad('tonic rsoc', 'https://a.com/x?utm=1'), KEYS), 'a.com/x');
+  assert.equal(resolveCampaignKey(ad('TONIC RSOC ', 'https://www.b.com/y/'), KEYS), 'b.com/y'); // feed case/space + www/slash tolerant
 });
 
 test('resolveCampaignKey is null for a non-tonic feed even when the link would match', () => {
-  assert.equal(resolveCampaignKey('predicto', 'https://a.com/x', KEYS), null);
-  assert.equal(resolveCampaignKey('', 'https://a.com/x', KEYS), null);
+  assert.equal(resolveCampaignKey(ad('predicto', 'https://a.com/x'), KEYS), null);
+  assert.equal(resolveCampaignKey(ad('', 'https://a.com/x'), KEYS), null);
+  assert.equal(resolveCampaignKey(ad('predicto', 'https://tracker.com/r', 'https://a.com/x'), KEYS), null);
+  assert.equal(resolveCampaignKey(null, KEYS), null);
 });
 
 test('resolveCampaignKey is null when no normalized link key is in the set', () => {
-  assert.equal(resolveCampaignKey('tonic rsoc', 'https://unknown.com/z', KEYS), null);
-  assert.equal(resolveCampaignKey('tonic rsoc', '', KEYS), null);
-  assert.equal(resolveCampaignKey('tonic rsoc', null, KEYS), null);
+  assert.equal(resolveCampaignKey(ad('tonic rsoc', 'https://unknown.com/z'), KEYS), null);
+  assert.equal(resolveCampaignKey(ad('tonic rsoc', ''), KEYS), null);
+  assert.equal(resolveCampaignKey(ad('tonic rsoc', null), KEYS), null);
+  assert.equal(resolveCampaignKey(ad('tonic rsoc', 'https://tracker.com/r', 'https://tracker.com/r'), KEYS), null);
 });
 
 test('resolveCampaignKey takes the first matching destination of a pipe-joined link', () => {
   // First destination misses, second hits -> the second key wins (first present wins).
-  assert.equal(resolveCampaignKey('tonic rsoc', 'https://miss.com/a | https://b.com/y', KEYS), 'b.com/y');
+  assert.equal(resolveCampaignKey(ad('tonic rsoc', 'https://miss.com/a | https://b.com/y'), KEYS), 'b.com/y');
   // First destination hits -> it wins even though a later one also would.
-  assert.equal(resolveCampaignKey('tonic rsoc', 'https://a.com/x | https://b.com/y', KEYS), 'a.com/x');
+  assert.equal(resolveCampaignKey(ad('tonic rsoc', 'https://a.com/x | https://b.com/y'), KEYS), 'a.com/x');
+});
+
+test('resolveCampaignKey falls back to the landing page of a tracker link', () => {
+  assert.equal(resolveCampaignKey(ad('tonic rsoc', 'https://tracker.com/r?id=1', 'https://a.com/x?dest=9'), KEYS), 'a.com/x');
+  // A link destination that matches wins over a landing page that also would.
+  assert.equal(resolveCampaignKey(ad('tonic rsoc', 'https://b.com/y', 'https://a.com/x'), KEYS), 'b.com/y');
 });

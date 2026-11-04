@@ -1,5 +1,6 @@
 import { getSql } from './db.js';
 import { createTtlCache } from './ttl-cache.js';
+import { normalizeUrlKey, adUrlKeys } from './metrics.js';
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 
@@ -690,31 +691,48 @@ export async function getAssignedUrlsForDomain(domain) {
   return rows.map((r) => r.our_url);
 }
 
-// Best-effort Meta creative per competitor host, for the RSOC kit view: given a set of
-// landing hosts, return one representative creative (newest ad on that host) - its thumbnail
-// AND its body/description - keyed by host. The RSOC comp rows and the Meta ads share no id,
-// so this is a coarse host-level match: it enriches roughly a third of comp rows with an
-// image + description and leaves the rest with their title only, so it is a bonus, never a
-// requirement. Picks the newest ad that has a thumbnail (the description rides along).
-export async function getMetaCreativesByHosts(hosts) {
-  const clean = [...new Set((Array.isArray(hosts) ? hosts : []).map((h) => String(h || '').toLowerCase()).filter(Boolean))].slice(0, 500);
-  if (!clean.length) return {};
+// The Meta creative of each RSOC comp row's own article, for the RSOC kit view: given the comp
+// rows' landing URLs, return the thumbnail AND body/description of the newest ad that lands on
+// that exact article, keyed by the URL as given. The comp rows and the Meta ads share no id; the
+// article URL is what they have in common. A same-site match used to stand in for it and showed
+// another article's creative on ~40% of the rows that had one, client export included, so a row
+// with no ad for its own article now gets none. An ad counts through any of its adUrlKeys - its
+// DCO destinations, then where its link landed - so an ad behind a click tracker still matches.
+// The SQL key is only a cheap mirror of normalizeUrlKey to narrow the scan; adUrlKeys confirms
+// every hit, so lib/metrics stays the one authority on what matches.
+export async function getMetaCreativesByUrls(urls) {
+  const keyOf = new Map();
+  for (const url of Array.isArray(urls) ? urls : []) {
+    const key = normalizeUrlKey(url);
+    if (key) keyOf.set(url, key);
+  }
+  const keys = [...new Set(keyOf.values())].slice(0, 500);
+  if (!keys.length) return {};
   const sql = getSql();
+  // The wanted keys are joined as a set (a hash lookup) rather than tested with = any(), which
+  // compares every candidate URL against every key: measurably slower on the ~140k candidates.
   const rows = await sql`
-    select distinct on (host) host, thumb, body from (
-      select lower(regexp_replace(substring(resolved_url from '://([^/]+)'), '^www\\.', '')) as host,
-             coalesce(original_image_urls[1], video_preview_url) as thumb,
-             body_text as body,
-             last_seen_at
-      from ads
-      where resolved_url like 'http%'
+    select distinct on (t.key) t.key, t.link_url, t.resolved_url, t.thumb, t.body from (
+      select lower(regexp_replace(regexp_replace(substring(u.url from '^https?://([^/?#]+)'), ':[0-9]+$', ''), '^www\\.', ''))
+               || regexp_replace(coalesce(substring(u.url from '^https?://[^/?#]+([^?#]*)'), ''), '/+$', '') as key,
+             a.link_url, a.resolved_url,
+             coalesce(a.original_image_urls[1], a.video_preview_url) as thumb,
+             a.body_text as body,
+             a.last_seen_at
+      from ads a
+      cross join lateral unnest(string_to_array(coalesce(a.link_url, ''), ' | ') || a.resolved_url) as u(url)
     ) t
-    where host = any(${clean}) and thumb is not null
-    order by host, last_seen_at desc nulls last
+    join unnest(${keys}::text[]) as w(key) on w.key = t.key
+    where t.thumb is not null
+    order by t.key, t.last_seen_at desc nulls last
   `;
-  const byHost = {};
-  for (const r of rows) byHost[r.host] = { thumb: r.thumb, body: r.body || null };
-  return byHost;
+  const byKey = {};
+  for (const r of rows) {
+    if (adUrlKeys(r.link_url, r.resolved_url).includes(r.key)) byKey[r.key] = { thumb: r.thumb, body: r.body || null };
+  }
+  const byUrl = {};
+  for (const [url, key] of keyOf) if (byKey[key]) byUrl[url] = byKey[key];
+  return byUrl;
 }
 
 export async function getLastRun() {
