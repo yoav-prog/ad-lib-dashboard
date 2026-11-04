@@ -67,7 +67,7 @@ def test_messages_work_with_image_and_no_copy():
 
 
 # ── the system prompt spells out the exclusions that stop false positives ─────
-# gpt-4.1-mini follows instructions literally, so the words that used to fire a
+# The model follows instructions literally, so the words that used to fire a
 # false brand must be named as non-brands in the prompt itself. These guard the
 # reported regressions (generic nouns, public institutions, the bare word
 # "brand") and fail loudly if a future edit loosens the prompt back.

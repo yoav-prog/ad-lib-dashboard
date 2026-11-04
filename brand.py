@@ -21,8 +21,7 @@ import re
 # Valid brand buckets. NULL/'' in the DB means "not classified yet".
 BRAND_VALUES = ('none', 'brand', 'car_brand')
 
-# gpt-4.1-mini vision model shared by the live path and the backfill.
-BRAND_MODEL = 'gpt-4.1-mini'
+# The vision model the live path and the backfill call is gpt.CHAT_MODEL (gpt.py).
 
 _SYSTEM_PROMPT = (
     "You classify whether an advertising CREATIVE features a specific, NAMED "
@@ -36,6 +35,9 @@ _SYSTEM_PROMPT = (
     "public hospital\n"
     "- the mere presence of the word \"brand\" itself, in any language, and slogans "
     "or an unnamed seller such as \"the best store\" or \"our company\"\n"
+    "- the website the ad links to or is published on, shown as a domain or site name "
+    "(e.g. knowrift.com, holvix.com, an article or news site): that is the publisher, "
+    "not a brand. A brand the creative itself mentions or shows still counts.\n"
     "Classify as a brand ONLY when you can point to a specific named brand or a "
     "recognizable logo/wordmark. If you cannot, or you are unsure, answer none.\n"
     "Reply with EXACTLY ONE token, nothing else:\n"

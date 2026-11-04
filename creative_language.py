@@ -14,8 +14,7 @@ creative carries no readable text, which normalize_language maps to '' (empty).
 
 from __future__ import annotations
 
-# gpt-4.1-mini vision model, shared by the live path and the backfill.
-CREATIVE_LANGUAGE_MODEL = 'gpt-4.1-mini'
+# The vision model the live path and the backfill call is gpt.CHAT_MODEL (gpt.py).
 
 # A reply meaning "the creative has no readable text" - stored as '' (empty), which
 # is distinct from NULL (not classified yet).

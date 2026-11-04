@@ -23,6 +23,7 @@ import time
 import brand   # shared brand prompt + answer parsing (SSOT with backfill_brand.py)
 import content_flag   # shared prohibited-content prompt + parsing (SSOT with backfill_content_flag.py)
 import creative_language   # shared creative-language prompt + parsing (SSOT with backfill_creative_language.py)
+import gpt   # the chat model + request settings every detector sends (SSOT with the backfills)
 import rsoc_policy   # shared RSoC policy-risk rubric + deny-list + parsing (SSOT with backfill_rsoc_policy.py)
 from landing import resolve_landing   # free redirect walk when ScrapingBee cannot report the landing (SSOT with backfill_resolved_url.py)
 
@@ -187,15 +188,14 @@ async def gpt_detect_language(session, ad_copy):
     async with GPT_SEMAPHORE:
         try:
             payload = {
-                "model": "gpt-4.1-mini",
+                "model": gpt.CHAT_MODEL,
                 "messages": [
                     {"role": "system", "content":
                         "You detect the language of text. Respond with ONLY the language name "
                         "in English, nothing else. Examples: English, Spanish, French, German, Portuguese"},
                     {"role": "user", "content": f"What language is this text?\n\n{text[:500]}"}
                 ],
-                "max_tokens": 10,
-                "temperature": 0,
+                **gpt.chat_params(10),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -218,7 +218,7 @@ async def gpt_detect_country(session, article_title, body_text, article_content)
     async with GPT_SEMAPHORE:
         try:
             payload = {
-                "model": "gpt-4.1-mini",
+                "model": gpt.CHAT_MODEL,
                 "messages": [
                     {"role": "system", "content":
                         "You identify the most likely TARGET AUDIENCE country for an advertisement — "
@@ -237,8 +237,7 @@ async def gpt_detect_country(session, article_title, body_text, article_content)
                     {"role": "user", "content":
                         f"Who is this ad targeting (country of the BUYER, not the subject)?\n\n{combined[:1000]}"}
                 ],
-                "max_tokens": 5,
-                "temperature": 0,
+                **gpt.chat_params(5),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -291,7 +290,7 @@ async def gpt_detect_vertical(session, article_title, body_text, article_content
     async with GPT_SEMAPHORE:
         try:
             payload = {
-                "model": "gpt-4.1-mini",
+                "model": gpt.CHAT_MODEL,
                 "messages": [
                     {"role": "system", "content":
                         "You classify advertising content into a vertical category. "
@@ -301,8 +300,7 @@ async def gpt_detect_vertical(session, article_title, body_text, article_content
                         f"Choose the single most relevant vertical for this ad:\n\n{combined[:1000]}\n\n"
                         f"Available verticals:\n{verticals_list}"}
                 ],
-                "max_tokens": 30,
-                "temperature": 0,
+                **gpt.chat_params(30),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -340,10 +338,9 @@ async def gpt_detect_brand(session, ad_copy, image_url):
     async with GPT_SEMAPHORE:
         try:
             payload = {
-                "model": brand.BRAND_MODEL,
+                "model": gpt.CHAT_MODEL,
                 "messages": messages,
-                "max_tokens": 3,
-                "temperature": 0,
+                **gpt.chat_params(3),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -376,10 +373,9 @@ async def gpt_detect_creative_language(session, image_url):
     async with GPT_SEMAPHORE:
         try:
             payload = {
-                "model": creative_language.CREATIVE_LANGUAGE_MODEL,
+                "model": gpt.CHAT_MODEL,
                 "messages": messages,
-                "max_tokens": 10,
-                "temperature": 0,
+                **gpt.chat_params(10),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -409,10 +405,9 @@ async def gpt_detect_prohibited(session, ad_copy, image_url):
     async with GPT_SEMAPHORE:
         try:
             payload = {
-                "model": content_flag.CONTENT_FLAG_MODEL,
+                "model": gpt.CHAT_MODEL,
                 "messages": messages,
-                "max_tokens": 4,
-                "temperature": 0,
+                **gpt.chat_params(4),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -444,10 +439,9 @@ async def gpt_detect_rsoc_risk(session, ad_copy, image_url, domain=''):
     async with GPT_SEMAPHORE:
         try:
             payload = {
-                "model": rsoc_policy.RSOC_MODEL,
+                "model": gpt.CHAT_MODEL,
                 "messages": messages,
-                "max_tokens": 40,
-                "temperature": 0,
+                **gpt.chat_params(40),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",

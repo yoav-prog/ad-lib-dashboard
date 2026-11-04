@@ -17,7 +17,7 @@ Usage
     python backfill_content_flag.py --limit 50      # cap rows (for a test run first)
 
 Needs DATABASE_URL and OPENAI_API_KEY (from .env / .env.local or the environment).
-Cost: one gpt-4.1-mini vision call per processed ad - a fraction of a cent each.
+Cost: one gpt.CHAT_MODEL vision call per processed ad - a fraction of a cent each.
 
 Safety note: this only ever fills a NULL (or, with --all, re-derives) the model's
 own classification. It never touches a human's 'none' override from the Filtered view
@@ -46,6 +46,7 @@ import aiohttp
 
 import content_flag
 import db
+import gpt
 
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 # Vision calls run several seconds each, so throughput is concurrency-bound; keep it
@@ -87,10 +88,9 @@ async def detect_prohibited(session, sem, ad_copy, image_url):
     async with sem:
         try:
             payload = {
-                "model": content_flag.CONTENT_FLAG_MODEL,
+                "model": gpt.CHAT_MODEL,
                 "messages": messages,
-                "max_tokens": 4,
-                "temperature": 0,
+                **gpt.chat_params(4),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",

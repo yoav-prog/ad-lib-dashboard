@@ -45,10 +45,12 @@ from __future__ import annotations
 
 import re
 
-# gpt-4.1-mini vision model, shared with the sibling detectors (brand / creative-language /
-# content_flag). Adequate for vertical bucketing; the fuzzy misleading-claim judgement truly
-# belongs to the not-yet-written article, so we do not overspend here (see the plan).
-RSOC_MODEL = 'gpt-4.1-mini'
+# The vision model is gpt.CHAT_MODEL (gpt.py), shared with the sibling detectors (brand /
+# creative-language / content_flag). Adequate for vertical bucketing; the fuzzy
+# misleading-claim judgement truly belongs to the not-yet-written article, so we do not
+# overspend here (see the plan). Moving to gpt-6-luna made this tier stricter: it applies
+# the yellow rule below as written, where gpt-4.1-mini called much of it green
+# (_plans/2026-11-04-gpt-6-luna.md).
 
 # The three tiers, least to most severe. Severity is what the deny-list floor and the
 # model verdict are combined on: the more severe of the two always wins.
@@ -194,9 +196,12 @@ _SYSTEM_PROMPT = (
     "OR an angle that inherently breaks policy (miracle cure, cures a disease, guaranteed "
     "income/returns, before/after weight-loss claims, shocking imagery).\n"
     "- yellow : a sensitive or restricted-adjacent topic that CAN be written compliantly but "
-    "needs care (general health/finance/insurance advice, dating, mild claims).\n"
+    "needs care (health or medical advice, loans, credit, debt, insurance, investing, dating, "
+    "mild claims).\n"
     "- green : an ordinary consumer topic with no restricted vertical and no exaggerated "
-    "or misleading claim.\n"
+    "or misleading claim - including education, courses, scholarships, jobs, travel, "
+    "housing and property information, software, and shopping guides, as long as the ad "
+    "promises no money, approval or result.\n"
     "area is ONE slug describing the main risk: health_claims, supplements, prescription, "
     "weight_loss, financial, gambling, alcohol, tobacco, drugs, weapons, adult, shocking, "
     "political, misleading, other, or none (for green).\n"

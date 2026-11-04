@@ -13,7 +13,7 @@ Why this exists
                                   those verticals
 
     Pass 1 derives the family from the article text (embedding shortlist, then
-    gpt-4.1-mini picks from it - see article_verticals.py, which the live path would
+    gpt.CHAT_MODEL picks from it - see article_verticals.py, which the live path would
     share). Pass 2 turns that into the per-domain answer the feed's SQL filter reads.
     The columns are additive (migration 0017); a row that has never been through here
     is NULL, which the UI reads as "not derived yet", not as "we have nothing".
@@ -34,13 +34,14 @@ Usage
     python backfill_article_verticals.py --no-scrape      # skip ads with no stored article
     python backfill_article_verticals.py --domains-only   # pass 2 only (after new articles land)
     python backfill_article_verticals.py --no-article-only --no-scrape   # redo just the RSOC rows
-    python backfill_article_verticals.py --model gpt-4o-mini   # cheaper, ~3x less
+    python backfill_article_verticals.py --model <id>   # any model that accepts reasoning_effort
 
 Needs DATABASE_URL, ARTICLES_DATABASE_URL, OPENAI_API_KEY, and (unless --no-scrape)
 SCRAPINGBEE_API_KEY, from .env / .env.local or the environment.
 
 Cost, measured against the real row counts (see _plans/2026-08-19-our-articles-by-domain.md):
-~$8 of gpt-4.1-mini + ~$0.25 of embeddings + a few dollars of ScrapingBee (4,053 plain
+~$8 of gpt-4.1-mini (gpt-6-luna, the model since 2026-11-04, is ~4x cheaper per token)
++ ~$0.25 of embeddings + a few dollars of ScrapingBee (4,053 plain
 fetches, plus a 5-credit render for the ones that come back JS-gated) for a full
 29,966-ad backfill. About $0.0003 per ad after that.
 """
@@ -70,6 +71,7 @@ from psycopg.rows import dict_row
 
 import article_verticals as av
 import db
+import gpt
 
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 SCRAPINGBEE_API_KEY = os.environ.get('SCRAPINGBEE_API_KEY')
@@ -189,7 +191,7 @@ async def choose_family(session, sem, excerpt, candidates, model):
             async with session.post(
                 'https://api.openai.com/v1/chat/completions',
                 headers={'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'},
-                json={'model': model, 'messages': messages, 'max_tokens': 160, 'temperature': 0},
+                json={'model': model, 'messages': messages, **gpt.chat_params(160)},
                 timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 if resp.status == 200:
@@ -556,5 +558,7 @@ if __name__ == '__main__':
     p.add_argument('--no-scrape', action='store_true', help='never call ScrapingBee; skip ads with no stored article')
     p.add_argument('--no-article-only', action='store_true', help='re-derive only the ads with no readable landing article (the RSOC rows), family or not')
     p.add_argument('--domains-only', action='store_true', help='run pass 2 only (after new articles are published)')
-    p.add_argument('--model', default=av.VERTICAL_MODEL, help=f'chat model for the family choice (default {av.VERTICAL_MODEL})')
+    p.add_argument('--model', default=gpt.CHAT_MODEL,
+                   help=f'chat model for the family choice (default {gpt.CHAT_MODEL}); it must accept '
+                        f'reasoning_effort, which gpt.chat_params sends')
     asyncio.run(main(p.parse_args()))

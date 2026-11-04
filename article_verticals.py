@@ -22,7 +22,7 @@ Two stages, both here so the backfill and any future live path cannot drift:
                   what the scraper's gpt_detect_vertical uses) because 38% of our
                   ads have a non-English article while every vertical name is
                   English - token overlap scores those all-zero.
-    2. choose     one gpt-4.1-mini call reads the article and the shortlist and
+    2. choose     one gpt.CHAT_MODEL call reads the article and the shortlist and
                   returns up to MAX_FAMILY verticals from it. Anything not verbatim
                   in the shortlist is dropped, so the output is always real
                   vocabulary and never a hallucinated label.
@@ -134,9 +134,8 @@ def is_search_endpoint(url) -> bool:
 # ═════════════════════════════════════════════════════════════════════════════
 
 EMBED_MODEL = 'text-embedding-3-small'
-# The same model every other classifier in this repo uses (brand.py, the scraper's
-# gpt_detect_vertical), so its Chat Completions parameters are known-good here.
-VERTICAL_MODEL = 'gpt-4.1-mini'
+# The family choice uses gpt.CHAT_MODEL, the model every other classifier in this repo
+# calls, with the same request settings (gpt.chat_params).
 
 SHORTLIST_SIZE = 25     # candidates the model chooses from
 MAX_FAMILY = 8          # verticals we keep per ad

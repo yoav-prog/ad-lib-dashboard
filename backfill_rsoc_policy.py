@@ -17,7 +17,7 @@ Usage
     python backfill_rsoc_policy.py --limit 50      # cap rows (run a small eval FIRST)
 
 Needs DATABASE_URL and OPENAI_API_KEY (from .env / .env.local or the environment).
-Cost: one gpt-4.1-mini vision call per processed ad - a fraction of a cent each; a full
+Cost: one gpt.CHAT_MODEL vision call per processed ad - a fraction of a cent each; a full
 backfill of the current corpus is roughly $10-40. Run --limit 50 first and eyeball the
 result (especially any hazardous row that came back green) before spending on the whole set.
 
@@ -47,6 +47,7 @@ except ImportError:
 import aiohttp
 
 import db
+import gpt
 import rsoc_policy
 
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
@@ -89,10 +90,9 @@ async def detect_rsoc(session, sem, ad_copy, image_url, domain):
     async with sem:
         try:
             payload = {
-                "model": rsoc_policy.RSOC_MODEL,
+                "model": gpt.CHAT_MODEL,
                 "messages": messages,
-                "max_tokens": 40,
-                "temperature": 0,
+                **gpt.chat_params(40),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",
