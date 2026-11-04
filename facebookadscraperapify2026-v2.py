@@ -24,6 +24,7 @@ import brand   # shared brand prompt + answer parsing (SSOT with backfill_brand.
 import content_flag   # shared prohibited-content prompt + parsing (SSOT with backfill_content_flag.py)
 import creative_language   # shared creative-language prompt + parsing (SSOT with backfill_creative_language.py)
 import rsoc_policy   # shared RSoC policy-risk rubric + deny-list + parsing (SSOT with backfill_rsoc_policy.py)
+from landing import resolve_landing   # free redirect walk when ScrapingBee cannot report the landing (SSOT with backfill_resolved_url.py)
 
 # ── Secrets & configuration (loaded from the environment) ─────────────────────
 # Nothing sensitive is hardcoded. Copy .env.example to .env and fill it in, or
@@ -52,6 +53,11 @@ APIFY_ACTOR_ID  = os.environ.get('APIFY_ACTOR_ID', 'memo23/facebook-ads-library-
 
 # ── ScrapingBee configuration ─────────────────────────────────────────────────
 SCRAPINGBEE_API_KEY = _require_env('SCRAPINGBEE_API_KEY')
+# (connect, read) socket timeout for the article fetch. ScrapingBee's own `timeout`
+# param is THEIR page timeout and never reaches requests, so without this a stalled
+# connection waits forever. The read budget sits above their 30s page timeout so a
+# slow but legitimate fetch is not cut short.
+SCRAPINGBEE_TIMEOUT = (15, 90)
 
 # ── OpenAI configuration ──────────────────────────────────────────────────────
 OPENAI_API_KEY = _require_env('OPENAI_API_KEY')
@@ -467,8 +473,10 @@ def _scrape_article_sync(url):
     Returns (title, body, resolved_url). resolved_url is the final URL after any
     redirects (ScrapingBee's Spb-Resolved-Url header): the raw link_url may be a
     tracker that 302s to the real landing page, and the post-redirect URL carries
-    signal the tracker hides (e.g. the Predicto feed's ?search= phrase). Empty
-    string on any path that yields no page.
+    signal the tracker hides (e.g. the Predicto feed's ?search= phrase, or the
+    article a TONIC RSOC campaign is keyed by). title and body are empty strings
+    on any path that yields no page; resolved_url is empty only when the landing
+    page cannot be told.
     """
     if not url or not url.startswith('http'):
         return '', '', ''
@@ -479,13 +487,17 @@ def _scrape_article_sync(url):
             'return_page_markdown': True,
             'block_resources': True,
             'timeout': 30000,
-        })
-        # response.headers is case-insensitive; falls back to the requested URL
-        # when no redirect occurred (or the header is absent).
-        resolved_url = response.headers.get('Spb-Resolved-Url') or url
+        }, timeout=SCRAPINGBEE_TIMEOUT)
+        # response.headers is case-insensitive. A failed fetch usually comes back
+        # without Spb-Resolved-Url, and echoing the link there stored click trackers
+        # as their own landing page - which no campaign can ever match. So a failure
+        # asks the redirects directly (free); a success with no header did not
+        # redirect, so the link is its own landing.
+        landed = response.headers.get('Spb-Resolved-Url')
         if not response.ok:
             print(f"  ⚠️  ScrapingBee {response.status_code} for {url}")
-            return '', '', resolved_url
+            return '', '', landed or resolve_landing(url)
+        resolved_url = landed or url
         markdown_content = response.text.strip()
         if not markdown_content:
             return '', '', resolved_url
@@ -506,7 +518,7 @@ def _scrape_article_sync(url):
         )
     except Exception as e:
         print(f"  ⚠️  ScrapingBee error for {url}: {e}")
-        return '', '', ''
+        return '', '', resolve_landing(url)
 
 async def scrape_article_async(url):
     """Non-blocking ScrapingBee scrape with concurrency limit.

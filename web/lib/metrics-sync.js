@@ -150,16 +150,16 @@ async function correctCountriesFromGeos(sql) {
 // Fill ads.campaign_url_key for every tonic rsoc ad from the current set of campaign keys,
 // so the feed can join metrics by that key in SQL. Only the tonic feed carries metrics, so
 // this reads just those ads (not the whole table), resolves each with the shared
-// resolveCampaignKey, and writes back only the rows whose key actually changed
-// (`is distinct from`) to keep the update small. Returns how many matched and how many rows
-// were rewritten this run.
+// resolveCampaignKey - which needs resolved_url too, for ads that link through a click
+// tracker - and writes back only the rows whose key actually changed (`is distinct from`) to
+// keep the update small. Returns how many matched and how many rows were rewritten this run.
 async function resolveAdCampaignKeys(sql, keySet) {
-  const ads = await sql`select ad_archive_id, feed, link_url from ads where lower(trim(feed)) = ${FEED}`;
+  const ads = await sql`select ad_archive_id, feed, link_url, resolved_url from ads where lower(trim(feed)) = ${FEED}`;
   const ids = [];
   const keys = [];
   let matched = 0;
   for (const a of ads) {
-    const key = resolveCampaignKey(a.feed, a.link_url, keySet);
+    const key = resolveCampaignKey(a, keySet);
     if (key) matched += 1;
     ids.push(a.ad_archive_id);
     keys.push(key);

@@ -3,7 +3,8 @@
 // top keywords. Only the sheet's facebook-rsoc rows and only AdIntel's
 // TONIC RSOC feed take part - that feed is what the sheet tracks. An ad and a
 // sheet row are the same campaign when their landing-page URLs match once the
-// tracking parameters are stripped from both sides.
+// tracking parameters are stripped from both sides - the ad's link, or where
+// that link actually landed when it goes through a click tracker.
 //
 // The pure helpers up top are unit-tested (web/tests/metrics.test.mjs); only
 // getSheetMetricsIndex at the bottom touches the network, riding on lib/sheets'
@@ -43,11 +44,17 @@ export function normalizeUrlKey(url) {
   }
 }
 
-// Every URL key an ad can be matched by. link_url may pack several DCO
-// destinations pipe-joined ("a | b | c"); any of them counts as a match.
-export function adUrlKeys(linkUrl) {
-  if (!linkUrl) return [];
-  return [...new Set(String(linkUrl).split(' | ').map(normalizeUrlKey).filter(Boolean))];
+// Every URL key an ad can be matched by, in the order they are tried. link_url
+// may pack several DCO destinations pipe-joined ("a | b | c"); any of them
+// counts as a match. resolved_url - where the link landed after its redirects
+// (the scraper records it) - comes last: a competitor that links through a
+// click tracker (checkbeforesearch.com/..., qcviwxfqmc.com/17?...) carries only
+// the tracker in link_url, and the article the sheet names shows up only once
+// the tracker has redirected. A tracker stored as its own landing simply yields
+// a key no campaign has.
+export function adUrlKeys(linkUrl, resolvedUrl) {
+  const urls = [...String(linkUrl || '').split(' | '), resolvedUrl];
+  return [...new Set(urls.map(normalizeUrlKey).filter(Boolean))];
 }
 
 const norm = (v) => String(v ?? '').trim().toLowerCase();
@@ -156,7 +163,8 @@ export function buildMetricsIndex(values) {
 // the UI shows dashes and exports stay empty rather than fake zeros). Only
 // TONIC RSOC ads are matched at all - the sheet tracks that feed's campaigns,
 // and gating by feed means another feed's ad can never pick up someone else's
-// numbers through a coincidental URL. The first matching DCO destination wins.
+// numbers through a coincidental URL. The first matching key wins (adUrlKeys
+// order: DCO destinations, then the landing page).
 // Works with a null/empty index - a Sheets outage degrades to blank metric
 // columns, never a broken page.
 export function attachSheetMetrics(ads, index) {
@@ -164,7 +172,7 @@ export function attachSheetMetrics(ads, index) {
   const out = (ads || []).map((a) => {
     let m = null;
     if (index && index.size && norm(a.feed) === FEED) {
-      for (const key of adUrlKeys(a.link_url)) {
+      for (const key of adUrlKeys(a.link_url, a.resolved_url)) {
         m = index.get(key);
         if (m) break;
       }
@@ -183,15 +191,16 @@ export function attachSheetMetrics(ads, index) {
   return { ads: out, matched };
 }
 
-// The campaign_metrics url_key an ad resolves to: the first of its normalized link keys
+// The campaign_metrics url_key an ad resolves to: the first of its normalized keys
 // (adUrlKeys) that exists in `keySet`, or null. Gated to the tonic rsoc feed exactly like
-// attachSheetMetrics above - a non-tonic ad never carries metrics - and using the same
-// adUrlKeys, so the database join the server-side feed does matches the in-memory attach
-// this mirrors. `keySet` is a Set of the url_keys currently in campaign_metrics. Pure: the
-// metrics sync (lib/metrics-sync) calls it per ad to fill ads.campaign_url_key.
-export function resolveCampaignKey(feed, linkUrl, keySet) {
-  if (norm(feed) !== FEED) return null;
-  for (const key of adUrlKeys(linkUrl)) if (keySet.has(key)) return key;
+// attachSheetMetrics above - a non-tonic ad never carries metrics - and reading the same
+// three ad fields with the same adUrlKeys, so the database join the server-side feed does
+// matches the in-memory attach this mirrors. `ad` is { feed, link_url, resolved_url } (an ads
+// row); `keySet` is a Set of the url_keys currently in campaign_metrics. Pure: the metrics
+// sync (lib/metrics-sync) calls it per ad to fill ads.campaign_url_key.
+export function resolveCampaignKey(ad, keySet) {
+  if (norm(ad?.feed) !== FEED) return null;
+  for (const key of adUrlKeys(ad.link_url, ad.resolved_url)) if (keySet.has(key)) return key;
   return null;
 }
 
