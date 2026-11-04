@@ -152,9 +152,16 @@ def test_resolve_pays_scrapingbee_only_when_the_free_walk_gets_no_answer(monkeyp
     assert backfill.resolve(None, TRACKER, 'talkglimpse.com') == (ARTICLE, True)
 
 
-def test_resolve_never_returns_the_tracker_from_either_path(monkeypatch):
-    monkeypatch.setattr(backfill, 'resolve_landing', lambda url, stop_site='': url)   # 200 at the tracker
-    monkeypatch.setattr(backfill, 'resolve_via_scrapingbee', lambda client, url: url)   # no Spb header
+def test_resolve_accepts_a_link_that_does_not_redirect_without_paying(monkeypatch):
+    # An article linked straight from an ad found under another query: 2xx, no redirect.
+    monkeypatch.setattr(backfill, 'resolve_landing', lambda url, stop_site='': url)
+    monkeypatch.setattr(backfill, 'resolve_via_scrapingbee', lambda client, url: 'https://spb.example/never')
+    assert backfill.resolve(None, ARTICLE, 'other-site.com') == (ARTICLE, False)
+
+
+def test_resolve_never_takes_scrapingbees_echo_of_the_link(monkeypatch):
+    monkeypatch.setattr(backfill, 'resolve_landing', lambda url, stop_site='': '')       # no answer at all
+    monkeypatch.setattr(backfill, 'resolve_via_scrapingbee', lambda client, url: url)  # no Spb header
     assert backfill.resolve(None, TRACKER, 'talkglimpse.com') == ('', True)
 
 

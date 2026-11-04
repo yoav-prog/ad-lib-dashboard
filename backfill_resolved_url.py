@@ -113,10 +113,12 @@ def _host_path(url: str) -> str:
 
 def stuck_on_tracker(link: str, landing: str) -> bool:
     """True when a landing is the link itself (same host and path; the query string
-    may differ, since ScrapingBee re-encodes {{ad.id}}-style macros): what the
-    scraper stored when ScrapingBee failed on a tracker, and what a tracker that
-    will not redirect yields. It names no article, so it counts as unresolved,
-    never as an answer. A redirect to another path on the same host is progress."""
+    may differ, since ScrapingBee re-encodes {{ad.id}}-style macros). On its own
+    that is ambiguous - a direct article link really does land on itself - so
+    callers pair it with other evidence: a stored echo counts as unresolved only
+    when ScrapingBee also captured no article, and ScrapingBee echoing the link
+    back means it could not tell. A redirect to another path on the same host is
+    progress, not an echo."""
     return bool(landing) and _host_path(landing) == _host_path(link)
 
 
@@ -141,13 +143,15 @@ def resolve_via_scrapingbee(client: ScrapingBeeClient, url: str) -> str:
 
 
 def resolve(client: ScrapingBeeClient, url: str, site: str) -> tuple[str, bool]:
-    """Where a tracker link lands, and whether a ScrapingBee credit was spent
-    finding out. The free redirect walk goes first, stopping as soon as a hop points
-    at the ad's own site; ScrapingBee's proxy is asked only when that walk gets no
-    answer (hosts that tarpit or block a plain request). The landing is '' when
-    neither can tell, and never the tracker itself (stuck_on_tracker)."""
+    """Where a link lands, and whether a ScrapingBee credit was spent finding out.
+    The free redirect walk goes first, stopping as soon as a hop points at the ad's
+    own site. Its answer stands, including "lands on itself" (a 2xx with no
+    redirect - an article linked straight from an ad found under another query).
+    ScrapingBee's proxy is asked only when the walk gets no answer at all (hosts
+    that tarpit or block a plain request); there an echo of the link means it
+    could not tell, so the landing is '' rather than the link passed off as one."""
     landing = resolve_landing(url, stop_site=site)
-    if landing and not stuck_on_tracker(url, landing):
+    if landing:
         return landing, False
     landing = resolve_via_scrapingbee(client, url)
     return ('' if stuck_on_tracker(url, landing) else landing), True
@@ -172,21 +176,24 @@ def main():
     with db.connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"select ad_archive_id, domain, link_url, resolved_url from ads "
+                f"select ad_archive_id, domain, link_url, resolved_url, "
+                f"       (article_content is not null and article_content <> '') as has_article "
+                f"from ads "
                 f"where link_url is not null and link_url <> '' {where_feed} "
                 f"order by last_seen_at desc nulls last", params)
             rows = cur.fetchall()
 
-        # A row needs work when it has no landing, or when a tracker link's stored
-        # landing is the tracker itself. A direct link stored as its own landing is
-        # right by design, so only a 'redirect' can be stuck.
+        # A row needs work when it has no landing, or when its stored landing is an
+        # echo of a failed fetch: the link itself, with no article captured. When
+        # ScrapingBee did fetch the page, a link stored as its own landing really did
+        # not redirect; a 'direct' link stored as its own landing is right by design.
         todo, echoes = [], 0
         for r in rows:
             link, site = first_url(r['link_url']), site_of(r['domain'])
             kind = link_kind(link, site)
             stored = r['resolved_url'] or ''
             if stored:
-                if not (kind == 'redirect' and stuck_on_tracker(link, stored)):
+                if not (kind == 'redirect' and stuck_on_tracker(link, stored) and not r['has_article']):
                     continue
                 echoes += 1
             todo.append((kind, r['ad_archive_id'], link, site))
@@ -200,7 +207,7 @@ def main():
                                                  buckets['dead'], buckets['skip'])
 
         scope = 'all feeds' if args.all_feeds else f'feed {args.feed!r}'
-        print(f'{len(todo)} unresolved row(s) in {scope}, {echoes} of them a tracker stored as its own landing: '
+        print(f'{len(todo)} unresolved row(s) in {scope}, {echoes} of them a failed fetch stored as its own landing: '
               f'{len(direct)} direct (free), {len(redirects)} redirects (free walk first, '
               f'at most {len(redirects)} ScrapingBee credits), '
               f'{len(own)} already on their own site (skipped), '
