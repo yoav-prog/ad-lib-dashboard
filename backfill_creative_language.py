@@ -21,7 +21,7 @@ Usage
     python backfill_creative_language.py --limit 50      # cap rows (for a test run first)
 
 Needs DATABASE_URL and OPENAI_API_KEY (from .env / .env.local or the environment).
-Cost: one gpt-4.1-mini vision call per processed ad - a fraction of a cent each.
+Cost: one gpt.CHAT_MODEL vision call per processed ad - a fraction of a cent each.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ import aiohttp
 
 import creative_language
 import db
+import gpt
 
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 # Vision calls run several seconds each, so throughput is concurrency-bound; keep it
@@ -74,10 +75,9 @@ async def detect(session, sem, image_url):
     async with sem:
         try:
             payload = {
-                "model": creative_language.CREATIVE_LANGUAGE_MODEL,
+                "model": gpt.CHAT_MODEL,
                 "messages": messages,
-                "max_tokens": 10,
-                "temperature": 0,
+                **gpt.chat_params(10),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",

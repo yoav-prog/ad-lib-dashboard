@@ -16,7 +16,7 @@ Usage
     python backfill_language.py --limit 50      # cap rows (for a test run first)
 
 Needs DATABASE_URL and OPENAI_API_KEY (from .env / .env.local or the environment).
-Cost: one gpt-4.1-mini call per processed ad - cents for a few hundred rows.
+Cost: one gpt.CHAT_MODEL call per processed ad - cents for a few hundred rows.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ except ImportError:
 import aiohttp
 
 import db
+import gpt
 
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 CONCURRENCY = 8
@@ -63,15 +64,14 @@ async def detect_language(session, sem, text):
     async with sem:
         try:
             payload = {
-                "model": "gpt-4.1-mini",
+                "model": gpt.CHAT_MODEL,
                 "messages": [
                     {"role": "system", "content":
                         "You detect the language of text. Respond with ONLY the language name "
                         "in English, nothing else. Examples: English, Spanish, French, German, Portuguese"},
                     {"role": "user", "content": f"What language is this text?\n\n{text[:500]}"},
                 ],
-                "max_tokens": 10,
-                "temperature": 0,
+                **gpt.chat_params(10),
             }
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",

@@ -43,9 +43,8 @@ CONTENT_FLAG_VALUES = (
 # the Filtered view surfaces. Kept as a tuple derived from the source of truth above.
 PROHIBITED_VALUES = tuple(v for v in CONTENT_FLAG_VALUES if v != 'none')
 
-# gpt-4.1-mini vision model, shared by the live path and the backfill (same model the
-# brand + creative-language detectors already use).
-CONTENT_FLAG_MODEL = 'gpt-4.1-mini'
+# The vision model the live path and the backfill call is gpt.CHAT_MODEL (gpt.py), the
+# same one the brand + creative-language detectors use.
 
 # Negation words that mean "clean" even when a category name trails them, so a stray
 # "not gambling" / "no weapons" resolves to none instead of a false-positive hide.
@@ -56,10 +55,12 @@ _SYSTEM_PROMPT = (
     "Content Topics, using BOTH the image (what it depicts) and the ad copy (what it "
     "says). Reply with EXACTLY ONE token, nothing else - the single most clearly "
     "applicable category, or 'none' if the ad is clean:\n"
-    "- adult : adult or sexual content\n"
+    "- adult : nudity, sexual acts, or sexually suggestive imagery or text (beauty, "
+    "skincare, massage, wellness or a stray emoji are NOT adult on their own)\n"
     "- weapons : weapons or violence\n"
     "- gambling : gambling, casino, betting\n"
-    "- political : political content or election material\n"
+    "- political : elections, candidates, parties, or political causes and campaigns "
+    "(government programs, public services, subsidies and courses are NOT political)\n"
     "- hate : hate speech or discrimination against a protected group\n"
     "- dangerous : dangerous products or services (illegal, harmful)\n"
     "- before_after : before-and-after imagery (weight loss, cosmetic results)\n"

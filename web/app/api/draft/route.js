@@ -42,8 +42,13 @@ export async function POST(req) {
     ad.article_content && `Their landing article:\n${String(ad.article_content).slice(0, 3000)}`,
   ].filter(Boolean).join('\n');
 
+  // The same model the scraper's classifiers call (gpt.py at the repo root, which explains
+  // its quirks). It reasons by default, and on this endpoint that would spend the token cap
+  // thinking; reasoning_effort 'none' turns it off and is what lets temperature through.
+  // max_tokens is rejected by this model: the cap is max_completion_tokens.
   const payload = {
-    model: 'gpt-4.1-mini',
+    model: 'gpt-6-luna',
+    reasoning_effort: 'none',
     messages: [
       {
         role: 'system',
@@ -53,7 +58,7 @@ export async function POST(req) {
       { role: 'user', content: `Write our article, inspired by (not copied from) this competitor material:\n\n${src}` },
     ],
     temperature: 0.7,
-    max_tokens: 900,
+    max_completion_tokens: 900,
   };
 
   try {
