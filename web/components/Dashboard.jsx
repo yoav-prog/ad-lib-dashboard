@@ -10,6 +10,7 @@ import ColumnsManager, { useColumnLayout } from '@/components/ColumnsManager';
 import ColumnRow from '@/components/ColumnRow';
 import Pager, { PageSizePicker, usePageSize } from '@/components/Pager';
 import { pageSlice, pageRange, pageCount, clampPage } from '@/lib/paging';
+import { nextLiveFeedStep, EMPTY_LIVE_FEED, FEED_PULSE_ACTIVE_MS, FEED_PULSE_IDLE_MS } from '@/lib/live-feed';
 import GeoSplitCell from '@/components/GeoSplitCell';
 import TableScroll from '@/components/TableScroll';
 import CompetitorView from '@/components/CompetitorView';
@@ -22,7 +23,7 @@ import ControlRoom from '@/components/ControlRoom';
 import ReviewView from '@/components/ReviewView';
 import FilteredView from '@/components/FilteredView';
 import RejectedView from '@/components/RejectedView';
-import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts, loadFeedPage, loadFeedFacets, loadFeedIds, loadFeedExport, loadFullFeed, loadDomainAdCounts, loadOwnedSisters, loadOurDomains } from '@/app/actions';
+import { updateAdWorkflow, getAdArticle, triggerScrape, runDomains, markRunFailed, deleteAds, bulkUpdateAds, refreshAds, stopRun, exportToSheet, refreshMetrics, reviewAds as decideReviewAds, clearContentFlag, restoreRejectedAds, loadSecondaryTab, refreshSecondaryCounts, loadFeedPage, loadFeedFacets, loadFeedTicker, loadFeedIds, loadFeedExport, loadFullFeed, loadDomainAdCounts, loadOwnedSisters, loadOurDomains } from '@/app/actions';
 
 // Which of our domains the feed reports on, remembered across visits.
 const OUR_DOMAIN_LS = 'adintel.ourdomain';
@@ -137,19 +138,27 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   const [serverFacets, setServerFacets] = useState(initialFacets);
   const [serverTicker, setServerTicker] = useState(tickerProp);
   const [feedLoading, setFeedLoading] = useState(false);
+  const [feedReload, setFeedReload] = useState(0);             // bumped to re-read the current page
+  const silentFeedReloadRef = useRef(false);                   // the next read is a live update
+  const feedEditSeqRef = useRef(0);                            // counts optimistic row edits
   const serverMode = serverFeed && feedPage != null;
 
-  // Fetch the page whenever the query shape changes (`query` is already debounced).
+  // Fetch the page whenever the query shape changes (`query` is already debounced) or a run
+  // lands new ads. A live update shows no loading state, and is dropped if a row was edited
+  // while it was in flight so it cannot put the old value back.
   useEffect(() => {
     if (!serverFeed) return;
     let alive = true;
-    setFeedLoading(true);
-    loadFeedPage({ filters, dateRange, search: query, sort, dir: sortDir, page, pageSize })
-      .then((r) => { if (alive && r?.ok) setFeedPage(r); })
+    const silent = silentFeedReloadRef.current;
+    silentFeedReloadRef.current = false;
+    const editSeq = feedEditSeqRef.current;
+    if (!silent) setFeedLoading(true);
+    loadFeedPage({ filters, dateRange, search: query, sort, dir: sortDir, page, pageSize, liveTotal: silent })
+      .then((r) => { if (alive && r?.ok && (!silent || editSeq === feedEditSeqRef.current)) setFeedPage(r); })
       .catch((e) => console.error('[feed] page load failed', e))
       .finally(() => { if (alive) setFeedLoading(false); });
     return () => { alive = false; };
-  }, [serverFeed, filters, dateRange, query, sort, sortDir, page, pageSize]);
+  }, [serverFeed, filters, dateRange, query, sort, sortDir, page, pageSize, feedReload]);
 
   // Refetch facets when the selected feed changes - the Domain facet is scoped to it. Ticker is
   // whole-feed and filter-independent, so it stays as first loaded.
@@ -219,7 +228,7 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   // Apply a row transform to the rendered rows in whichever mode is live: client mode edits
   // the full `ads` array, server mode edits the loaded page (feedPage.rows) and the lazily
   // fetched full array (fullAds), so an optimistic change shows at once everywhere.
-  const patchFeedPage = (fn) => { if (serverFeed) setFeedPage((prev) => (prev ? { ...prev, rows: fn(prev.rows) } : prev)); };
+  const patchFeedPage = (fn) => { if (serverFeed) { feedEditSeqRef.current += 1; setFeedPage((prev) => (prev ? { ...prev, rows: fn(prev.rows) } : prev)); } };
   const patchFullAds = (fn) => { if (serverFeed) setFullAds((prev) => (prev ? fn(prev) : prev)); };
   const updateLocal = (id, patch) => {
     setAds((prev) => prev.map((a) => (a.ad_archive_id === id ? { ...a, ...patch } : a)));
@@ -269,7 +278,9 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
   const [pending, setPending] = useState(false);
   const cursorRef = useRef(0);         // highest run_log id seen (poll cursor)
   const watchedRef = useRef(null);     // run whose logs are currently in runLogs
-  const prevActiveIdRef = useRef(null);// last active run id seen, to detect completion
+  const liveFeedRef = useRef(EMPTY_LIVE_FEED);  // what the feed has picked up from the live run
+  const feedPositionRef = useRef(null);         // where the viewer is, for the pollers
+  feedPositionRef.current = { view, page };
   const dispatchedAtRef = useRef(0);   // when Run Now fired, for the "starting" window
   const timerRef = useRef(null);
   const pollRef = useRef(null);
@@ -350,6 +361,28 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     syncCounts();
   }, [router, syncCounts]);
 
+  // Bring the feed up to date with the live run. Only ever called with a real answer from
+  // the server, so a failed poll cannot be mistaken for a run ending.
+  const applyLiveFeed = useCallback((active) => {
+    const { view: currentView, page: currentPage } = feedPositionRef.current;
+    const canShow = currentView === 'fresh' && currentPage === 0 && document.visibilityState === 'visible';
+    const { state, reload } = nextLiveFeedStep(liveFeedRef.current, active, { now: Date.now(), canShow });
+    liveFeedRef.current = state;
+    if (reload === 'none') return;
+    if (serverFeed) {
+      silentFeedReloadRef.current = true;
+      setFeedReload((n) => n + 1);
+    }
+    if (reload === 'final') {
+      router.refresh();
+      return;
+    }
+    syncCounts();
+    if (serverFeed) {
+      loadFeedTicker().then((r) => { if (r?.ok) setServerTicker(r.ticker); }).catch(() => { /* the ticker can lag */ });
+    }
+  }, [serverFeed, router, syncCounts]);
+
   // /api/run-status answers only to run_scrapes, so without it the poller would
   // spin on 403s forever. Skip it entirely instead.
   const poll = useCallback(async () => {
@@ -365,10 +398,8 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
         const stillStarting = !active && dispatchedAtRef.current > 0 && Date.now() - dispatchedAtRef.current < 3 * 60 * 1000;
         setPending(stillStarting);
         setRunStatus({ active, lastRun: data.lastRun || null, runId: data.runId || null });
-        // A run just cleared: pull fresh server props so new finds land in the feed
-        // automatically, no "SEE N NEW ADS" click needed.
-        if (prevActiveIdRef.current && !active) router.refresh();
-        prevActiveIdRef.current = active ? active.id : null;
+        // New finds land in the feed as the run saves them, no "SEE N NEW ADS" click needed.
+        applyLiveFeed(active);
         if (data.runId && data.runId !== watchedRef.current) {
           watchedRef.current = data.runId;                 // switched runs: reset the console
           const ls = data.logs || [];
@@ -384,13 +415,36 @@ export default function Dashboard({ ads: adsProp, serverFeed = false, initialFee
     const delay = (active || recentlyDispatched) ? 2500 : 12000;  // fast while live, idle otherwise
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => pollRef.current && pollRef.current(), delay);
-  }, [canRun]);
+  }, [canRun, applyLiveFeed]);
   pollRef.current = poll;
 
   useEffect(() => {
     poll();
     return () => clearTimeout(timerRef.current);
   }, [poll]);
+
+  // Accounts without run_scrapes get the same live feed from a much smaller signal.
+  // Paused while the browser tab is hidden, since nobody is looking at the rows.
+  useEffect(() => {
+    if (canRun) return;
+    let timer = null;
+    let stopped = false;
+    const tick = async () => {
+      let active = null;
+      if (document.visibilityState === 'visible') {
+        try {
+          const res = await fetch('/api/feed-pulse', { cache: 'no-store' });
+          if (res.ok) {
+            active = (await res.json()).active || null;
+            if (!stopped) applyLiveFeed(active);
+          }
+        } catch { /* transient network/db blip: just try again next tick */ }
+      }
+      if (!stopped) timer = setTimeout(tick, active ? FEED_PULSE_ACTIVE_MS : FEED_PULSE_IDLE_MS);
+    };
+    tick();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [canRun, applyLiveFeed]);
 
   const onRunNow = useCallback(async () => {
     const r = await triggerScrape();

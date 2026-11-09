@@ -118,9 +118,9 @@ export function bustAdsCache() {
   facetCache.bust();
 }
 
-// Only surface ads confirmed by a completed run, so a failed / mid-flight scrape
-// never leaks half-enriched rows into the feed. Rows with no run association
-// (e.g. a backfill) are shown as-is. Only approved ads reach the feed - pending
+// Every saved ad is eligible as soon as it lands, including during a run and after a
+// stopped one: the scraper finishes enriching an ad before it writes the row, so there
+// are no half-built rows to hide. Only approved ads reach the feed - pending
 // ones live in the Review tab (getReviewAds); rejected ones stay hidden until a
 // scrape sees Meta still running them, which reopens them as pending. No row
 // cap: every eligible ad ships, and the client paginates the rendering - a
@@ -139,9 +139,6 @@ export async function getAds() {
     from ads a
     where a.review_status = 'approved'
       and ${notProhibited(sql)}
-      and ((a.first_run_id is null and a.last_run_id is null)
-       or a.first_run_id in (select id from runs where status = 'completed')
-       or a.last_run_id in (select id from runs where status = 'completed'))
     order by a.last_seen_at desc nulls last
   `;
   const ads = rows.map(mapAd);
@@ -185,9 +182,6 @@ function feedConditions(sql, { filters = {}, dateRange = 'all', search = '', ids
   const conds = [
     sql`a.review_status = 'approved'`,
     notProhibited(sql),
-    sql`((a.first_run_id is null and a.last_run_id is null)
-      or a.first_run_id in (select id from runs where status = 'completed')
-      or a.last_run_id in (select id from runs where status = 'completed'))`,
   ];
 
   const inList = (frag, vals) => { if (Array.isArray(vals) && vals.length) conds.push(frag(vals)); };
@@ -299,7 +293,7 @@ function mapFeedRow(r) {
 
 // One page of the feed plus the total for the same filter set. `page` is zero-based. The
 // metrics join is a LEFT JOIN, so an ad with no campaign keeps its row with null metrics.
-export async function getFeedPage({ filters = {}, dateRange = 'all', search = '', sort = 'fresh', dir = 'desc', page = 0, pageSize = 100 } = {}) {
+export async function getFeedPage({ filters = {}, dateRange = 'all', search = '', sort = 'fresh', dir = 'desc', page = 0, pageSize = 100, liveTotal = false } = {}) {
   const sql = getSql();
   const conds = feedConditions(sql, { filters, dateRange, search });
   const where = andAll(sql, conds);
@@ -318,17 +312,18 @@ export async function getFeedPage({ filters = {}, dateRange = 'all', search = ''
     order by ${order}
     limit ${size} offset ${pg * size}
   `;
-  // A base feed (only the 3 base conditions, no user filter) always counts the same ~14k
+  // A base feed (only the 2 base conditions, no user filter) always counts the same ~14k
   // rows, so serve that one expensive count from cache; a filtered feed counts its smaller set.
-  const total = await feedTotal(sql, where, conds.length === 3);
+  // A live reload during a run skips the cached value, because rows are arriving.
+  const total = await feedTotal(sql, where, conds.length === 2, liveTotal === true);
   console.info('[feed page]', { sort, dir, page: pg, size, rows: rows.length, total, ms: Date.now() - t0 });
   return { rows: rows.map(mapFeedRow), total, page: pg, pageSize: size };
 }
 
 // The total for a feed WHERE. Caches only the base (unfiltered) count, which is the same for
 // everyone and the one that scans the whole feed; filtered counts run live.
-async function feedTotal(sql, where, isBase) {
-  if (isBase) {
+async function feedTotal(sql, where, isBase, skipCache = false) {
+  if (isBase && !skipCache) {
     const cached = baseCountCache.peek();
     if (cached) return cached.value;
   }
@@ -513,8 +508,8 @@ export async function getDomainAdCounts() {
 }
 
 // The review queue: ads whose destination did not match their tracked domain,
-// awaiting a human approve/reject. Same completed-run guard (and same no-cap,
-// no-article-body rule) as the feed. Prohibited-content wins over the relevance
+// awaiting a human approve/reject. Same no-cap, no-article-body rule as the
+// feed. Prohibited-content wins over the relevance
 // review: a flagged ad is hidden here too and shows only in the Filtered view, so a
 // policy-violating ad can never sit in someone's approve/reject queue.
 export async function getReviewAds() {
@@ -525,9 +520,6 @@ export async function getReviewAds() {
     from ads a
     where a.review_status = 'pending'
       and ${notProhibited(sql)}
-      and ((a.first_run_id is null and a.last_run_id is null)
-       or a.first_run_id in (select id from runs where status = 'completed')
-       or a.last_run_id in (select id from runs where status = 'completed'))
     order by a.last_seen_at desc nulls last
   `;
   return rows.map(mapAd);
@@ -537,7 +529,7 @@ export async function getReviewAds() {
 // flagged them (any content_flag but 'none'), regardless of review_status - this is a
 // hard compliance filter that outranks the relevance review. Kept, not deleted, so a
 // human can spot-check the model and clear a false positive (clearContentFlag), which
-// returns the ad to the feed. Same completed-run guard as the feed.
+// returns the ad to the feed.
 export async function getFilteredAds() {
   const sql = getSql();
   const rows = await sql`
@@ -545,9 +537,6 @@ export async function getFilteredAds() {
            (article_content is not null and article_content <> '') as has_article
     from ads a
     where ${isProhibited(sql)}
-      and ((a.first_run_id is null and a.last_run_id is null)
-       or a.first_run_id in (select id from runs where status = 'completed')
-       or a.last_run_id in (select id from runs where status = 'completed'))
     order by a.last_seen_at desc nulls last
   `;
   return rows.map(mapAd);
@@ -557,7 +546,7 @@ export async function getFilteredAds() {
 // deleted) so the scraper's dedup never re-imports the ad - which also means we can
 // restore one to the feed on demand (restoreRejectedAds). Prohibited-content still
 // wins (a flagged ad shows only in Filtered), so this applies the same notProhibited
-// exclusion as the feed and review queue. Same completed-run guard.
+// exclusion as the feed and review queue.
 export async function getRejectedAds() {
   const sql = getSql();
   const rows = await sql`
@@ -566,9 +555,6 @@ export async function getRejectedAds() {
     from ads a
     where a.review_status = 'rejected'
       and ${notProhibited(sql)}
-      and ((a.first_run_id is null and a.last_run_id is null)
-       or a.first_run_id in (select id from runs where status = 'completed')
-       or a.last_run_id in (select id from runs where status = 'completed'))
     order by a.last_seen_at desc nulls last
   `;
   return rows.map(mapAd);
@@ -579,9 +565,8 @@ export async function getRejectedAds() {
 // Those tabs are loaded on demand rather than shipped with the page: together
 // they were about 5.5 MB of every render, for views most people never open. The
 // badges still need exact numbers though, so this counts what the tabs would
-// return without materialising a single ad row. The run-completed predicate
-// matches the tab queries above, so a badge can never promise rows the tab will
-// not show.
+// return without materialising a single ad row. The conditions match the tab
+// queries above, so a badge can never promise rows the tab will not show.
 export async function getSecondaryCounts() {
   const sql = getSql();
   const [row] = await sql`
@@ -590,9 +575,6 @@ export async function getSecondaryCounts() {
       count(*) filter (where ${isProhibited(sql)})::int                                   as filtered,
       count(*) filter (where a.review_status = 'rejected' and ${notProhibited(sql)})::int as rejected
     from ads a
-    where ((a.first_run_id is null and a.last_run_id is null)
-       or a.first_run_id in (select id from runs where status = 'completed')
-       or a.last_run_id in (select id from runs where status = 'completed'))
   `;
   return { review: row.review, filtered: row.filtered, rejected: row.rejected };
 }
@@ -831,6 +813,20 @@ export async function getActiveRun() {
     queued: queued.map((q) => q.query),
     stale: r.stale === true,
   };
+}
+
+// The bare minimum to know new ads are arriving: the live run's id and its running ad
+// count. Safe for every signed-in account, unlike getActiveRun's queue and domain detail.
+export async function getRunPulse() {
+  const sql = getSql();
+  const [r] = await sql`
+    select id, ads_found_so_far
+    from runs
+    where status = 'running'
+    order by started_at desc
+    limit 1
+  `;
+  return r ? { id: r.id, ads_found_so_far: r.ads_found_so_far } : null;
 }
 
 // The most recently finished run (completed or failed), for the "just finished"
