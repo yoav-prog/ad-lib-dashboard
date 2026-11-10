@@ -203,6 +203,17 @@ export function uniqueCleanLinks(rows) {
 export const titleCase = (v) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v);
 export const pad = (n, w = 2) => String(n).padStart(w, '0');
 
+// A tracked row's Max Ads has no product ceiling: a scrape simply stops when the Ad
+// Library runs out of ads. The only bound is the column itself (Postgres integer),
+// so an absurd paste fails safe here instead of erroring at the database. Anything
+// unparseable or below 1 falls back to `dflt`.
+export const MAX_ADS_CEILING = 2147483647;
+export function clampMaxAds(v, dflt = 100) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n < 1) return dflt;
+  return Math.min(MAX_ADS_CEILING, n);
+}
+
 // When a "Run now" / "Run selected" click fails to dispatch the scrape workflow,
 // GitHub's HTTP status says *why*. Map it to a stable reason code so the server
 // and the UI agree on the cause. 401 = the token is rejected (bad/expired), 403 =

@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isVideo, thumbOf, mediaUrlOf, isDeadLink, matchesLinkHealth, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, cleanLink, cleanLinkKey, uniqueCleanLinks, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS, dispatchFailReason, dispatchFailMessage, queuedRunMessage, runEta } from '../lib/ui.js';
+import { isVideo, thumbOf, mediaUrlOf, isDeadLink, matchesLinkHealth, buildCsv, buildSheetData, SHEET_COLUMNS, parseSheetId, hostOf, filterReviewAds, reviewDestOf, columnVisibility, columnPrefValue, fmtInt, fmtDec, geoCountries, isPredicto, predictoQuery, isVisymo, visymoQuery, searchQuery, cleanLink, cleanLinkKey, uniqueCleanLinks, brandLabel, brandColor, BRAND_OPTIONS, filterFlaggedAds, contentFlagLabel, CONTENT_FLAG_OPTIONS, rsocTierLabel, rsocTierColor, rsocAreaLabel, RSOC_TIER_META, RSOC_TIER_ORDER, RSOC_POLICY_AREAS, dispatchFailReason, dispatchFailMessage, queuedRunMessage, runEta, clampMaxAds, MAX_ADS_CEILING } from '../lib/ui.js';
 
 const NOW = Date.UTC(2026, 6, 9);
 
@@ -683,4 +683,22 @@ test('runEta shows nothing until there is something honest to say', () => {
   assert.equal(runEta({ elapsedSeconds: 100, done: 5, total: 5, budgetLeftSeconds: 2000 }), null);
   assert.equal(runEta({ elapsedSeconds: 3, done: 1, total: 5, budgetLeftSeconds: 2000 }), null);
   assert.equal(runEta({ elapsedSeconds: 600, done: 2, total: 5, budgetLeftSeconds: 10 }), null);
+});
+
+test('clampMaxAds has no 1000 ceiling (a 2500-ad scrape used to be cut to 1000)', () => {
+  assert.equal(clampMaxAds(2500), 2500);
+  assert.equal(clampMaxAds('25000'), 25000);
+  assert.equal(clampMaxAds(1001), 1001);
+});
+
+test('clampMaxAds rounds and stops only at the integer column limit', () => {
+  assert.equal(clampMaxAds('300.6'), 301);
+  assert.equal(clampMaxAds(1e12), MAX_ADS_CEILING);
+  assert.equal(clampMaxAds(MAX_ADS_CEILING), MAX_ADS_CEILING);
+});
+
+test('clampMaxAds falls back on blank, junk, zero and negatives', () => {
+  for (const v of ['', 'abc', null, undefined, 0, -5, 0.4, NaN, Infinity]) assert.equal(clampMaxAds(v), 100, String(v));
+  assert.equal(clampMaxAds('abc', null), null);
+  assert.equal(clampMaxAds(1), 1);
 });

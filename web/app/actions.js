@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { getCurrentUser, requireCapability } from '@/lib/auth';
 import { getAds, getAdsByIds, getReviewAds, getFilteredAds, getRejectedAds, getSecondaryCounts, bustAdsCache, getFeedPage, getFeedFacets, getFeedTicker, getFeedExport, getFeedIds, getDomainAdCounts, getAssignmentsByAdIds, getAssignmentsByCompIds, getAssignedUrlsForDomain, getTakenOurUrls, getMetaCreativesByUrls, getActiveRun } from '@/lib/queries';
 import { getSheetMetricsIndex, attachSheetMetrics, metricsStatus } from '@/lib/metrics';
-import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, langCode, dispatchFailReason } from '@/lib/ui';
+import { buildSheetData, DEFAULT_SHEET_COLUMN_KEYS, KIT_COLUMNS, DEFAULT_KIT_COLUMN_KEYS, planBulkAssignment, compToSubject, COMP_KIT_COLUMNS, DEFAULT_COMP_KIT_COLUMN_KEYS, langCode, dispatchFailReason, clampMaxAds } from '@/lib/ui';
 import { writeToSheet, sheetsConfigured, serviceAccountEmail } from '@/lib/sheets';
 import { listOurDomains, listOurNetworks, searchOurLinks as searchArticleLinks, getCompFacets, searchCompRows, getCompRowsByIds, getSisterFamilyUrls, getSisterLinksForUrls, attachOwned, attachOurArticles, articlesConfigured } from '@/lib/articles';
 
@@ -382,7 +382,7 @@ export async function addDomain(data) {
   await sql`
     insert into domains (query, country, active_status, max_ads, interval_days, feed)
     values (${data.query}, ${data.country || 'ALL'}, ${data.active_status || 'active'},
-            ${data.max_ads || 100}, ${clampDays(data.interval_days, 3)}, ${data.feed || null})
+            ${clampMaxAds(data.max_ads)}, ${clampDays(data.interval_days, 3)}, ${data.feed || null})
     on conflict (query, country) do nothing
   `;
   revalidatePath('/');
@@ -396,17 +396,10 @@ function clampDays(v, dflt) {
   return Math.min(365, Math.max(1, n));
 }
 
-// Keep a bulk-set Max Ads sane (1..1000) so one fat-fingered value can't blow up a
-// scrape's scope across many rows at once.
-function clampMaxAds(v) {
-  const n = Math.round(Number(v));
-  if (!Number.isFinite(n)) return 100;
-  return Math.min(1000, Math.max(1, n));
-}
-
 export async function updateDomain(id, patch) {
   await requireCapability('manage_domains');
   const set = pick(patch, DOMAIN_FIELDS);
+  if ('max_ads' in set) set.max_ads = clampMaxAds(set.max_ads);
   if (!Object.keys(set).length) return;
   const sql = getSql();
   // Changing the frequency also re-spaces the next run from the last one, so
@@ -445,6 +438,7 @@ export async function bulkUpdateDomains(ids, patch) {
   const set = pick(patch, DOMAIN_FIELDS);
   if ('max_ads' in set) set.max_ads = clampMaxAds(set.max_ads);
   if (!Object.keys(set).length) return;
+  console.info('[domains bulk] update', { rows: clean.length, fields: Object.keys(set), maxAds: set.max_ads ?? null });
   const sql = getSql();
   if ('interval_days' in set) {
     const days = clampDays(set.interval_days, 3);

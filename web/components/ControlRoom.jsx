@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { s } from '@/lib/style';
-import { A, MONO, relTime, pad, dispatchFailMessage, queuedRunMessage, runEta } from '@/lib/ui';
+import { A, MONO, relTime, pad, dispatchFailMessage, queuedRunMessage, runEta, clampMaxAds } from '@/lib/ui';
 import { addDomain, updateDomain, deleteDomain, bulkUpdateDomains, deleteDomains, addFeed } from '@/app/actions';
 import TableScroll from '@/components/TableScroll';
 
@@ -108,7 +108,12 @@ export default function ControlRoom({
   const clearSel = () => setSel(new Set());
   const shownIds = shownDomains.map((d) => d.id);
   const allShownSelected = shownIds.length > 0 && shownIds.every((id) => sel.has(id));
-  const selScopeMax = domains.filter((d) => sel.has(d.id)).reduce((n, d) => n + (d.max_ads || 0), 0);
+  // A Max Ads value typed into the bulk bar but not yet SET. RUN applies it first, so
+  // "type 2500, press RUN" scrapes 2500, and the scope hint already counts it.
+  const pendingMaxAds = bulkMaxAds === '' ? null : clampMaxAds(bulkMaxAds, null);
+  const selScopeMax = pendingMaxAds
+    ? pendingMaxAds * sel.size
+    : domains.filter((d) => sel.has(d.id)).reduce((n, d) => n + (d.max_ads || 0), 0);
 
   const lastCompleted = runs.find((r) => r.status === 'completed' && r.finished_at);
   const dueTimes = domains.filter((d) => d.enabled && d.next_run_at).map((d) => d.next_run_at).sort();
@@ -118,7 +123,7 @@ export default function ControlRoom({
     if (!q.trim() || busy) return;
     setBusy(true);
     try {
-      await addDomain({ query: q.trim(), country: country.trim() || 'ALL', max_ads: Number(maxAds) || 100, feed: feed || null });
+      await addDomain({ query: q.trim(), country: country.trim() || 'ALL', max_ads: clampMaxAds(maxAds), feed: feed || null });
       setQ('');
     } finally {
       setBusy(false);
@@ -184,6 +189,11 @@ export default function ControlRoom({
     const rows = n === 1 ? 'row' : 'rows';
     setSelMsg('');
     try {
+      if (pendingMaxAds && canManageDomains) {
+        console.info('[control run] applying unsaved max ads before run', { rows: n, maxAds: pendingMaxAds });
+        await bulkUpdateDomains([...sel], { max_ads: pendingMaxAds });
+        setBulkMaxAds('');
+      }
       const r = await onRunDomains([...sel]);
       if (r?.queued) setSelMsg(queuedRunMessage(r.count ?? n, r.current));
       else if (r?.dispatched) setSelMsg(`Dispatched a run for ${n} selected ${rows}. Live status appears at the top in a moment.`);
@@ -200,9 +210,8 @@ export default function ControlRoom({
   // the selection (those rows are gone); edits keep it so you can chain changes.
   const bulkStatus = (enabled) => bulkUpdateDomains([...sel], { enabled });
   const applyBulkMaxAds = () => {
-    const n = Math.round(Number(bulkMaxAds));
-    if (!Number.isFinite(n) || n < 1) return;
-    bulkUpdateDomains([...sel], { max_ads: n });
+    if (!pendingMaxAds) return;
+    bulkUpdateDomains([...sel], { max_ads: pendingMaxAds });
     setBulkMaxAds('');
   };
   const applyBulkDays = () => {
@@ -398,7 +407,8 @@ export default function ControlRoom({
                   <input type="number" min="1" value={bulkMaxAds} placeholder="100"
                     onChange={(e) => setBulkMaxAds(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && applyBulkMaxAds()}
-                    style={s(`width:54px;${miniInput}`)} />
+                    title="No upper limit. Press SET, or just RUN: a typed value is applied first"
+                    style={s(`width:72px;${miniInput}`)} />
                   <button onClick={applyBulkMaxAds} style={s(bulkBtn)}>SET</button>
                 </div>
 
