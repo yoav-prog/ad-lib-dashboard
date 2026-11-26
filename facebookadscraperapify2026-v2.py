@@ -15,6 +15,7 @@ from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
 from concurrent.futures import ThreadPoolExecutor
 from apify_client import ApifyClient
+from apify_client.errors import ApifyApiError
 from urllib.parse import quote, urlparse
 from scrapingbee import ScrapingBeeClient
 import re
@@ -51,6 +52,31 @@ BUCKET_NAME = os.environ.get('BUCKET_NAME', 'aporia-unleash')
 # ── Apify configuration ───────────────────────────────────────────────────────
 APIFY_API_TOKEN = _require_env('APIFY_API_TOKEN')
 APIFY_ACTOR_ID  = os.environ.get('APIFY_ACTOR_ID', 'memo23/facebook-ads-library-scraper-cheerio')
+
+# HTTP statuses that mean the Apify ACCOUNT is the problem, not this one query: a
+# rejected or deleted token (401), no credit left (402), or no access to the actor
+# (403). Every later domain would hit the same wall, so these abort the run.
+APIFY_ACCOUNT_ERROR_STATUSES = {
+    401: 'Apify rejected the API token - set a valid APIFY_API_TOKEN GitHub secret',
+    402: 'Apify account is out of credit - top up the Apify plan',
+    403: 'Apify refused access to the scraper actor - check the APIFY_API_TOKEN account',
+}
+
+
+class ApifyAccountError(RuntimeError):
+    """The Apify account cannot run the actor at all (bad token, no credit, no
+    access). Raised instead of returning 0 ads, so the run is recorded as FAILED
+    with a reason instead of COMPLETED with nothing - which on 2026-11-12..25 hid
+    a dead token behind 24 'successful' empty runs."""
+
+
+def apify_account_error(e):
+    """An ApifyAccountError for an account-level Apify API failure, else None."""
+    status = getattr(e, 'status_code', None)
+    if not isinstance(e, ApifyApiError) or status not in APIFY_ACCOUNT_ERROR_STATUSES:
+        return None
+    return ApifyAccountError(
+        f"{APIFY_ACCOUNT_ERROR_STATUSES[status]} (HTTP {status}). Apify said: {e}")
 
 # ── ScrapingBee configuration ─────────────────────────────────────────────────
 SCRAPINGBEE_API_KEY = _require_env('SCRAPINGBEE_API_KEY')
@@ -1199,6 +1225,10 @@ def fetch_facebook_ads_apify(params, resume_cursor=None):
 
         return items, last_cursor
     except Exception as e:
+        account_error = apify_account_error(e)
+        if account_error:
+            print(f"  ❌ [apify account] {account_error}")
+            raise account_error from e
         print(f"  ❌ Apify error: {e}")
         return [], None
 
@@ -1233,7 +1263,7 @@ async def fetch_facebook_ads_apify_with_resume(params, max_retries=4, retry_dela
         empty_tries = 0
         while not items and not cursor and empty_tries < empty_retries:
             empty_tries += 1
-            print(f"  ⚠️  Actor SUCCEEDED but returned 0 ads — likely transient. "
+            print(f"  ⚠️  Apify returned 0 ads — likely transient. "
                   f"Retrying fresh ({empty_tries}/{empty_retries}) after {empty_delay}s...")
             await asyncio.sleep(empty_delay)
             items, new_cursor = await asyncio.to_thread(
